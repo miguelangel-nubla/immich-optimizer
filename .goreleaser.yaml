@@ -1,0 +1,105 @@
+version: 2
+before:
+  hooks:
+    - go generate ./...
+    - go mod tidy
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - 386
+      - amd64
+      - arm
+      - arm64
+    goarm:
+      - 7
+dockers:
+  -
+    image_templates:
+    - "ghcr.io/miguelangel-nubla/{{.ProjectName}}-caesium:{{ .Tag }}-amd64"
+    dockerfile: 'Dockerfile.caesium.goreleaser'
+    use: buildx
+    build_flag_templates:
+    - "--pull"
+    - "--platform=linux/amd64"
+    - "--label=org.opencontainers.image.created={{.Date}}"
+    - "--label=org.opencontainers.image.title={{.ProjectName}}-caesium"
+    - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+    - "--label=org.opencontainers.image.version={{.Version}}"
+    - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+    - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+    extra_files:
+    - LICENSE
+  -
+    image_templates:
+    - "ghcr.io/miguelangel-nubla/{{.ProjectName}}-caesium:{{ .Tag }}-arm64v8"
+    dockerfile: 'Dockerfile.caesium.goreleaser'
+    use: buildx
+    build_flag_templates:
+    - "--pull"
+    - "--platform=linux/arm64/v8"
+    - "--label=org.opencontainers.image.created={{.Date}}"
+    - "--label=org.opencontainers.image.title={{.ProjectName}}-caesium"
+    - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+    - "--label=org.opencontainers.image.version={{.Version}}"
+    - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+    - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+    extra_files:
+    - LICENSE
+docker_manifests:
+  - 
+    name_template: ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:latest
+    image_templates:
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:{{ .Tag }}-amd64
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:{{ .Tag }}-arm64v8
+  - 
+    name_template: ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:{{ .Tag }}
+    image_templates:
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:{{ .Tag }}-amd64
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:{{ .Tag }}-arm64v8
+  - 
+    name_template: ghcr.io/miguelangel-nubla/{{.ProjectName}}-caesium:v{{ .Major }}
+    image_templates:
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:{{ .Tag }}-amd64
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:{{ .Tag }}-arm64v8
+  - 
+    name_template: ghcr.io/miguelangel-nubla/{{.ProjectName}}-caesium:v{{ .Major }}.{{ .Minor }}
+    image_templates:
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:{{ .Tag }}-amd64
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:{{ .Tag }}-arm64v8
+
+archives:
+  - 
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+    - goos: windows
+      format: zip
+
+checksum:
+  name_template: 'checksums.txt'
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
