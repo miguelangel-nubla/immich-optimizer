@@ -20,10 +20,6 @@ Immich Upload Optimizer is a proxy designed to be placed in front of the Immich 
           - "2283:2283"
         environment:
           - IUO_UPSTREAM=http://immich-server:2283
-          - IUO_LISTEN=:2283
-          - IUO_CONVERT_CMD=caesiumclt --keep-dates --exif --quality=0 --output={{.dirname}} {{.filename}}
-          - IUO_FILTER_PATH=/api/assets
-          - IUO_FILTER_FORM_KEY=assetData
         depends_on:
           - immich-server
 
