@@ -15,7 +15,7 @@ Immich Upload Optimizer is a proxy designed to be placed in front of the Immich 
     ```yaml
     services:
       immich-upload-optimizer:
-        image: miguelangel-nubla/immich-upload-optimizer-caesium:latest
+        image: ghcr.io/miguelangel-nubla/immich-upload-optimizer-caesium:latest
         ports:
           - "2283:2283"
         environment:
