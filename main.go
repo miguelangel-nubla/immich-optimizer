@@ -44,7 +44,7 @@ func init() {
 
 	viper.SetDefault("upstream", "")
 	viper.SetDefault("listen", ":2283")
-	viper.SetDefault("convert_cmd", "caesiumclt --keep-dates --exif --quality=0 --output={{.dirname}} {{.filename}}")
+	viper.SetDefault("convert_cmd", "caesiumclt --keep-dates --exif --quality=0 --output={{.folder}} {{.folder}}/{{.name}}.{{.extension}}")
 	viper.SetDefault("filter_path", "/api/assets")
 	viper.SetDefault("filter_form_key", "assetData")
 
@@ -52,9 +52,9 @@ func init() {
 	flag.StringVar(&listenAddr, "listen", viper.GetString("listen"), "Listening address")
 	flag.StringVar(&convertCMD, "convert_cmd",
 		viper.GetString("convert_cmd"),
-		"Command to apply to convert image, available placeholders: dirname, filename. "+
-			"This utility will read the converted file from the same filename, so you need to overwrite the original. "+
-			"The file is in a temp folder by itself.")
+		"Command to apply to convert image, available placeholders: folder, name, extension. "+
+			"The original file is in a temp folder by itself. "+
+			"This utility will read the converted file from the same folder, so you need to delete or overwrite the original.")
 	flag.StringVar(&filterPath, "filter-path", viper.GetString("filter_path"), "Only convert images uploaded to specific path. Advanced, leave default for immich")
 	flag.StringVar(&filterFormKey, "filter-form-key", viper.GetString("filter_form_key"), "Only convert images uploaded with specific form key. Advanced, leave default for immich")
 	flag.Parse()
@@ -78,8 +78,9 @@ func validateInput() {
 	}
 
 	values := map[string]string{
-		"dirname":  "/test",
-		"filename": "/test/file.name",
+		"folder":    "/test",
+		"name":      "file",
+		"extension": "ext",
 	}
 	var cmdLine bytes.Buffer
 	err = convertCMDTemplate.Execute(&cmdLine, values)
@@ -88,58 +89,70 @@ func validateInput() {
 	}
 }
 
-func processImage(file io.Reader) ([]byte, error) {
+func processImage(file io.Reader, originalExtension string) (processedImage []byte, newExtension string, err error) {
 	tempDir, err := os.MkdirTemp("", "image-processing-*")
 	if err != nil {
-		return nil, fmt.Errorf("unable to create temp folder: %w", err)
+		return nil, "", fmt.Errorf("unable to create temp folder: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	tempFile, err := os.CreateTemp(tempDir, "input-*.jpg")
+	tempFile, err := os.CreateTemp(tempDir, "input-*"+originalExtension)
 	if err != nil {
-		return nil, fmt.Errorf("unable to create temp file: %w", err)
+		return nil, "", fmt.Errorf("unable to create temp file: %w", err)
 	}
 
 	_, err = io.Copy(tempFile, file)
 	if err != nil {
-		return nil, fmt.Errorf("unable to write temp file: %w", err)
+		return nil, "", fmt.Errorf("unable to write temp file: %w", err)
 	}
 	tempFile.Close()
 
+	basename := path.Base(tempFile.Name())
+	extension := path.Ext(basename)
 	values := map[string]string{
-		"dirname":  tempDir,
-		"filename": tempFile.Name(),
+		"folder":    tempDir,
+		"name":      strings.TrimSuffix(basename, extension),
+		"extension": strings.TrimPrefix(extension, "."),
 	}
 	var cmdLine bytes.Buffer
 	err = convertCMDTemplate.Execute(&cmdLine, values)
 	if err != nil {
-		return nil, fmt.Errorf("unable to generate convert command: %w", err)
+		return nil, "", fmt.Errorf("unable to generate convert command: %w", err)
 	}
 
 	cmd := exec.Command("sh", "-c", cmdLine.String())
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("unable to run convert command \"%s\", error: %w", cmdLine.String(), err)
+		return nil, "", fmt.Errorf("unable to run convert command \"%s\", error: %w", cmdLine.String(), err)
 	}
 
-	tempFile, err = os.Open(tempFile.Name())
+	files, err := os.ReadDir(tempDir)
 	if err != nil {
-		return nil, fmt.Errorf("unable to open temp file: %w", err)
+		return nil, "", fmt.Errorf("unable to read temp directory: %w", err)
+	}
+
+	if len(files) != 1 {
+		return nil, "", fmt.Errorf("unexpected number of files in temp directory: %d", len(files))
+	}
+
+	tempFile, err = os.Open(path.Join(tempDir, files[0].Name()))
+	if err != nil {
+		return nil, "", fmt.Errorf("unable to open temp file: %w", err)
 	}
 	defer tempFile.Close()
 
-	processedImage, err := io.ReadAll(tempFile)
+	processedImage, err = io.ReadAll(tempFile)
 	if err != nil {
-		return nil, fmt.Errorf("unable to read temp file: %w", err)
+		return nil, "", fmt.Errorf("unable to read temp file: %w", err)
 	}
 
-	return processedImage, nil
+	return processedImage, path.Ext(files[0].Name()), nil
 }
 
-func handleMultipartUpload(w http.ResponseWriter, r *http.Request, formFileKey string) (filename string, originalSize int64, newSize int64, replace bool, err error) {
+func handleMultipartUpload(w http.ResponseWriter, r *http.Request, formFileKey string) (originalFilename string, originalSize int64, newFilename string, newSize int64, replaced bool, err error) {
 	semaphore <- struct{}{}
 	defer func() { <-semaphore }()
 
-	replace = false
+	replaced = false
 	err = r.ParseMultipartForm(100 << 30) // 100 MB max memory
 	if err != nil {
 		err = fmt.Errorf("unable to parse multipart form: %w", err)
@@ -154,17 +167,21 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, formFileKey s
 	defer originalImage.Close()
 
 	originalSize = handler.Size
-	filename = handler.Filename
+	originalFilename = handler.Filename
+	basename := path.Base(originalFilename)
+	extension := path.Ext(basename)
 
-	processedImage, err := processImage(originalImage)
+	processedImage, newExtension, err := processImage(originalImage, extension)
 	if err != nil {
 		err = fmt.Errorf("unable to process image: %w", err)
 		return
 	}
 
+	newFilename = strings.TrimSuffix(originalFilename, extension) + newExtension
+
 	newSize = int64(len(processedImage))
 
-	replace = originalSize > newSize
+	replaced = originalSize > newSize
 
 	var buffer bytes.Buffer
 	writer := multipart.NewWriter(&buffer)
@@ -179,13 +196,13 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, formFileKey s
 		}
 	}
 
-	part, err := writer.CreateFormFile(formFileKey, handler.Filename)
+	part, err := writer.CreateFormFile(formFileKey, newFilename)
 	if err != nil {
 		err = fmt.Errorf("unable to create image form field to be sent upstream: %w", err)
 		return
 	}
 
-	if replace {
+	if replaced {
 		_, err = part.Write(processedImage)
 	} else {
 		_, err = io.Copy(part, originalImage)
@@ -254,7 +271,7 @@ func main() {
 		currentJobID++
 		jobID := currentJobID
 		log.Printf("job %d: incoming image upload on \"%s\" from %s, intercepting...", jobID, r.URL, r.RemoteAddr)
-		filename, originalSize, newSize, replaced, err := handleMultipartUpload(w, r, filterFormKey)
+		originalFilename, originalSize, newFilename, newSize, replaced, err := handleMultipartUpload(w, r, filterFormKey)
 		if err != nil {
 			log.Printf("job %d: Failed to process upload: %v", jobID, err.Error())
 			http.Error(w, "failed to process upload, view logs for more info", http.StatusInternalServerError)
@@ -266,7 +283,7 @@ func main() {
 			action = "image replaced"
 		}
 
-		log.Printf("job %d: %s: \"%s\" original = %s, optimized = %s", jobID, action, filename, humanReadableSize(originalSize), humanReadableSize(newSize))
+		log.Printf("job %d: %s: \"%s\" %s optimized to \"%s\" %s", jobID, action, originalFilename, humanReadableSize(originalSize), newFilename, humanReadableSize(newSize))
 	}
 
 	http.HandleFunc("/", handler)

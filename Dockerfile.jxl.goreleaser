@@ -1,0 +1,20 @@
+FROM ubuntu:latest AS builder
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -qq -y install jq curl
+ARG TARGETPLATFORM
+ARG JXL_GITHUB_REPO=libjxl/libjxl
+RUN JXL_LATEST_RELEASE=$(curl -s https://api.github.com/repos/$JXL_GITHUB_REPO/releases/latest | jq -r '.tag_name') \
+    && if [ "$TARGETPLATFORM" = "linux/amd64" ]; then JXL_ARCH=linux-x86_64-static; else echo "Platform not supported by libjxl"; exit 126; fi \
+    && JXL_ARCHIVE=jxl-${JXL_ARCH}-${JXL_LATEST_RELEASE} \
+    && curl -sS -L -O --output-dir /tmp/ --create-dirs  "https://github.com/$JXL_GITHUB_REPO/releases/latest/download/${JXL_ARCHIVE}.tar.gz" \
+    && tar xzf "/tmp/${JXL_ARCHIVE}.tar.gz" -C /tmp/ \
+    && mv "/tmp/tools/cjxl" /usr/local/bin/cjxl
+
+FROM alpine
+
+COPY --from=builder /usr/local/bin/cjxl /usr/local/bin/cjxl
+
+ENV IUO_CONVERT_CMD="cjxl --lossless_jpeg=1 {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}-new.jxl && rm {{.folder}}/{{.name}}.{{.extension}}"
+
+COPY immich-upload-optimizer /
+CMD ["/immich-upload-optimizer"]

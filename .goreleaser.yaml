@@ -18,6 +18,7 @@ builds:
     goarm:
       - 7
 dockers:
+  # CAESIUM
   -
     image_templates:
     - "ghcr.io/miguelangel-nubla/{{.ProjectName}}-caesium:{{ .Tag }}-amd64"
@@ -50,7 +51,26 @@ dockers:
     - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
     extra_files:
     - LICENSE
+
+  # JXL
+  -
+    image_templates:
+    - "ghcr.io/miguelangel-nubla/{{.ProjectName}}-jxl:{{ .Tag }}-amd64"
+    dockerfile: 'Dockerfile.jxl.goreleaser'
+    use: buildx
+    build_flag_templates:
+    - "--pull"
+    - "--platform=linux/amd64"
+    - "--label=org.opencontainers.image.created={{.Date}}"
+    - "--label=org.opencontainers.image.title={{.ProjectName}}-jxl"
+    - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+    - "--label=org.opencontainers.image.version={{.Version}}"
+    - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+    - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+    extra_files:
+    - LICENSE
 docker_manifests:
+  # CAESIUM
   - 
     name_template: ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:latest
     image_templates:
@@ -71,6 +91,24 @@ docker_manifests:
     image_templates:
     - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:{{ .Tag }}-amd64
     - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:{{ .Tag }}-arm64v8
+
+  # JXL
+  - 
+    name_template: ghcr.io/miguelangel-nubla/{{ .ProjectName }}-jxl:latest
+    image_templates:
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-jxl:{{ .Tag }}-amd64
+  - 
+    name_template: ghcr.io/miguelangel-nubla/{{ .ProjectName }}-jxl:{{ .Tag }}
+    image_templates:
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-jxl:{{ .Tag }}-amd64
+  - 
+    name_template: ghcr.io/miguelangel-nubla/{{.ProjectName}}-jxl:v{{ .Major }}
+    image_templates:
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-jxl:{{ .Tag }}-amd64
+  - 
+    name_template: ghcr.io/miguelangel-nubla/{{.ProjectName}}-jxl:v{{ .Major }}.{{ .Minor }}
+    image_templates:
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}-jxl:{{ .Tag }}-amd64
 
 archives:
   - 

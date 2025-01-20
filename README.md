@@ -38,10 +38,16 @@ Immich Upload Optimizer is a proxy designed to be placed in front of the Immich 
 
   - `-upstream`: The URL of the Immich server (e.g., `http://immich-server:2283`).
   - `-listen`: The address on which the proxy will listen (default: `:2283`).
-  - `-convert_cmd`: Command to apply to convert image, available placeholders: `{{.dirname}}`, `{{.filename}}`.
-    - Default: `caesiumclt --keep-dates --exif --quality=0 --output={{.dirname}} {{.filename}}`. (0 equals lossless compression)
-    - This utility will read the converted file from the same filename, so you need to overwrite the original.
-    - The file is in a temp folder by itself.
+  - `-convert_cmd`: Command to apply to convert image, available placeholders: `{{.folder}}`, `{{.name}}`, `{{.extension}}`. 
+    - Defaults:
+      - Binary and Caesium container (`immich-upload-optimizer-caesium`):
+
+        `caesiumclt --keep-dates --exif --quality=0 --output={{.folder}} {{.folder}}/{{.name}}.{{.extension}}`. (0 equals lossless compression)
+      - JPEG-XL container (`immich-upload-optimizer-jxl`):
+
+        `cjxl --lossless_jpeg=1 {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}-new.jxl && rm {{.folder}}/{{.name}}.{{.extension}}`.
+    - This utility will read the converted file from the same folder, so you need to delete or overwrite the original.
+    - The original file is in a temp folder by itself.
   - `-filter-path`: The path to filter image uploads (default: `/api/assets`).
   - `-filter-form-key`: The form key to filter image uploads (default: `assetData`).
 
@@ -69,4 +75,5 @@ This project is a complete rewrite from scratch of the original idea by [JamesCu
 
 - [JamesCullum/multipart-upload-proxy](https://github.com/JamesCullum/multipart-upload-proxy) for the original idea.
 - [Caesium](https://github.com/Lymphatus/caesium) for the image compression tool.
+- [libjxl](https://github.com/libjxl/libjxl)
 - [Immich](https://github.com/immich-app/immich) for the self-hosted photo and video backup solution.
