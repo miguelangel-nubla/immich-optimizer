@@ -10,7 +10,7 @@ RUN CAESIUM_LATEST_RELEASE=$(curl -s https://api.github.com/repos/$CAESIUM_GITHU
     && tar xzf "/tmp/${CAESIUM_ARCHIVE}.tar.gz" -C /tmp \
     && mv "/tmp/${CAESIUM_ARCHIVE}/caesiumclt" /usr/local/bin/caesiumclt
 
-FROM scratch
+FROM alpine
 COPY --from=builder /usr/local/bin/caesiumclt /usr/local/bin/caesiumclt
 COPY immich-upload-optimizer /
-ENTRYPOINT ["/immich-upload-optimizer"]
+CMD ["/immich-upload-optimizer"]
