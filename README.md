@@ -2,6 +2,14 @@
 
 Immich Upload Optimizer is a proxy designed to be placed in front of the Immich server. It intercepts image uploads and uses an external CLI program (by default, [Caesium](https://github.com/Lymphatus/caesium-clt)) to optimize, resize, or compress images before they are stored on the Immich server. This helps save storage space on the Immich server by reducing the size of uploaded images.
 
+## Quality
+
+By default, Immich Upload Optimizer uses lossless optimization, ensuring that no information is lost during the image optimization process. This means that the quality of your images remains unchanged while reducing their file size.
+
+If you prefer to save more storage space, you can modify the optimization parameters to perform lossy optimization. This can reduce the file size considerably (around 80% less) while maintaining the same perceived quality. To do this, adjust `-convert_cmd` to use a lossy compression setting.
+
+You can use [Caesium.app](https://caesium.app/) to experiment with different quality settings live before modifying the `-convert_cmd` according to the optimizer documentation. For the specific parameters, refer to the [Caesium CLI documentation](https://github.com/Lymphatus/caesium-clt). Alternatively, use [Squoosh.app](https://squoosh.app/) to do the same thing for the [JPEG-XL](https://github.com/libjxl/libjxl) converter.
+
 ## Features
 
 - Intercepts image uploads to the Immich server.
