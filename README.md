@@ -39,7 +39,7 @@ You can use [Caesium.app](https://caesium.app/) to experiment with different qua
 2. Restart your Docker Compose services:
 
     ```sh
-    docker-compose restart
+    docker compose restart
     ```
 
 ## Available flags
