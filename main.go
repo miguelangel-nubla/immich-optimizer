@@ -40,6 +40,7 @@ func init() {
 	viper.BindEnv("upstream")
 	viper.BindEnv("listen")
 	viper.BindEnv("convert_cmd")
+	viper.BindEnv("extension_whitelist")
 	viper.BindEnv("filter_path")
 	viper.BindEnv("filter_form_key")
 
