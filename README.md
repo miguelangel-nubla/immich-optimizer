@@ -6,6 +6,10 @@ Immich Upload Optimizer is a proxy designed to be placed in front of the Immich 
 
 By default, Immich Upload Optimizer uses lossless optimization, ensuring that no information is lost during the image optimization process. This means that the quality of your images remains unchanged while reducing their file size.
 
+> [!NOTE]
+> Image viewer in Immich will not show the stored image, so you can find compression artifacts.
+> Download the file and open it with an external viewer to view the real image stored on your library.
+
 If you prefer to save more storage space, you can modify the optimization parameters to perform lossy optimization. This can reduce the file size considerably (around 80% less) while maintaining the same perceived quality. To do this, adjust `-convert_cmd` to use a lossy compression setting.
 
 You can use [Caesium.app](https://caesium.app/) to experiment with different quality settings live before modifying the `-convert_cmd` according to the optimizer documentation. For the specific parameters, refer to the [Caesium CLI documentation](https://github.com/Lymphatus/caesium-clt). Alternatively, use [Squoosh.app](https://squoosh.app/) to do the same thing for the [JPEG-XL](https://github.com/libjxl/libjxl) converter.
