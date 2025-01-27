@@ -1,0 +1,45 @@
+tasks:
+  - name: passthrough-images
+    command: ""
+    extensions:
+      # https://immich.app/docs/features/supported-formats/
+      - avif
+      - bmp
+      - gif
+      - heic
+      - heif
+      - webp
+      - jpg
+      - jpe
+      - insp
+      - jxl
+      - webp
+      - psd
+      - raw
+      - rw2
+      - svg
+      - tif
+      - tiff
+      - webp
+
+  - name: passthrough-videos
+    command: ""
+    extensions:
+      # https://immich.app/docs/features/supported-formats/
+      - 3gp
+      - 3gpp
+      - avi
+      - flv
+      - m4v
+      - mkv
+      - mts
+      - m2ts
+      - m2t
+      - mp4
+      - insv
+      - mpg
+      - mpe
+      - mpeg
+      - mov
+      - webm
+      - wmv

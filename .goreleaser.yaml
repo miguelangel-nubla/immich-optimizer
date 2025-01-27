@@ -18,6 +18,25 @@ builds:
     goarm:
       - 7
 dockers:
+  # Full image with Caesium, JPEG-XL and Handbrake for video. libjxl only has builds for amd64
+  -
+    image_templates:
+    - "ghcr.io/miguelangel-nubla/{{.ProjectName}}:{{ .Tag }}-amd64"
+    dockerfile: 'Dockerfile.caesium.goreleaser'
+    use: buildx
+    build_flag_templates:
+    - "--pull"
+    - "--platform=linux/amd64"
+    - "--label=org.opencontainers.image.created={{.Date}}"
+    - "--label=org.opencontainers.image.title={{.ProjectName}}"
+    - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+    - "--label=org.opencontainers.image.version={{.Version}}"
+    - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+    - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+    extra_files:
+    - config
+    - LICENSE
+
   # CAESIUM
   -
     image_templates:
@@ -34,6 +53,7 @@ dockers:
     - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
     - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
     extra_files:
+    - config
     - LICENSE
   -
     image_templates:
@@ -50,6 +70,7 @@ dockers:
     - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
     - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
     extra_files:
+    - config
     - LICENSE
 
   # JXL
@@ -68,8 +89,27 @@ dockers:
     - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
     - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
     extra_files:
+    - config
     - LICENSE
 docker_manifests:
+  # Full image with Caesium, JPEG-XL and Handbrake for video
+  - 
+    name_template: ghcr.io/miguelangel-nubla/{{ .ProjectName }}:latest
+    image_templates:
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-amd64
+  - 
+    name_template: ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}
+    image_templates:
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-amd64
+  - 
+    name_template: ghcr.io/miguelangel-nubla/{{.ProjectName}}:v{{ .Major }}
+    image_templates:
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-amd64
+  - 
+    name_template: ghcr.io/miguelangel-nubla/{{.ProjectName}}:v{{ .Major }}.{{ .Minor }}
+    image_templates:
+    - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-amd64
+
   # CAESIUM
   - 
     name_template: ghcr.io/miguelangel-nubla/{{ .ProjectName }}-caesium:latest

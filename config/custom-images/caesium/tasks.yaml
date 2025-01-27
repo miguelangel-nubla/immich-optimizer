@@ -1,0 +1,11 @@
+tasks:
+  - name: caesium
+    command: caesiumclt --keep-dates --exif --quality=0 --output={{.folder}} {{.folder}}/{{.name}}.{{.extension}}
+    extensions:
+      - jpeg
+      - jpg
+      - png
+      - tiff
+      - tif
+      - webp
+      - gif

@@ -4,7 +4,8 @@ RUN apt-get update && \
 ARG TARGETPLATFORM
 ARG JXL_GITHUB_REPO=libjxl/libjxl
 RUN JXL_LATEST_RELEASE=$(curl -s https://api.github.com/repos/$JXL_GITHUB_REPO/releases/latest | jq -r '.tag_name') \
-    && if [ "$TARGETPLATFORM" = "linux/amd64" ]; then JXL_ARCH=linux-x86_64-static; else echo "Platform not supported by libjxl"; exit 126; fi \
+    && if [ "$TARGETPLATFORM" = "linux/amd64" ]; then JXL_ARCH=linux-x86_64-static; \
+       else echo "Platform not supported by ${JXL_GITHUB_REPO}"; exit 126; fi \
     && JXL_ARCHIVE=jxl-${JXL_ARCH}-${JXL_LATEST_RELEASE} \
     && curl -sS -L -O --output-dir /tmp/ --create-dirs  "https://github.com/$JXL_GITHUB_REPO/releases/latest/download/${JXL_ARCHIVE}.tar.gz" \
     && tar xzf "/tmp/${JXL_ARCHIVE}.tar.gz" -C /tmp/ \
@@ -14,8 +15,8 @@ FROM alpine
 
 COPY --from=builder /usr/local/bin/cjxl /usr/local/bin/cjxl
 
-ENV IUO_CONVERT_CMD="cjxl --lossless_jpeg=1 {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}-new.jxl && rm {{.folder}}/{{.name}}.{{.extension}}"
-ENV IUO_EXTENSION_WHITELIST="jpeg,jpg,png,pgx,pam,pnm,pgm,ppm,pfm,gif,exr"
+COPY config/custom-images/jxl /etc/immich-upload-optimizer/config
+ENV IUO_TASKS_FILE=/etc/immich-upload-optimizer/config/tasks.yaml
 
-COPY immich-upload-optimizer /
-CMD ["/immich-upload-optimizer"]
+COPY immich-upload-optimizer /usr/local/bin/
+CMD ["immich-upload-optimizer"]

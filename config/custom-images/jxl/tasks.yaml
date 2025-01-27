@@ -1,0 +1,15 @@
+tasks:
+  - name: jpeg-xl
+    command: cjxl --lossless_jpeg=1 {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}-new.jxl && rm {{.folder}}/{{.name}}.{{.extension}}
+    extensions:
+      - jpeg
+      - jpg
+      - png
+      - pgx
+      - pam
+      - pnm
+      - pgm
+      - ppm
+      - pfm
+      - gif
+      - exr
