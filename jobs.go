@@ -67,7 +67,9 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 	processedFile, newExtension, newSize, err := processTasks(originalFile, extension, jobLogger)
 	if err != nil {
 		jobLogger.Printf("failed to process file: %v", err.Error())
-		http.Error(w, "failed to process file, view logs for more info", http.StatusInternalServerError)
+		if !clientFollowsRedirects {
+			http.Error(w, "failed to process file, view logs for more info", http.StatusInternalServerError)
+		}
 		return
 	}
 
