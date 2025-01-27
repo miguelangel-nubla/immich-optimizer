@@ -22,7 +22,7 @@ dockers:
   -
     image_templates:
     - "ghcr.io/miguelangel-nubla/{{.ProjectName}}:{{ .Tag }}-amd64"
-    dockerfile: 'Dockerfile.caesium.goreleaser'
+    dockerfile: 'Dockerfile.goreleaser'
     use: buildx
     build_flag_templates:
     - "--pull"
