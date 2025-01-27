@@ -187,6 +187,12 @@ func continueJob(r *http.Request, w http.ResponseWriter, requestLogger *customLo
 
 	jobLogger := newCustomLogger(requestLogger, fmt.Sprintf("job %s: ", jobID))
 
+	// Parse the form data again as not to leave the POST hanging, some proxies like cloudflare will error without this.
+	err := r.ParseMultipartForm(10 << 20) // store up to 10 MB in memory to prevent disk writes
+	if err != nil {
+		// ignore as we already have the data
+	}
+
 	// 55s to avoid browser timeout
 	safeClientTimeout := time.Duration(55) * time.Second
 
@@ -198,6 +204,12 @@ func continueJob(r *http.Request, w http.ResponseWriter, requestLogger *customLo
 			requestLogger.Printf(msg)
 			return
 		}
+		// Seems not needed so do not bother, risk of introducing bugs if client validates any header.
+		// for key, values := range resp.Header {
+		// 	for _, value := range values {
+		// 		w.Header().Add(key, value)
+		// 	}
+		// }
 		w.WriteHeader(resp.StatusCode)
 		_, err := io.Copy(w, resp.Body)
 		if err != nil {
