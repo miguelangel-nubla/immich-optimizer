@@ -14,6 +14,12 @@ import (
 	"github.com/spf13/viper"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 var remote *url.URL
 
 var (
@@ -24,6 +30,7 @@ var (
 var jobChannels = make(map[string]chan *http.Response)
 var jobChannelsComplete = make(map[string]chan struct{})
 
+var showVersion bool
 var upstreamURL string
 var listenAddr string
 var configFile string
@@ -47,12 +54,19 @@ func init() {
 	viper.SetDefault("filter_path", "/api/assets")
 	viper.SetDefault("filter_form_key", "assetData")
 
+	flag.BoolVar(&showVersion, "version", false, "Show the current version")
 	flag.StringVar(&upstreamURL, "upstream", viper.GetString("upstream"), "Upstream URL. Example: http://immich-server:2283")
 	flag.StringVar(&listenAddr, "listen", viper.GetString("listen"), "Listening address")
 	flag.StringVar(&configFile, "tasks_file", viper.GetString("tasks_file"), "Path to the configuration file")
 	flag.StringVar(&filterPath, "filter_path", viper.GetString("filter_path"), "Only convert files uploaded to specific path. Advanced, leave default for immich")
 	flag.StringVar(&filterFormKey, "filter_form_key", viper.GetString("filter_form_key"), "Only convert files uploaded with specific form key. Advanced, leave default for immich")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(printVersion())
+		os.Exit(0)
+	}
+
 	validateInput()
 }
 
@@ -114,8 +128,12 @@ func main() {
 		Handler: http.HandlerFunc(handler),
 	}
 
-	log.Printf("Starting immich-upload-optimizer on %s...", listenAddr)
+	log.Printf("Starting %s on %s...", printVersion(), listenAddr)
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Error starting immich-upload-optimizer: %v", err)
 	}
+}
+
+func printVersion() string {
+	return fmt.Sprintf("immich-upload-optimizer %s, commit %s, built at %s", version, commit, date)
 }
