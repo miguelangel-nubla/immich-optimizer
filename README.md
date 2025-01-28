@@ -1,6 +1,6 @@
 # Immich Upload Optimizer
 
-Immich Upload Optimizer is a proxy designed to be placed in front of the Immich server. It intercepts file uploads and uses an external CLI program (by default, [Caesium](https://github.com/Lymphatus/caesium-clt)) to optimize, resize, or compress images and videos before they are stored on the Immich server. This helps save storage space on the Immich server by reducing the size of uploaded files.
+Immich Upload Optimizer is a proxy designed to be placed in front of the Immich server. It intercepts file uploads and uses an external CLI program (by default [JPEG-XL](https://github.com/libjxl/libjxl), [Caesium](https://github.com/Lymphatus/caesium-clt) and [HandBrake](https://github.com/HandBrake/HandBrake)) to optimize, resize, or compress images and videos before they are stored on the Immich server. This helps save storage space on the Immich server by reducing the size of uploaded files.
 
 ## Features
 
@@ -16,7 +16,7 @@ By default, Immich Upload Optimizer uses lossless optimization for **images**, e
 > Image viewer in Immich will not show the stored image, so you can find compression artifacts.
 > Download the file and open it with an external viewer to view the real image stored on your library.
 
-If you prefer to save more storage space, you can modify the optimization parameters to perform lossy optimization. This can reduce the file size considerably (around 80% less) while maintaining the same perceived quality. To do this, adjust the task command to use a lossy compression setting.
+If you prefer to save more storage space, you can modify the optimization parameters to perform lossy optimization. This can reduce the file size considerably (around 80% less) while maintaining the same perceived quality. To do this, adjust the task command to use a lossy compression setting like in my [personal config](config/personal/).
 
 ### Images
 You can use [Caesium.app](https://caesium.app/) to experiment with different quality settings live before modifying the task according to the optimizer documentation. For the specific parameters, refer to the [Caesium CLI documentation](https://github.com/Lymphatus/caesium-clt). Alternatively, use [Squoosh.app](https://squoosh.app/) to do the same thing for the [JPEG-XL](https://github.com/libjxl/libjxl) converter.
@@ -67,7 +67,7 @@ By default video conversion is disabled since no known lossless video transcodin
 - `ghcr.io/miguelangel-nubla/immich-upload-optimizer-caesium`: Image with only Caesium converter. Available for `amd64` and `arm64v8`.
 - `ghcr.io/miguelangel-nubla/immich-upload-optimizer-jxl`: Image with only JXL converter. Available only for `amd64`.
 
-If you decide to use the binaries from the release instead, you need to install the required applications on the base system. Ensure that the converter programs (e.g., Caesium-cli, libjxl, HandBrakeCLI) are available in your system's PATH so that Immich Upload Optimizer can invoke them correctly.
+If you decide to use the binaries from the release instead, you need to install the required applications on the base system. Ensure that the converter programs (e.g., caesium-clt, cjxl, HandBrakeCLI) are available in your system's PATH so that Immich Upload Optimizer can invoke them correctly.
 
 ## License
 
