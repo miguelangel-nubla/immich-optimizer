@@ -92,4 +92,5 @@ This project is a complete rewrite from scratch of the original idea by [JamesCu
 - [JamesCullum/multipart-upload-proxy](https://github.com/JamesCullum/multipart-upload-proxy) for the original idea.
 - [Caesium](https://github.com/Lymphatus/caesium)
 - [libjxl](https://github.com/libjxl/libjxl)
+- [HandBrakeCLI](https://github.com/HandBrake/HandBrake)
 - [Immich](https://github.com/immich-app/immich)
