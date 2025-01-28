@@ -44,11 +44,11 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 
 	// Create the channels for this job
 	jobChannels[jobID] = make(chan *http.Response)
-	defer close(jobChannels[jobID])
-	defer delete(jobChannels, jobID)
+	//defer close(jobChannels[jobID]) // Done bellow to allow original http request to be closed first
+	//defer delete(jobChannels, jobID) // Done bellow to allow original http request to be closed first
 	jobChannelsComplete[jobID] = make(chan struct{})
-	defer close(jobChannelsComplete[jobID])
-	defer delete(jobChannelsComplete, jobID)
+	//defer close(jobChannelsComplete[jobID])  // Done bellow to allow original http request to be closed first
+	//defer delete(jobChannelsComplete, jobID) // Done bellow to allow original http request to be closed first
 
 	// Redirect the user to the job wait page
 	if clientFollowsRedirects {
@@ -138,7 +138,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 		err = fmt.Errorf("unable to POST to upstream: %w", err)
 		return
 	}
-	defer resp.Body.Close()
+	//defer resp.Body.Close() // Done bellow to allow original http request to be closed first
 
 	// Log the result
 	action := "file NOT replaced"
@@ -148,7 +148,17 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 
 	jobLogger.Printf("%s: \"%s\" %s optimized to \"%s\" %s", action, originalFilename, humanReadableSize(originalSize), newFilename, humanReadableSize(newSize))
 
+	cleanup := func() {
+		close(jobChannels[jobID])
+		delete(jobChannels, jobID)
+		close(jobChannelsComplete[jobID])
+		delete(jobChannelsComplete, jobID)
+		resp.Body.Close()
+	}
+
 	if !clientFollowsRedirects {
+		defer cleanup()
+
 		w.WriteHeader(resp.StatusCode)
 		_, err := io.Copy(w, resp.Body)
 		if err != nil {
@@ -159,20 +169,25 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 		return nil
 	}
 
-	// Send the response back to the client via the wait page
-	select {
-	case jobChannels[jobID] <- resp:
-		// Wait for the response to be sent to the client before cleaning up or timeout.
-		// This is to avoid all the deferred functions to run before the response is fully sent.
+	// Allow the function to return so the client request ends
+	go func() {
+		defer cleanup()
+
+		// Send the response back to the client via the wait page
 		select {
-		case <-jobChannelsComplete[jobID]:
-			jobLogger.Printf("response sent to client")
+		case jobChannels[jobID] <- resp:
+			// Wait for the response to be sent to the client before cleaning up or timeout.
+			// This is to avoid all the deferred functions to run before the response is fully sent.
+			select {
+			case <-jobChannelsComplete[jobID]:
+				jobLogger.Printf("response sent to client")
+			case <-time.After(10 * time.Second):
+				jobLogger.Printf("timeout before response was fully sent to client")
+			}
 		case <-time.After(10 * time.Second):
-			jobLogger.Printf("timeout before response was fully sent to client")
+			jobLogger.Printf("timeout while waiting for client to ask for a response on the redirect wait page, redirect was not followed by the client.")
 		}
-	case <-time.After(10 * time.Second):
-		jobLogger.Printf("timeout while waiting for client to ask for a response on the redirect wait page, redirect was not followed by the client.")
-	}
+	}()
 
 	return nil
 }
@@ -204,7 +219,9 @@ func continueJob(r *http.Request, w http.ResponseWriter, requestLogger *customLo
 			requestLogger.Printf(msg)
 			return
 		}
-		// Seems not needed so do not bother, risk of introducing bugs if client validates any header.
+		// @TODO
+		// It prevents cookie headers from being forwarded, potentially leaking them,
+		// so when done a job should only match if it belongs to the corresponding session.
 		// for key, values := range resp.Header {
 		// 	for _, value := range values {
 		// 		w.Header().Add(key, value)
