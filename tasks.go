@@ -29,7 +29,7 @@ func processTasks(originalFile io.Reader, originalExtension string, logger *cust
 		var convErr error
 		processedFile, processedExtension, processedSize, convErr = processFile(task.CommandTemplate, originalFile, originalExtension, logger)
 		if convErr != nil {
-			errors = append(errors, fmt.Errorf("task %s failed: %w", task.Name, convErr))
+			errors = append(errors, fmt.Errorf("\ntask %s failed: %w", task.Name, convErr))
 			continue
 		}
 		err = nil

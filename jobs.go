@@ -44,11 +44,14 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 
 	// Create the channels for this job
 	jobChannels[jobID] = make(chan *http.Response)
-	//defer close(jobChannels[jobID]) // Done bellow to allow original http request to be closed first
-	//defer delete(jobChannels, jobID) // Done bellow to allow original http request to be closed first
 	jobChannelsComplete[jobID] = make(chan struct{})
-	//defer close(jobChannelsComplete[jobID])  // Done bellow to allow original http request to be closed first
-	//defer delete(jobChannelsComplete, jobID) // Done bellow to allow original http request to be closed first
+
+	cleanup1 := func() {
+		close(jobChannels[jobID])
+		delete(jobChannels, jobID)
+		close(jobChannelsComplete[jobID])
+		delete(jobChannelsComplete, jobID)
+	}
 
 	// Redirect the user to the job wait page
 	if clientFollowsRedirects {
@@ -66,10 +69,12 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 
 	processedFile, newExtension, newSize, err := processTasks(originalFile, extension, jobLogger)
 	if err != nil {
-		jobLogger.Printf("failed to process file: %v", err.Error())
+		err = fmt.Errorf("failed to process file in job %s: \n%v", jobID, err.Error())
 		if !clientFollowsRedirects {
 			http.Error(w, "failed to process file, view logs for more info", http.StatusInternalServerError)
 		}
+
+		cleanup1()
 		return
 	}
 
@@ -148,30 +153,27 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 
 	jobLogger.Printf("%s: \"%s\" %s optimized to \"%s\" %s", action, originalFilename, humanReadableSize(originalSize), newFilename, humanReadableSize(newSize))
 
-	cleanup := func() {
-		close(jobChannels[jobID])
-		delete(jobChannels, jobID)
-		close(jobChannelsComplete[jobID])
-		delete(jobChannelsComplete, jobID)
+	cleanup2 := func() {
+		cleanup1()
 		resp.Body.Close()
 	}
 
 	if !clientFollowsRedirects {
-		defer cleanup()
+		defer cleanup2()
 
 		w.WriteHeader(resp.StatusCode)
-		_, err := io.Copy(w, resp.Body)
+		_, err = io.Copy(w, resp.Body)
 		if err != nil {
-			jobLogger.Printf("unable to forward response back to client directly: %v", err)
+			err = fmt.Errorf("unable to forward response back to client directly: %v", err)
 		} else {
 			jobLogger.Printf("response sent back to client directly")
 		}
-		return nil
+		return
 	}
 
 	// Allow the function to return so the client request ends
 	go func() {
-		defer cleanup()
+		defer cleanup2()
 
 		// Send the response back to the client via the wait page
 		select {
