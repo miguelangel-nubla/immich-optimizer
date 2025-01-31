@@ -14,22 +14,12 @@ RUN CAESIUM_LATEST_RELEASE=$(curl -s https://api.github.com/repos/$CAESIUM_GITHU
     && tar xzf "/tmp/${CAESIUM_ARCHIVE}.tar.gz" -C /tmp \
     && mv "/tmp/${CAESIUM_ARCHIVE}/caesiumclt" /usr/local/bin/caesiumclt
 
-ARG JXL_GITHUB_REPO=libjxl/libjxl
-RUN JXL_LATEST_RELEASE=$(curl -s https://api.github.com/repos/$JXL_GITHUB_REPO/releases/latest | jq -r '.tag_name') \
-    && if [ "$TARGETPLATFORM" = "linux/amd64" ]; then JXL_ARCH=linux-x86_64-static; \
-       else echo "Platform not supported by ${JXL_GITHUB_REPO}"; exit 126; fi \
-    && JXL_ARCHIVE=jxl-${JXL_ARCH}-${JXL_LATEST_RELEASE} \
-    && curl -sS -L -O --output-dir /tmp/ --create-dirs  "https://github.com/$JXL_GITHUB_REPO/releases/latest/download/${JXL_ARCHIVE}.tar.gz" \
-    && tar xzf "/tmp/${JXL_ARCHIVE}.tar.gz" -C /tmp/ \
-    && mv "/tmp/tools/cjxl" /usr/local/bin/cjxl
-
 # at the time only arch has recent handbrake version
 FROM archlinux
 
-RUN pacman -Syu --noconfirm handbrake-cli
+RUN pacman -Syu --noconfirm handbrake-cli libjxl
 
 COPY --from=builder /usr/local/bin/caesiumclt /usr/local/bin/caesiumclt
-COPY --from=builder /usr/local/bin/cjxl /usr/local/bin/cjxl
 
 COPY config/lossless /etc/immich-upload-optimizer/config
 ENV IUO_TASKS_FILE=/etc/immich-upload-optimizer/config/tasks.yaml
