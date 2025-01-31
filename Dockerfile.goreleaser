@@ -14,11 +14,11 @@ RUN CAESIUM_LATEST_RELEASE=$(curl -s https://api.github.com/repos/$CAESIUM_GITHU
     && tar xzf "/tmp/${CAESIUM_ARCHIVE}.tar.gz" -C /tmp \
     && mv "/tmp/${CAESIUM_ARCHIVE}/caesiumclt" /usr/local/bin/caesiumclt
 
-# at the time only arch has recent handbrake version
 FROM debian:sid-slim
 
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get -qq -y install handbrake-cli libjxl-tools
+RUN apt-get update
+RUN DEBIAN_FRONTEND=noninteractive apt-get -qq -y install jq curl libjxl-tools
+RUN DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends -qq -y install handbrake-cli ffmpeg imagemagick
 
 COPY --from=builder /usr/local/bin/caesiumclt /usr/local/bin/caesiumclt
 
