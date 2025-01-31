@@ -42,6 +42,24 @@ In this example, the task is executed for files with the `.jpeg` or `.jpg` exten
 - `extensions`: The file extensions to match.
 - `command`: The command to execute for that task.
 
+## Docker
+
+If you are running on docker remember to mount a folder with the custom tasks.yaml folder inside the container in order to be able to load it
+
+```yaml
+services:
+  immich-upload-optimizer:
+    image: ghcr.io/miguelangel-nubla/immich-upload-optimizer:latest
+    ports:
+      - "2283:2283"
+    volumes:
+      - <full path to folder with the config>:/etc/immich-upload-optimizer/config
+    environment:
+      - IUO_UPSTREAM=http://immich-server:2283
+    depends_on:
+      - immich-server
+```
+
 ## Notes
 
 - Ensure that the file extensions and commands are correctly specified.
