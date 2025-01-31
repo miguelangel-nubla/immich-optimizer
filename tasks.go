@@ -17,6 +17,8 @@ func processTasks(originalFile io.Reader, originalExtension string, logger *cust
 	semaphore <- struct{}{}
 	defer func() { <-semaphore }()
 
+	originalExtension = strings.ToLower(originalExtension)
+
 	err = fmt.Errorf("no task found for file extension %s", originalExtension)
 	var errors []error
 
@@ -46,6 +48,8 @@ func processTasks(originalFile io.Reader, originalExtension string, logger *cust
 }
 
 func processFile(commandTemplate *template.Template, originalFile io.Reader, originalExtension string, logger *customLogger) (processedFile io.Reader, processedExtension string, processedSize int64, err error) {
+	originalExtension = strings.ToLower(originalExtension)
+
 	tempDir, err := os.MkdirTemp("", "processing-*")
 	if err != nil {
 		err = fmt.Errorf("unable to create temp folder: %w", err)
@@ -107,7 +111,7 @@ func processFile(commandTemplate *template.Template, originalFile io.Reader, ori
 		return
 	}
 
-	processedExtension = path.Ext(files[0].Name())
+	processedExtension = strings.ToLower(path.Ext(files[0].Name()))
 
 	stat, err := os.Stat(path.Join(tempDir, files[0].Name()))
 	if err != nil {
