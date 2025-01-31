@@ -15,9 +15,10 @@ RUN CAESIUM_LATEST_RELEASE=$(curl -s https://api.github.com/repos/$CAESIUM_GITHU
     && mv "/tmp/${CAESIUM_ARCHIVE}/caesiumclt" /usr/local/bin/caesiumclt
 
 # at the time only arch has recent handbrake version
-FROM archlinux
+FROM debian:sid-slim
 
-RUN pacman -Syu --noconfirm handbrake-cli libjxl
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -qq -y install handbrake-cli libjxl-tools
 
 COPY --from=builder /usr/local/bin/caesiumclt /usr/local/bin/caesiumclt
 

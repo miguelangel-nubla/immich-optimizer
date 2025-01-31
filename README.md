@@ -61,14 +61,6 @@ By default video conversion is disabled since no known lossless video transcodin
 
   All flags are available as enviroment variables using the prefix `IUO_`.
 
-## Available docker images
-
-- `ghcr.io/miguelangel-nubla/immich-upload-optimizer`: Full image with all converters (Caesium, JXL, and HandBrake). Available only for `amd64`.
-- `ghcr.io/miguelangel-nubla/immich-upload-optimizer-caesium`: Image with only Caesium converter. Available for `amd64` and `arm64v8`.
-- `ghcr.io/miguelangel-nubla/immich-upload-optimizer-jxl`: Image with only JXL converter. Available only for `amd64`.
-
-If you decide to use the binaries from the release instead, you need to install the required applications on the base system. Ensure that the converter programs (e.g., caesium-clt, cjxl, HandBrakeCLI) are available in your system's PATH so that Immich Upload Optimizer can invoke them correctly.
-
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
