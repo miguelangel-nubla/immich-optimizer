@@ -55,7 +55,6 @@ By default video conversion is disabled since no known lossless video transcodin
   - `-upstream`: The URL of the Immich server (e.g., `http://immich-server:2283`).
   - `-listen`: The address on which the proxy will listen (default: `:2283`).
   - `-tasks_file`: Path to the [tasks configuration file](TASKS.md).
-  - `-extension_whitelist`: A comma-separated list of file extensions to process. Defaults to the supported extensions of the bundled converter.
   - `-filter_path`: The path to filter file uploads (default: `/api/assets`).
   - `-filter_form_key`: The form key to filter file uploads (default: `assetData`).
 
