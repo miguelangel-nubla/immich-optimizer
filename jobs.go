@@ -29,18 +29,14 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 
 	jobLogger.Printf("intercepting upload")
 
-	// Parse the form data
-	err = r.ParseMultipartForm(0) // always write to file
-	if err != nil {
-		err = fmt.Errorf("unable to parse multipart form: %w", err)
-		return
-	}
-	originalFile, handler, err := r.FormFile(filterFormKey)
+	formFile, formFileHeader, err := r.FormFile(filterFormKey)
 	if err != nil {
 		err = fmt.Errorf("unable to read file in key %s from uploaded form data: %w", filterFormKey, err)
 		return
 	}
-	defer originalFile.Close()
+	formFile.Close()
+
+	jobLogger.Printf("uploaded %s %s", formFileHeader.Filename, humanReadableSize(formFileHeader.Size))
 
 	// Create the channels for this job
 	jobChannels[jobID] = make(chan *http.Response)
@@ -60,26 +56,34 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 	}
 
 	// Continue processing the file
-	originalSize := handler.Size
-	originalFilename := handler.Filename
-	basename := path.Base(originalFilename)
-	extension := path.Ext(basename)
-
-	jobLogger.Printf("uploaded %s %s", originalFilename, humanReadableSize(originalSize))
-
-	processedFile, newExtension, newSize, err := processTasks(originalFile, extension, jobLogger)
+	tp, err := NewTaskProcessorFromMultipart(formFile, formFileHeader)
 	if err != nil {
+		defer cleanup1()
+		err = fmt.Errorf("unable to create task processor: %w", err)
+		if !clientFollowsRedirects {
+			http.Error(w, "failed to process file, view logs for more info", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	tp.SetLogger(jobLogger)
+
+	cleanup2 := func() {
+		tp.Clean()
+		cleanup1()
+	}
+
+	err = tp.Process(config.Tasks)
+	if err != nil {
+		defer cleanup2()
 		err = fmt.Errorf("failed to process file in job %s: \n%v", jobID, err.Error())
 		if !clientFollowsRedirects {
 			http.Error(w, "failed to process file, view logs for more info", http.StatusInternalServerError)
 		}
-
-		cleanup1()
 		return
 	}
 
-	newFilename := strings.TrimSuffix(originalFilename, extension) + newExtension
-	replaced := originalSize > newSize
+	replace := tp.OriginalSize > tp.ProcessedSize
 
 	// Create the form data to be sent upstream
 	var buffer bytes.Buffer
@@ -89,35 +93,37 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 		for _, value := range values {
 			err = writer.WriteField(key, value)
 			if err != nil {
+				defer cleanup2()
 				err = fmt.Errorf("unable to create form data to be sent upstream: %w", err)
 				return
 			}
 		}
 	}
 
-	uploadFilename := originalFilename
-	if replaced {
-		uploadFilename = newFilename
+	uploadFilename := tp.OriginalFilename
+	uploadFile := tp.OriginalFile
+	if replace {
+		uploadFilename = tp.ProcessedFilename
+		uploadFile = tp.ProcessedFile
 	}
+
 	part, err := writer.CreateFormFile(filterFormKey, uploadFilename)
 	if err != nil {
+		defer cleanup2()
 		err = fmt.Errorf("unable to create file form field to be sent upstream: %w", err)
 		return
 	}
 
-	if replaced {
-		_, err = io.Copy(part, processedFile)
-	} else {
-		// multipart.File is io.ReaderAt, so we can't just copy it assuming it is at the beginning of the file.
-		_, err = io.Copy(part, io.NewSectionReader(originalFile, 0, originalSize))
-	}
+	_, err = io.Copy(part, uploadFile)
 	if err != nil {
+		defer cleanup2()
 		err = fmt.Errorf("unable to write file in form field to be sent upstream: %w", err)
 		return
 	}
 
 	err = writer.Close()
 	if err != nil {
+		defer cleanup2()
 		err = fmt.Errorf("unable to finish form data to be sent upstream: %w", err)
 		return
 	}
@@ -127,6 +133,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 	destination.Path = path.Join(destination.Path, r.URL.Path)
 	req, err := http.NewRequest("POST", destination.String(), &buffer)
 	if err != nil {
+		defer cleanup2()
 		err = fmt.Errorf("unable to create POST request to upstream: %w", err)
 		return
 	}
@@ -140,6 +147,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
+		defer cleanup2()
 		err = fmt.Errorf("unable to POST to upstream: %w", err)
 		return
 	}
@@ -147,19 +155,19 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 
 	// Log the result
 	action := "file NOT replaced"
-	if replaced {
+	if replace {
 		action = "file replaced"
 	}
 
-	jobLogger.Printf("%s: \"%s\" %s optimized to \"%s\" %s", action, originalFilename, humanReadableSize(originalSize), newFilename, humanReadableSize(newSize))
+	jobLogger.Printf("%s: \"%s\" %s optimized to \"%s\" %s", action, tp.OriginalFilename, humanReadableSize(tp.OriginalSize), tp.ProcessedFilename, humanReadableSize(tp.ProcessedSize))
 
-	cleanup2 := func() {
-		cleanup1()
+	cleanup3 := func() {
 		resp.Body.Close()
+		cleanup2()
 	}
 
 	if !clientFollowsRedirects {
-		defer cleanup2()
+		defer cleanup3()
 
 		w.WriteHeader(resp.StatusCode)
 		_, err = io.Copy(w, resp.Body)
@@ -173,7 +181,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 
 	// Allow the function to return so the client request ends
 	go func() {
-		defer cleanup2()
+		defer cleanup3()
 
 		// Send the response back to the client via the wait page
 		select {

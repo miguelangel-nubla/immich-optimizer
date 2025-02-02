@@ -4,34 +4,94 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 	"text/template"
 )
 
-func processTasks(originalFile io.Reader, originalExtension string, logger *customLogger) (processedFile io.Reader, processedExtension string, processedSize int64, err error) {
-	// Limit the number of concurrent tasks
-	semaphore <- struct{}{}
-	defer func() { <-semaphore }()
+type TaskProcessor struct {
+	OriginalFilename  string
+	OriginalFile      io.Reader
+	OriginalExtension string
+	OriginalSize      int64
 
-	originalExtension = strings.ToLower(originalExtension)
+	ProcessedFilename  string
+	ProcessedFile      io.Reader
+	ProcessedExtension string
+	ProcessedSize      int64
 
-	err = fmt.Errorf("no task found for file extension %s", originalExtension)
+	tempDir string
+
+	logger *customLogger
+}
+
+func NewTaskProcessor(filename string) (tp *TaskProcessor, err error) {
+	originalFile, err := os.Open(filename)
+	if err != nil {
+		return nil, fmt.Errorf("unable to open file: %w", err)
+	}
+
+	stat, err := originalFile.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("unable to get file info: %w", err)
+	}
+
+	originalSize := stat.Size()
+	originalExtension := strings.ToLower(path.Ext(filename))
+
+	tp = &TaskProcessor{
+		OriginalFilename:  filepath.Base(filename),
+		OriginalFile:      originalFile,
+		OriginalExtension: originalExtension,
+		OriginalSize:      originalSize,
+	}
+
+	return
+}
+
+func NewTaskProcessorFromMultipart(file multipart.File, header *multipart.FileHeader) (tp *TaskProcessor, err error) {
+	originalSize := header.Size
+	originalExtension := strings.ToLower(path.Ext(header.Filename))
+
+	tp = &TaskProcessor{
+		OriginalFilename:  header.Filename,
+		OriginalFile:      file,
+		OriginalExtension: originalExtension,
+		OriginalSize:      originalSize,
+	}
+
+	return
+}
+
+func (tp *TaskProcessor) SetLogger(logger *customLogger) {
+	tp.logger = logger
+}
+
+func (tp *TaskProcessor) logf(str string, args ...interface{}) {
+	if tp.logger != nil {
+		tp.logger.Printf(str, args...)
+	}
+}
+
+func (tp *TaskProcessor) Process(tasks []Task) (err error) {
+	err = fmt.Errorf("no task found for file extension %s", tp.OriginalExtension)
 	var errors []error
 
-	checkExt := strings.TrimPrefix(originalExtension, ".")
-	for _, task := range config.Tasks {
+	checkExt := strings.TrimPrefix(tp.OriginalExtension, ".")
+	for _, task := range tasks {
 		if !slices.Contains(task.Extensions, checkExt) {
 			continue
 		}
 
-		var convErr error
-		processedFile, processedExtension, processedSize, convErr = processFile(task.CommandTemplate, originalFile, originalExtension, logger)
+		convErr := tp.run(task.CommandTemplate)
 		if convErr != nil {
 			errors = append(errors, fmt.Errorf("\ntask %s failed: %w", task.Name, convErr))
+			tp.Clean()
 			continue
 		}
 		err = nil
@@ -47,23 +107,35 @@ func processTasks(originalFile io.Reader, originalExtension string, logger *cust
 	return
 }
 
-func processFile(commandTemplate *template.Template, originalFile io.Reader, originalExtension string, logger *customLogger) (processedFile io.Reader, processedExtension string, processedSize int64, err error) {
-	originalExtension = strings.ToLower(originalExtension)
+func (tp *TaskProcessor) Clean() (err error) {
+	if tp.tempDir != "" {
+		err = os.RemoveAll(tp.tempDir)
+		if err != nil {
+			tp.logf("unable to clean temp folder: %v", err)
+		}
+	}
 
-	tempDir, err := os.MkdirTemp("", "processing-*")
+	tp.tempDir = ""
+
+	return
+}
+
+func (tp *TaskProcessor) run(commandTemplate *template.Template) (err error) {
+	tp.Clean()
+
+	tp.tempDir, err = os.MkdirTemp("", "processing-*")
 	if err != nil {
 		err = fmt.Errorf("unable to create temp folder: %w", err)
 		return
 	}
-	//defer os.RemoveAll(tempDir)
 
-	tempFile, err := os.CreateTemp(tempDir, "file-*"+originalExtension)
+	tempFile, err := os.CreateTemp(tp.tempDir, "file-*"+tp.OriginalExtension)
 	if err != nil {
 		err = fmt.Errorf("unable to create temp file: %w", err)
 		return
 	}
 
-	_, err = io.Copy(tempFile, originalFile)
+	_, err = io.Copy(tempFile, tp.OriginalFile)
 	if err != nil {
 		err = fmt.Errorf("unable to write temp file: %w", err)
 		return
@@ -73,10 +145,11 @@ func processFile(commandTemplate *template.Template, originalFile io.Reader, ori
 	basename := path.Base(tempFile.Name())
 	extension := path.Ext(basename)
 	values := map[string]string{
-		"folder":    tempDir,
+		"folder":    tp.tempDir,
 		"name":      strings.TrimSuffix(basename, extension),
 		"extension": strings.TrimPrefix(extension, "."),
 	}
+
 	var cmdLine bytes.Buffer
 	err = commandTemplate.Execute(&cmdLine, values)
 	if err != nil {
@@ -84,7 +157,11 @@ func processFile(commandTemplate *template.Template, originalFile io.Reader, ori
 		return
 	}
 
-	logger.Printf("running: %s", cmdLine.String())
+	// Limit the number of concurrent tasks running
+	semaphore <- struct{}{}
+	defer func() { <-semaphore }()
+
+	tp.logf("running: %s", cmdLine.String())
 
 	cmd := exec.Command("sh", "-c", cmdLine.String())
 	cmd.Dir = path.Dir(configFile)
@@ -94,7 +171,7 @@ func processFile(commandTemplate *template.Template, originalFile io.Reader, ori
 		return
 	}
 
-	files, err := os.ReadDir(tempDir)
+	files, err := os.ReadDir(tp.tempDir)
 	if err != nil {
 		err = fmt.Errorf("unable to read temp directory: %w", err)
 		return
@@ -105,19 +182,21 @@ func processFile(commandTemplate *template.Template, originalFile io.Reader, ori
 		return
 	}
 
-	processedFile, err = os.Open(path.Join(tempDir, files[0].Name()))
+	tp.ProcessedFile, err = os.Open(path.Join(tp.tempDir, files[0].Name()))
 	if err != nil {
 		err = fmt.Errorf("unable to open temp file: %w", err)
 		return
 	}
 
-	processedExtension = strings.ToLower(path.Ext(files[0].Name()))
+	tp.ProcessedExtension = strings.ToLower(path.Ext(files[0].Name()))
 
-	stat, err := os.Stat(path.Join(tempDir, files[0].Name()))
+	stat, err := os.Stat(path.Join(tp.tempDir, files[0].Name()))
 	if err != nil {
 		err = fmt.Errorf("unable to get file size: %w", err)
 	}
-	processedSize = stat.Size()
+	tp.ProcessedSize = stat.Size()
+
+	tp.ProcessedFilename = strings.TrimSuffix(tp.OriginalFilename, tp.OriginalExtension) + tp.ProcessedExtension
 
 	return
 }
