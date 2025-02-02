@@ -2,6 +2,12 @@
 
 Immich Upload Optimizer is a proxy designed to be placed in front of the Immich server. It intercepts file uploads and uses an external CLI program (by default [JPEG-XL](https://github.com/libjxl/libjxl), [Caesium](https://github.com/Lymphatus/caesium-clt) and [HandBrake](https://github.com/HandBrake/HandBrake)) to optimize, resize, or compress images and videos before they are stored on the Immich server. This helps save storage space on the Immich server by reducing the size of uploaded files.
 
+## 🌟 Support the Project  
+
+Love this project? You can now [sponsor it on GitHub](https://github.com/sponsors/miguelangel-nubla)! Every contribution helps keep the project growing and improving.
+
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-GitHub-blue?style=for-the-badge&logo=github-sponsors)](https://github.com/sponsors/miguelangel-nubla)
+
 ## Features
 
 - Intercepts file uploads to the Immich server.
