@@ -69,7 +69,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 	tp.SetLogger(jobLogger)
 
 	cleanup2 := func() {
-		tp.Clean()
+		tp.Close()
 		cleanup1()
 	}
 
@@ -111,6 +111,13 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 	if err != nil {
 		defer cleanup2()
 		err = fmt.Errorf("unable to create file form field to be sent upstream: %w", err)
+		return
+	}
+
+	_, err = tp.OriginalFile.Seek(0, io.SeekStart)
+	if err != nil {
+		defer cleanup2()
+		err = fmt.Errorf("unable to seek beginning of temp file: %w", err)
 		return
 	}
 
