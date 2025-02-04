@@ -34,7 +34,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 		err = fmt.Errorf("unable to read file in key %s from uploaded form data: %w", filterFormKey, err)
 		return
 	}
-	formFile.Close()
+	defer formFile.Close()
 
 	jobLogger.Printf("uploaded %s %s", formFileHeader.Filename, humanReadableSize(formFileHeader.Size))
 
@@ -76,7 +76,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 	err = tp.Process(config.Tasks)
 	if err != nil {
 		defer cleanup2()
-		err = fmt.Errorf("failed to process file in job %s: \n%v", jobID, err.Error())
+		err = fmt.Errorf("failed to process file in job %s: %v", jobID, err.Error())
 		if !clientFollowsRedirects {
 			http.Error(w, "failed to process file, view logs for more info", http.StatusInternalServerError)
 		}
