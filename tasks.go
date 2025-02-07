@@ -60,6 +60,10 @@ func NewTaskProcessorFromMultipart(file multipart.File, header *multipart.FileHe
 	originalSize := header.Size
 	originalExtension := strings.ToLower(path.Ext(header.Filename))
 
+	if !isValidFilename(originalExtension) {
+		return nil, fmt.Errorf("invalid file extension: %s", originalExtension)
+	}
+
 	originalFile, err := os.CreateTemp("", "upload-*"+originalExtension)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create temp file: %w", err)

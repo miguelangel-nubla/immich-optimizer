@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+)
 
 func humanReadableSize(size int64) string {
 	const (
@@ -23,4 +26,9 @@ func humanReadableSize(size int64) string {
 	default:
 		return fmt.Sprintf("%d bytes", size)
 	}
+}
+
+func isValidFilename(s string) bool {
+	re := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+	return re.MatchString(s)
 }
