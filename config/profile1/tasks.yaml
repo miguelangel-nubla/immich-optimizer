@@ -15,7 +15,7 @@ tasks:
       - exr
 
   - name: heic2jxl
-    command: vips copy {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}-new.jxl[Q=75] && rm {{.folder}}/{{.name}}.{{.extension}}
+    command: ./heic2jxl.sh {{.folder}} {{.name}} {{.extension}}
     extensions:
       - heic
       - heif
@@ -51,5 +51,5 @@ tasks:
       - mov
       - webm
       - wmv
-  
+
   # Block all other formats from being uploaded.

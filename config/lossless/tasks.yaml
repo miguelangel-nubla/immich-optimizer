@@ -42,7 +42,7 @@ tasks:
       - svg
 
   # Not aware of any lossless video conversion that will result in a smaller file size than the original so keep them as-is.
-  # Check out personal config folder for lossy video conversion.
+  # Check out config folder for lossy video conversion examples.
   - name: passthrough-videos
     command: ""
     extensions:

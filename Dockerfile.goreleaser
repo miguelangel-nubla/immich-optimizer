@@ -23,7 +23,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends -qq -y instal
 COPY --from=builder /usr/local/bin/caesiumclt /usr/local/bin/caesiumclt
 
 COPY config/lossless /etc/immich-upload-optimizer/config
-COPY config /etc/immich-upload-optimizer/blunded-configs
+COPY config /etc/immich-upload-optimizer/bundled-configs
 ENV IUO_TASKS_FILE=/etc/immich-upload-optimizer/config/tasks.yaml
 
 COPY immich-upload-optimizer /usr/local/bin/
