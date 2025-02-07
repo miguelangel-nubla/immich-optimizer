@@ -1,17 +1,17 @@
 # Configuration File
 
-The YAML configuration file contains a list of tasks that are executed in order based on the file extension of the original file.
+The YAML configuration file defines a list of tasks executed sequentially based on the file extension of the uploaded file.
 
-## How to Use
+## Usage
 
-1. **Task Execution**: Tasks are executed sequentially if the file extension matches the original file.
-2. **Refusing Uploads**: If no match is found for the file extension, the upload is refused.
-3. **Keeping Extensions**: To keep files with a particular extension unchanged, leave the command as an empty string.
-4. **Fallback Execution**: If multiple tasks match the same extension, they are executed in sequence as fallbacks. The process continues until a task completes successfully or all tasks fail, in which case the upload is blocked.
+1. **Task Execution**: Tasks run in order when the file extension matches.
+2. **Upload Refusal**: If no matching extension is found, the upload is rejected.
+3. **Preserving Extensions**: To leave files unchanged, set the command to an empty string.
+4. **Fallback Execution**: When multiple tasks match an extension, they execute in sequence. The process stops when a task completes successfully. If all tasks fail, the upload is blocked.
 
 ## Configuration Structure
 
-The configuration file follows this structure:
+The configuration file follows this format:
 
 ```yaml
 tasks:
@@ -25,9 +25,9 @@ tasks:
       - png
 ```
 
-## Example
+## Example Task
 
-Here is an example entry of a task from the configuration file:
+Below is an example task entry:
 
 ```yaml
   - name: jpeg-xl
@@ -37,14 +37,42 @@ Here is an example entry of a task from the configuration file:
       - jpg
 ```
 
-In this example, the task is executed for files with the `.jpeg` or `.jpg` extension.
+This task processes `.jpeg` and `.jpg` files.
 
-- `extensions`: The file extensions to match.
-- `command`: The command to execute for that task.
+- `extensions`: Specifies file extensions to match.
+- `command`: Defines the processing command.
 
-## Docker
+### Placeholder Variables
 
-If you are running on docker remember to mount a folder with the custom tasks.yaml folder inside the container in order to be able to load it
+To ensure proper file handling, use these placeholders in your commands:
+
+- `{{.folder}}`: Temporary working directory.
+- `{{.name}}`: Filename without extension.
+- `{{.extension}}`: File extension.
+
+## Process Overview
+
+When a file is uploaded, IUO:
+
+1. Creates a temporary folder, e.g., `/tmp/processing-3398346076`.
+2. Saves the file with a unique name, e.g., `file-2612480203.jpg`.
+3. Executes the configured task command:
+
+   ```sh
+   cjxl --lossless_jpeg=1 {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}-new.jxl && rm {{.folder}}/{{.name}}.{{.extension}}
+   ```
+
+   This translates to:
+
+   ```sh
+   cjxl --lossless_jpeg=1 /tmp/processing-3398346076/file-2612480203.jpg /tmp/processing-3398346076/file-2612480203-new.jxl && rm /tmp/processing-3398346076/file-2612480203.jpg
+   ```
+
+4. If successful, IUO replaces the original file with the processed one and uploads it to Immich.
+
+## Docker Setup
+
+If using Docker, remember to mount a folder containing the `tasks.yaml` configuration file inside the container in order to be able to load it:
 
 ```yaml
 services:
@@ -53,15 +81,16 @@ services:
     ports:
       - "2283:2283"
     volumes:
-      - <full path to folder with the config>:/etc/immich-upload-optimizer/config
+      - <full path to config folder>:/etc/immich-upload-optimizer/config
     environment:
       - IUO_UPSTREAM=http://immich-server:2283
     depends_on:
       - immich-server
 ```
 
-## Notes
+## Additional Notes
 
-- Ensure that the file extensions and commands are correctly specified.
-- Tasks are executed in the order they are listed in the configuration file.
-- Long-running tasks, such as video transcoding, may exceed the client timeout for HTTP requests. This utility attempts to mitigate this by sending periodic HTTP redirects to the client, but it may not be sufficient. However, tasks will continue running in the background, and the result will be uploaded to Immich upstream regardless of client disconnection.
+- Ensure file extensions and commands are correctly specified.
+- Tasks execute in the order they appear in the configuration file.
+- Long-running tasks (e.g., video transcoding) may exceed HTTP timeouts. IUO attempts to mitigate this by sending periodic HTTP redirects, but tasks will continue in the background even if the client disconnects. The processed file will still be uploaded to Immich regardless of client disconnection.
+
