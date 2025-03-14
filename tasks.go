@@ -238,7 +238,14 @@ func (tp *TaskProcessor) run(commandTemplate *template.Template) (err error) {
 	}
 	tp.ProcessedSize = stat.Size()
 
-	tp.ProcessedFilename = strings.TrimSuffix(tp.OriginalFilename, tp.OriginalExtension) + tp.ProcessedExtension
+	tp.ProcessedFilename = TrimSuffixCaseInsensitive(tp.OriginalFilename, tp.OriginalExtension) + tp.ProcessedExtension
 
 	return
+}
+
+func TrimSuffixCaseInsensitive(str, suffix string) string {
+	if strings.HasSuffix(strings.ToLower(str), strings.ToLower(suffix)) {
+		return str[:len(str)-len(suffix)]
+	}
+	return str
 }
