@@ -14,11 +14,10 @@ RUN CAESIUM_LATEST_RELEASE=$(curl -s https://api.github.com/repos/$CAESIUM_GITHU
     && tar xzf "/tmp/${CAESIUM_ARCHIVE}.tar.gz" -C /tmp \
     && mv "/tmp/${CAESIUM_ARCHIVE}/caesiumclt" /usr/local/bin/caesiumclt
 
-FROM debian:sid-slim
+FROM jlesage/handbrake:latest
 
-RUN apt-get update
-RUN DEBIAN_FRONTEND=noninteractive apt-get -qq -y install jq curl libjxl-tools libvips-tools exiftool
-RUN DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends -qq -y install handbrake-cli ffmpeg imagemagick
+RUN apk update
+RUN apk add jq curl vips-tools exiftool ffmpeg imagemagick libc6-compat libjxl-tools
 
 COPY --from=builder /usr/local/bin/caesiumclt /usr/local/bin/caesiumclt
 
