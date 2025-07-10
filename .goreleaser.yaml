@@ -23,7 +23,7 @@ dockers:
     goarch: amd64
     image_templates:
     - "ghcr.io/miguelangel-nubla/{{.ProjectName}}:{{ .Tag }}-amd64"
-    dockerfile: 'Dockerfile.goreleaser'
+    dockerfile: 'Dockerfile.amd64.goreleaser'
     use: buildx
     build_flag_templates:
     - "--pull"
