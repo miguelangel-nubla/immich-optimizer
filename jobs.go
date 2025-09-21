@@ -18,9 +18,16 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 
 	// Check if client has broken redirect behavior, like the android app.
 	// Redirect support is necessary as file processing can take a long time and the client risks a timeout on the http request.
-	// Currently no way to check for redirect support so blacklist Dart/ user agent from the android app.
+	// Currently no way to check for redirect support so blacklist these user agents.
 	// Ideally redirect support is added here: https://github.com/immich-app/immich/blob/f6cbc9db06c0783d09f154f66e12d041032fff62/cli/src/commands/asset.ts#L290
-	clientFollowsRedirects := !strings.HasPrefix(r.UserAgent(), "Dart/")
+	brokenRedirectUserAgents := []string{"Dart/", "Dalvik/"}
+	clientFollowsRedirects := true
+	for _, userAgent := range brokenRedirectUserAgents {
+		if strings.HasPrefix(r.UserAgent(), userAgent) {
+			clientFollowsRedirects = false
+			break
+		}
+	}
 	if !clientFollowsRedirects {
 		logger = newCustomLogger(logger, "client with broken redirects: ")
 	}
