@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"os"
 	"os/exec"
 	"path"
@@ -27,9 +26,13 @@ type TaskProcessor struct {
 	ProcessedExtension string
 	ProcessedSize      int64
 
-	tempWorkDir string
+	tempWorkDir    string
+	tempWorkDirSrc string
+	tempWorkDirDst string
 
-	logger *customLogger
+	logger    *customLogger
+	semaphore chan struct{}
+	configDir string
 }
 
 func NewTaskProcessor(filename string) (tp *TaskProcessor, err error) {
@@ -56,41 +59,19 @@ func NewTaskProcessor(filename string) (tp *TaskProcessor, err error) {
 	return
 }
 
-func NewTaskProcessorFromMultipart(file multipart.File, header *multipart.FileHeader) (tp *TaskProcessor, err error) {
-	originalSize := header.Size
-	originalExtension := strings.ToLower(path.Ext(header.Filename))
-
-	if !isValidFilename(originalExtension) {
-		return nil, fmt.Errorf("invalid file extension: %s", originalExtension)
-	}
-
-	originalFile, err := os.CreateTemp("", "upload-*"+originalExtension)
-	if err != nil {
-		return nil, fmt.Errorf("unable to create temp file: %w", err)
-	}
-
-	_, err = io.Copy(originalFile, file)
-	if err != nil {
-		return nil, fmt.Errorf("unable to write temp file: %w", err)
-	}
-
-	tp = &TaskProcessor{
-		OriginalFilename:  header.Filename,
-		OriginalFile:      originalFile,
-		OriginalExtension: originalExtension,
-		OriginalSize:      originalSize,
-
-		tempFileOriginalFile: originalFile.Name(),
-	}
-
-	return
-}
-
 func (tp *TaskProcessor) SetLogger(logger *customLogger) {
 	tp.logger = logger
 }
 
-func (tp *TaskProcessor) logf(str string, args ...interface{}) {
+func (tp *TaskProcessor) SetSemaphore(semaphore chan struct{}) {
+	tp.semaphore = semaphore
+}
+
+func (tp *TaskProcessor) SetConfigDir(configDir string) {
+	tp.configDir = configDir
+}
+
+func (tp *TaskProcessor) logf(str string, args ...any) {
 	if tp.logger != nil {
 		tp.logger.Printf(str, args...)
 	}
@@ -100,9 +81,8 @@ func (tp *TaskProcessor) Process(tasks []Task) (err error) {
 	err = fmt.Errorf("no task found for file extension %s", tp.OriginalExtension)
 	var errors []error
 
-	checkExt := strings.TrimPrefix(tp.OriginalExtension, ".")
 	for _, task := range tasks {
-		if !slices.Contains(task.Extensions, checkExt) {
+		if !slices.Contains(task.Extensions, normalizeExtension(tp.OriginalExtension)) {
 			continue
 		}
 
@@ -152,100 +132,147 @@ func (tp *TaskProcessor) cleanWorkDir() (err error) {
 	}
 
 	tp.tempWorkDir = ""
+	tp.tempWorkDirSrc = ""
+	tp.tempWorkDirDst = ""
 
 	return
 }
 
-func (tp *TaskProcessor) run(commandTemplate *template.Template) (err error) {
+func (tp *TaskProcessor) run(commandTemplate *template.Template) error {
+	if err := tp.setupWorkDirectories(); err != nil {
+		return err
+	}
+
+	tempFile, err := tp.copySourceFile()
+	if err != nil {
+		return err
+	}
+
+	command, err := tp.buildCommand(commandTemplate, tempFile)
+	if err != nil {
+		return err
+	}
+
+	if err := tp.executeCommand(command); err != nil {
+		return err
+	}
+
+	return tp.processResults()
+}
+
+func (tp *TaskProcessor) setupWorkDirectories() error {
 	tp.cleanWorkDir()
 
+	var err error
 	tp.tempWorkDir, err = os.MkdirTemp("", "processing-*")
 	if err != nil {
-		err = fmt.Errorf("unable to create temp folder: %w", err)
-		return
+		return fmt.Errorf("unable to create temp folder: %w", err)
 	}
 
-	tempFile, err := os.CreateTemp(tp.tempWorkDir, "file-*"+tp.OriginalExtension)
-	if err != nil {
-		err = fmt.Errorf("unable to create temp file: %w", err)
-		return
+	tp.tempWorkDirSrc = path.Join(tp.tempWorkDir, "src")
+	if err = os.Mkdir(tp.tempWorkDirSrc, 0o700); err != nil {
+		return fmt.Errorf("unable to create temp src folder: %w", err)
 	}
 
-	_, err = tp.OriginalFile.Seek(0, io.SeekStart)
-	if err != nil {
-		err = fmt.Errorf("unable to seek beginning of temp file: %w", err)
-		return
+	tp.tempWorkDirDst = path.Join(tp.tempWorkDir, "dst")
+	if err = os.Mkdir(tp.tempWorkDirDst, 0o700); err != nil {
+		return fmt.Errorf("unable to create temp dst folder: %w", err)
 	}
 
-	_, err = io.Copy(tempFile, tp.OriginalFile)
+	return nil
+}
+
+func (tp *TaskProcessor) copySourceFile() (*os.File, error) {
+	tempFile, err := os.CreateTemp(tp.tempWorkDirSrc, "file-*"+tp.OriginalExtension)
 	if err != nil {
-		err = fmt.Errorf("unable to write temp file: %w", err)
-		return
+		return nil, fmt.Errorf("unable to create temp file: %w", err)
+	}
+
+	if _, err = tp.OriginalFile.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("unable to seek beginning of temp file: %w", err)
+	}
+
+	if _, err = io.Copy(tempFile, tp.OriginalFile); err != nil {
+		return nil, fmt.Errorf("unable to write temp file: %w", err)
 	}
 	tempFile.Close()
 
+	return tempFile, nil
+}
+
+func (tp *TaskProcessor) buildCommand(commandTemplate *template.Template, tempFile *os.File) (string, error) {
 	basename := path.Base(tempFile.Name())
 	extension := path.Ext(basename)
 	values := map[string]string{
-		"folder":    tp.tempWorkDir,
-		"name":      strings.TrimSuffix(basename, extension),
-		"extension": strings.TrimPrefix(extension, "."),
+		"src_folder": tp.tempWorkDirSrc,
+		"dst_folder": tp.tempWorkDirDst,
+		"name":       strings.TrimSuffix(basename, extension),
+		"extension":  strings.TrimPrefix(extension, "."),
 	}
 
 	var cmdLine bytes.Buffer
-	err = commandTemplate.Execute(&cmdLine, values)
-	if err != nil {
-		err = fmt.Errorf("unable to generate command to be run: %w", err)
-		return
+	if err := commandTemplate.Execute(&cmdLine, values); err != nil {
+		return "", fmt.Errorf("unable to generate command to be run: %w", err)
 	}
 
+	return cmdLine.String(), nil
+}
+
+func (tp *TaskProcessor) executeCommand(command string) error {
 	// Limit the number of concurrent tasks running
-	semaphore <- struct{}{}
-	defer func() { <-semaphore }()
+	if tp.semaphore != nil {
+		tp.semaphore <- struct{}{}
+		defer func() { <-tp.semaphore }()
+	}
 
-	tp.logf("running: %s", cmdLine.String())
+	tp.logf("running: %s", command)
 
-	cmd := exec.Command("sh", "-c", cmdLine.String())
-	cmd.Dir = path.Dir(configFile)
+	cmd := exec.Command("sh", "-c", command)
+	if tp.configDir != "" {
+		cmd.Dir = tp.configDir
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		err = fmt.Errorf("%w while running command:\n%s\nOutput:\n%s", err, cmdLine.String(), string(output))
-		return
+		return fmt.Errorf("%w while running command:\n%s\nOutput:\n%s", err, command, string(output))
 	}
 
-	files, err := os.ReadDir(tp.tempWorkDir)
+	return nil
+}
+
+func (tp *TaskProcessor) processResults() error {
+	files, err := os.ReadDir(tp.tempWorkDirDst)
 	if err != nil {
-		err = fmt.Errorf("unable to read temp directory: %w", err)
-		return
+		return fmt.Errorf("unable to read temp directory: %w", err)
 	}
 
 	if len(files) != 1 {
-		err = fmt.Errorf("unexpected number of files in temp directory: %d", len(files))
-		return
+		return fmt.Errorf("unexpected number of files in temp directory: %d", len(files))
 	}
 
-	tp.ProcessedFile, err = os.Open(path.Join(tp.tempWorkDir, files[0].Name()))
+	processedFileName := files[0].Name()
+	processedFile := path.Join(tp.tempWorkDirDst, processedFileName)
+
+	tp.ProcessedFile, err = os.Open(processedFile)
 	if err != nil {
-		err = fmt.Errorf("unable to open temp file: %w", err)
-		return
+		return fmt.Errorf("unable to open temp file: %w", err)
 	}
 
-	tp.ProcessedExtension = strings.ToLower(path.Ext(files[0].Name()))
+	tp.ProcessedExtension = strings.ToLower(path.Ext(processedFileName))
 
-	stat, err := os.Stat(path.Join(tp.tempWorkDir, files[0].Name()))
+	stat, err := os.Stat(processedFile)
 	if err != nil {
-		err = fmt.Errorf("unable to get file size: %w", err)
+		return fmt.Errorf("unable to get file size: %w", err)
 	}
 	tp.ProcessedSize = stat.Size()
 
-	tp.ProcessedFilename = TrimSuffixCaseInsensitive(tp.OriginalFilename, tp.OriginalExtension) + tp.ProcessedExtension
+	tp.ProcessedFilename = trimSuffixCaseInsensitive(tp.OriginalFilename, tp.OriginalExtension) + tp.ProcessedExtension
 
-	return
+	return nil
 }
 
-func TrimSuffixCaseInsensitive(str, suffix string) string {
-	if strings.HasSuffix(strings.ToLower(str), strings.ToLower(suffix)) {
-		return str[:len(str)-len(suffix)]
+func (tp *TaskProcessor) GetProcessedFilePath() (string, error) {
+	if tp.ProcessedFile == nil {
+		return "", fmt.Errorf("no processed file available")
 	}
-	return str
+	return tp.ProcessedFile.Name(), nil
 }

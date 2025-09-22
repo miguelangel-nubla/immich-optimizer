@@ -1,29 +1,98 @@
-FROM ubuntu:latest AS builder
+# Builder stage for downloading caesium-clt
+FROM ubuntu:22.04 AS builder
+
+# Install required packages with security updates
 RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get -qq -y install jq curl
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        jq && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 ARG TARGETPLATFORM
-
 ARG CAESIUM_GITHUB_REPO=Lymphatus/caesium-clt
-RUN CAESIUM_LATEST_RELEASE=$(curl -s https://api.github.com/repos/$CAESIUM_GITHUB_REPO/releases/latest | jq -r '.tag_name') \
-    && if [ "$TARGETPLATFORM" = "linux/amd64" ]; then CAESIUM_ARCH=x86_64-unknown-linux-musl; \
-       elif [ "$TARGETPLATFORM" = "linux/arm64" ]; then CAESIUM_ARCH=aarch64-unknown-linux-musl; \
-       else echo "Platform not supported by ${CAESIUM_GITHUB_REPO}"; exit 126; fi \
-    && CAESIUM_ARCHIVE=caesiumclt-${CAESIUM_LATEST_RELEASE}-${CAESIUM_ARCH} \
-    && curl -sS -L -O --output-dir /tmp/ --create-dirs  "https://github.com/$CAESIUM_GITHUB_REPO/releases/latest/download/${CAESIUM_ARCHIVE}.tar.gz" \
-    && tar xzf "/tmp/${CAESIUM_ARCHIVE}.tar.gz" -C /tmp \
-    && mv "/tmp/${CAESIUM_ARCHIVE}/caesiumclt" /usr/local/bin/caesiumclt
 
-FROM jlesage/handbrake:latest
+# Download and install caesium-clt with error handling
+RUN set -eux; \
+    CAESIUM_LATEST_RELEASE=$(curl -s https://api.github.com/repos/$CAESIUM_GITHUB_REPO/releases/latest | jq -r '.tag_name'); \
+    case "$TARGETPLATFORM" in \
+        "linux/amd64") CAESIUM_ARCH=x86_64-unknown-linux-musl ;; \
+        "linux/arm64") CAESIUM_ARCH=aarch64-unknown-linux-musl ;; \
+        *) echo "Platform $TARGETPLATFORM not supported by ${CAESIUM_GITHUB_REPO}"; exit 1 ;; \
+    esac; \
+    CAESIUM_ARCHIVE=caesiumclt-${CAESIUM_LATEST_RELEASE}-${CAESIUM_ARCH}; \
+    curl -fsSL -o "/tmp/${CAESIUM_ARCHIVE}.tar.gz" \
+        "https://github.com/$CAESIUM_GITHUB_REPO/releases/latest/download/${CAESIUM_ARCHIVE}.tar.gz"; \
+    tar xzf "/tmp/${CAESIUM_ARCHIVE}.tar.gz" -C /tmp; \
+    install -m 755 "/tmp/${CAESIUM_ARCHIVE}/caesiumclt" /usr/local/bin/caesiumclt; \
+    caesiumclt --version
 
-RUN apk update
-RUN apk add jq curl vips-tools exiftool ffmpeg imagemagick libc6-compat libjxl-tools
+# Runtime stage
+FROM jlesage/handbrake:v24.01.1
 
+# Create non-root user for security
+RUN addgroup -g 1001 appuser && \
+    adduser -D -u 1001 -G appuser appuser
+
+# Install runtime dependencies with security updates
+RUN apk update && \
+    apk add --no-cache \
+        ca-certificates \
+        curl \
+        exiftool \
+        ffmpeg \
+        imagemagick \
+        jq \
+        libc6-compat \
+        libjxl-tools \
+        musl-dev \
+        tzdata \
+        vips-tools && \
+    rm -rf /var/cache/apk/*
+
+# Create symlink for libresolv compatibility
+RUN ln -sf /lib/libc.musl-x86_64.so.1 /lib/libresolv.so.2 || \
+    ln -sf /lib/libc.musl-aarch64.so.1 /lib/libresolv.so.2 || \
+    ln -sf /lib/ld-musl-*.so.1 /lib/libresolv.so.2
+
+# Copy caesium-clt from builder
 COPY --from=builder /usr/local/bin/caesiumclt /usr/local/bin/caesiumclt
 
-COPY config/lossless /etc/immich-upload-optimizer/config
-COPY config /etc/immich-upload-optimizer/bundled-configs
-ENV IUO_TASKS_FILE=/etc/immich-upload-optimizer/config/tasks.yaml
+# Create directories with proper permissions
+RUN mkdir -p /etc/immich-optimizer/config \
+             /etc/immich-optimizer/bundled-configs \
+             /watch && \
+    chown -R appuser:appuser /etc/immich-optimizer /watch
 
-COPY immich-upload-optimizer /usr/local/bin/
-CMD ["immich-upload-optimizer"]
+# Copy configuration files
+COPY --chown=appuser:appuser config/lossless /etc/immich-optimizer/config
+COPY --chown=appuser:appuser config /etc/immich-optimizer/bundled-configs
+
+# Copy binary
+COPY --chown=appuser:appuser immich-optimizer /usr/local/bin/
+RUN chmod +x /usr/local/bin/immich-optimizer
+
+# Add metadata labels
+LABEL org.opencontainers.image.title="Immich Optimizer" \
+      org.opencontainers.image.description="File optimization service for Immich" \
+      org.opencontainers.image.vendor="miguelangel-nubla" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.documentation="https://github.com/miguelangel-nubla/immich-optimizer"
+
+# Set environment variables
+ENV IUO_TASKS_FILE=/etc/immich-optimizer/config/tasks.yaml \
+    IUO_WATCH_DIR=/watch
+
+# Add health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD immich-optimizer -version || exit 1
+
+# Switch to non-root user
+USER appuser
+
+# Set working directory
+WORKDIR /watch
+
+# Default command
+CMD ["immich-optimizer"]

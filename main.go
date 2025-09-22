@@ -1,15 +1,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
-	"path"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -20,120 +21,164 @@ var (
 	date    = "unknown"
 )
 
-var remote *url.URL
+type AppConfig struct {
+	ShowVersion           bool
+	ImmichURL             string
+	ImmichAPIKey          string
+	WatchDir              string
+	ConfigFile            string
+	MaxConcurrentRequests int
+	HTTPTimeoutSeconds    int
+	InotifyBufferSize     int
+	Semaphore             chan struct{}
+	Tasks                 *Config
+}
 
-var (
-	maxConcurrentRequests = 10
-	semaphore             = make(chan struct{}, maxConcurrentRequests)
-)
+func NewAppConfig() *AppConfig {
+	maxConcurrent := 10
+	return &AppConfig{
+		MaxConcurrentRequests: maxConcurrent,
+		HTTPTimeoutSeconds:    120,
+		InotifyBufferSize:     8192, // 8KB buffer for better performance
+		Semaphore:             make(chan struct{}, maxConcurrent),
+	}
+}
 
-var jobChannels = make(map[string]chan *http.Response)
-var jobChannelsComplete = make(map[string]chan struct{})
-
-var showVersion bool
-var upstreamURL string
-var listenAddr string
-var configFile string
-var filterPath string
-var filterFormKey string
-
-var config *Config
+var appConfig *AppConfig
 
 func init() {
+	appConfig = NewAppConfig()
+
 	viper.SetEnvPrefix("iuo")
 	viper.AutomaticEnv()
-	viper.BindEnv("upstream")
-	viper.BindEnv("listen")
+	viper.BindEnv("immich_url")
+	viper.BindEnv("immich_api_key")
+	viper.BindEnv("watch_dir")
 	viper.BindEnv("tasks_file")
-	viper.BindEnv("filter_path")
-	viper.BindEnv("filter_form_key")
 
-	viper.SetDefault("upstream", "")
-	viper.SetDefault("listen", ":2283")
+	viper.SetDefault("immich_url", "")
+	viper.SetDefault("immich_api_key", "")
+	viper.SetDefault("watch_dir", "/watch")
 	viper.SetDefault("tasks_file", "tasks.yaml")
-	viper.SetDefault("filter_path", "/api/assets")
-	viper.SetDefault("filter_form_key", "assetData")
 
-	flag.BoolVar(&showVersion, "version", false, "Show the current version")
-	flag.StringVar(&upstreamURL, "upstream", viper.GetString("upstream"), "Upstream URL. Example: http://immich-server:2283")
-	flag.StringVar(&listenAddr, "listen", viper.GetString("listen"), "Listening address")
-	flag.StringVar(&configFile, "tasks_file", viper.GetString("tasks_file"), "Path to the configuration file")
-	flag.StringVar(&filterPath, "filter_path", viper.GetString("filter_path"), "Only convert files uploaded to specific path. Advanced, leave default for immich")
-	flag.StringVar(&filterFormKey, "filter_form_key", viper.GetString("filter_form_key"), "Only convert files uploaded with specific form key. Advanced, leave default for immich")
+	flag.BoolVar(&appConfig.ShowVersion, "version", false, "Show the current version")
+	flag.StringVar(&appConfig.ImmichURL, "immich_url", viper.GetString("immich_url"), "Immich server URL. Example: http://immich-server:2283")
+	flag.StringVar(&appConfig.ImmichAPIKey, "immich_api_key", viper.GetString("immich_api_key"), "Immich API key")
+	flag.StringVar(&appConfig.WatchDir, "watch_dir", viper.GetString("watch_dir"), "Directory to watch for new files")
+	flag.StringVar(&appConfig.ConfigFile, "tasks_file", viper.GetString("tasks_file"), "Path to the configuration file")
 	flag.Parse()
 
-	if showVersion {
+	if appConfig.ShowVersion {
 		fmt.Println(printVersion())
 		os.Exit(0)
 	}
 
-	validateInput()
+	if err := appConfig.validate(); err != nil {
+		log.Fatal(err)
+	}
 }
 
-func validateInput() {
-	if upstreamURL == "" {
-		log.Fatal("the -upstream flag is required")
+func (ac *AppConfig) validate() error {
+	if ac.ImmichURL == "" {
+		return fmt.Errorf("the -immich_url flag is required")
+	}
+
+	// Validate URL format
+	parsedURL, urlErr := url.Parse(ac.ImmichURL)
+	if urlErr != nil {
+		return fmt.Errorf("invalid immich_url format: %w", urlErr)
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("immich_url must use http or https scheme")
+	}
+	if parsedURL.Host == "" {
+		return fmt.Errorf("immich_url must include a valid host")
+	}
+
+	if ac.ImmichAPIKey == "" {
+		return fmt.Errorf("the -immich_api_key flag is required")
+	}
+
+	// Basic API key validation (should be a non-empty string with reasonable length)
+	if len(strings.TrimSpace(ac.ImmichAPIKey)) < 10 {
+		return fmt.Errorf("immich_api_key appears to be too short (minimum 10 characters)")
+	}
+
+	if ac.ConfigFile == "" {
+		return fmt.Errorf("the -tasks_file flag is required")
+	}
+
+	// Create watch directory if it doesn't exist
+	if mkdirErr := os.MkdirAll(ac.WatchDir, 0750); mkdirErr != nil {
+		return fmt.Errorf("error creating watch directory: %v", mkdirErr)
 	}
 
 	var err error
-	remote, err = url.Parse(upstreamURL)
+	ac.Tasks, err = NewConfig(&ac.ConfigFile)
 	if err != nil {
-		log.Fatalf("invalid upstream URL: %v", err)
+		return fmt.Errorf("error loading config file: %v", err)
 	}
 
-	if configFile == "" {
-		log.Fatal("the -tasks_file flag is required")
-	}
-
-	config, err = NewConfig(&configFile)
-	if err != nil {
-		log.Fatalf("error loading config file: %v", err)
-	}
+	return nil
 }
 
 func main() {
+	config := appConfig
+
 	baseLogger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
+	customLogger := newCustomLogger(baseLogger, "")
+	customLogger.Printf("Starting %s", printVersion())
 
-	proxy := httputil.NewSingleHostReverseProxy(remote)
+	// Create Immich client
+	immichClient := NewImmichClient(config.ImmichURL, config.ImmichAPIKey, config.HTTPTimeoutSeconds, customLogger)
 
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		requestLogger := newCustomLogger(baseLogger, fmt.Sprintf("%s: ", strings.Split(r.RemoteAddr, ":")[0]))
+	// Create file watcher
+	watcher, err := NewFileWatcher(config.WatchDir, immichClient, config.Tasks, baseLogger, config.InotifyBufferSize)
+	if err != nil {
+		customLogger.Printf("Error creating file watcher: %v", err)
+		os.Exit(1)
+	}
+	defer watcher.Stop()
 
-		if r.URL.Path == "/_immich-upload-optimizer/wait" {
-			continueJob(r, w, requestLogger)
-			return
-		}
-
-		match, err := path.Match(filterPath, r.URL.Path)
-		if err != nil {
-			requestLogger.Printf("invalid filter_path: %s", r.URL)
-			return
-		}
-		if match && strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
-			err = newJob(r, w, requestLogger)
-			if err != nil {
-				requestLogger.Printf("upload handler error: %v", err)
-			}
-			return
-		}
-
-		requestLogger.Printf("proxy: %s", r.URL)
-
-		r.Host = remote.Host
-		proxy.ServeHTTP(w, r)
+	// Start watching
+	err = watcher.Start(config)
+	if err != nil {
+		customLogger.Printf("Error starting file watcher: %v", err)
+		os.Exit(1)
 	}
 
-	server := &http.Server{
-		Addr:    listenAddr,
-		Handler: http.HandlerFunc(handler),
-	}
+	// Setup graceful shutdown
 
-	log.Printf("Starting %s on %s...", printVersion(), listenAddr)
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Error starting immich-upload-optimizer: %v", err)
+	// Wait for interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	customLogger.Printf("Service started. Press Ctrl+C to stop.")
+
+	// Block until we receive our signal
+	<-sigChan
+
+	customLogger.Printf("Shutting down gracefully...")
+
+	// Create a deadline to wait for
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	// Stop the watcher gracefully
+	done := make(chan struct{})
+	go func() {
+		watcher.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		customLogger.Printf("Shutdown completed successfully")
+	case <-shutdownCtx.Done():
+		customLogger.Printf("Shutdown timeout exceeded, forcing exit")
 	}
 }
 
 func printVersion() string {
-	return fmt.Sprintf("immich-upload-optimizer %s, commit %s, built at %s", version, commit, date)
+	return fmt.Sprintf("immich-optimizer %s, commit %s, built at %s", version, commit, date)
 }

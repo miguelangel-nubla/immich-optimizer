@@ -7,7 +7,7 @@ type customLogger struct {
 	prefix string
 }
 
-func newCustomLogger(baseLogger interface{}, additionalPrefix string) *customLogger {
+func newCustomLogger(baseLogger any, additionalPrefix string) *customLogger {
 	switch logger := baseLogger.(type) {
 	case *log.Logger:
 		return &customLogger{
@@ -24,10 +24,10 @@ func newCustomLogger(baseLogger interface{}, additionalPrefix string) *customLog
 	}
 }
 
-func (cl *customLogger) Println(v ...interface{}) {
+func (cl *customLogger) Println(v ...any) {
 	cl.logger.Println(cl.prefix, v)
 }
 
-func (cl *customLogger) Printf(format string, v ...interface{}) {
+func (cl *customLogger) Printf(format string, v ...any) {
 	cl.logger.Printf(cl.prefix+format, v...)
 }

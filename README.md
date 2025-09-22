@@ -1,93 +1,209 @@
-# Immich Upload Optimizer
+# Immich Optimizer
 
-Immich Upload Optimizer is a proxy designed to be placed in front of the Immich server. It intercepts file uploads and uses an external CLI program (by default [JPEG-XL](https://github.com/libjxl/libjxl), [Caesium](https://github.com/Lymphatus/caesium-clt) and [HandBrake](https://github.com/HandBrake/HandBrake)) to optimize, resize, or compress images and videos before they are stored on the Immich server. This helps save storage space on the Immich server by reducing the size of uploaded files.
+[![Release](https://img.shields.io/github/v/release/miguelangel-nubla/immich-optimizer)](https://github.com/miguelangel-nubla/immich-optimizer/releases)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://ghcr.io/miguelangel-nubla/immich-optimizer)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/miguelangel-nubla/immich-optimizer)](https://golang.org/)
+[![License](https://img.shields.io/github/license/miguelangel-nubla/immich-optimizer)](LICENSE)
 
-## 🌟 Support the Project  
+A file optimization service that automatically processes and uploads media files to [Immich](https://immich.app/). This tool watches for new files in a directory, applies configurable optimization tasks, and uploads the optimized results to your Immich instance.
 
-Love this project? You can now [sponsor it on GitHub](https://github.com/sponsors/miguelangel-nubla)! Every contribution helps keep the project growing and improving.
+## ✨ Features
 
-[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-GitHub-blue?style=for-the-badge&logo=github-sponsors)](https://github.com/sponsors/miguelangel-nubla)
+- **📁 File Watching**: Automatically monitors directories for new media files
+- **🔄 Configurable Processing**: Support for multiple optimization profiles
+- **📸 Image Optimization**: 
+  - Lossless JPEG-XL conversion
+  - Caesium compression
+  - Format-specific optimization
+- **🎥 Video Optimization**: HandBrake integration for video compression
+- **🚀 Multi-Architecture**: Native support for AMD64 and ARM64
+- **🔒 Secure**: Runs as non-root user with proper file permissions
+- **⚡ Performance**: Concurrent processing with configurable limits
+- **📊 Monitoring**: Built-in health checks and structured logging
+- **🐳 Docker Ready**: Production-ready container images
 
-## Features
+## 📦 Installation
 
-- Intercepts file uploads to the Immich server.
-- You can use any external CLI program to optimize, resize, or compress files.
-- Designed to be easily integrated into existing Immich installations using Docker Compose.
+### Docker (Recommended)
 
-## Quality
+```bash
+# Pull the latest image
+docker pull ghcr.io/miguelangel-nubla/immich-optimizer:latest
 
-By default, Immich Upload Optimizer uses lossless optimization for **images**, ensuring that no information is lost during the image optimization process. This means that the quality of your images remains unchanged while reducing their file size.
+# Run with lossless optimization
+docker run -d \
+  --name immich-optimizer \
+  -v /path/to/watch:/watch \
+  -e IUO_IMMICH_URL=http://your-immich-instance:2283 \
+  -e IUO_IMMICH_API_KEY=your-api-key \
+  ghcr.io/miguelangel-nubla/immich-optimizer:latest
+```
 
-> [!NOTE]
-> Image viewer in Immich will not show the stored image, so you can find compression artifacts.
-> Download the file and open it with an external viewer to view the real image stored on your library.
+### Docker Compose
 
-If you prefer to save more storage space, you can modify the optimization parameters to perform lossy optimization. This can reduce the file size considerably (around 80% less) while maintaining the same perceived quality. To do this, adjust the task command to use a lossy compression setting. Examples in [config](config/).
+```yaml
+services:
+  immich-optimizer:
+    image: ghcr.io/miguelangel-nubla/immich-optimizer:latest
+    container_name: immich-optimizer
+    environment:
+      - IUO_IMMICH_URL=http://immich-server:2283
+      - IUO_IMMICH_API_KEY=your-api-key
+      - IUO_WATCH_DIR=/watch
+      - IUO_TASKS_FILE=/etc/immich-optimizer/config/tasks.yaml
+    volumes:
+      - /path/to/watch:/watch
+      # Optional: Custom configuration
+      - ./custom-config:/etc/immich-optimizer/config
+    restart: unless-stopped
+```
 
-### Images
-You can use [Caesium.app](https://caesium.app/) to experiment with different quality settings live before modifying the task according to the optimizer documentation. For the specific parameters, refer to the [Caesium CLI documentation](https://github.com/Lymphatus/caesium-clt). Alternatively, use [Squoosh.app](https://squoosh.app/) to do the same thing for the [JPEG-XL](https://github.com/libjxl/libjxl) converter.
+## ⚙️ Configuration
 
-### Video
-By default video conversion is disabled since no known lossless video transcoding will be smaller in size. However there is a lot of potential with lossy compression. HandBrake is included in the full image, take a look at how to do [lossy conversion](config/profile1/tasks.yaml).
+### Environment Variables
 
-## Usage via docker compose
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `IUO_IMMICH_URL` | Immich server URL (required) | - |
+| `IUO_IMMICH_API_KEY` | Immich API key (required) | - |
+| `IUO_WATCH_DIR` | Directory to watch for files | `/watch` |
+| `IUO_TASKS_FILE` | Path to tasks configuration | `tasks.yaml` |
 
-1. Update your Docker Compose configuration to route incoming connections through the proxy:
+### Command Line Options
 
-    ```yaml
-    services:
-      immich-upload-optimizer:
-        image: ghcr.io/miguelangel-nubla/immich-upload-optimizer:latest
-        ports:
-          - "2283:2283"
-        environment:
-          - IUO_UPSTREAM=http://immich-server:2283
-        depends_on:
-          - immich-server
+```bash
+immich-optimizer [options]
 
-      immich-server:
-        # ...existing configuration...
-        # remove the ports section so incoming requests are handled by the proxy by default
-    ```
+Options:
+  -immich_url string     Immich server URL
+  -immich_api_key string Immich API key  
+  -watch_dir string      Directory to watch (default "/watch")
+  -tasks_file string     Tasks configuration file (default "tasks.yaml")
+  -version               Show version information
+```
 
-2. Restart your Docker Compose services:
+## 📋 Optimization Profiles
 
-    ```sh
-    docker compose restart
-    ```
+The optimizer includes three pre-configured profiles:
 
-## Available flags
+### 🔒 Lossless Profile (Default)
+```yaml
+# Located at: config/lossless/tasks.yaml
+# - Lossless JPEG-XL conversion for images
+# - Caesium lossless compression
+# - Passthrough for videos (no compression)
+```
 
-  - `-upstream`: The URL of the Immich server (e.g., `http://immich-server:2283`).
-  - `-listen`: The address on which the proxy will listen (default: `:2283`).
-  - `-tasks_file`: Path to the [tasks configuration file](TASKS.md).
-  - `-filter_path`: The path to filter file uploads (default: `/api/assets`).
-  - `-filter_form_key`: The form key to filter file uploads (default: `assetData`).
+### ⚡ Lossy Profile
+```yaml
+# Located at: config/profile1/tasks.yaml  
+# - Lossy JPEG-XL conversion (quality 75)
+# - Caesium compression (quality 85)
+# - HandBrake video compression
+# - HEIC to JPEG-XL conversion
+```
 
-  All flags are available as enviroment variables using the prefix `IUO_`.
+### 📤 Passthrough Profile
+```yaml
+# Located at: config/passthrough-all/tasks.yaml
+# - No optimization, uploads files as-is
+# - Useful for testing or when optimization is not desired
+```
 
-## License
+## 🛠️ Custom Configuration
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+Create a custom `tasks.yaml` file:
 
-## Contributing
+```yaml
+tasks:
+  - name: jpeg-xl-lossless
+    command: cjxl --lossless_jpeg=1 {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.name}}.jxl
+    extensions:
+      - jpeg
+      - jpg
+      - png
+      
+  - name: video-compress
+    command: HandBrakeCLI -i {{.src_folder}}/{{.name}}.{{.extension}} -o {{.dst_folder}}/{{.name}}.mp4 --preset="Fast 1080p30"
+    extensions:
+      - avi
+      - mkv
+      - mov
+      
+  - name: passthrough
+    command: ""  # Empty command passes file through unchanged
+    extensions:
+      - webp
+      - avif
+```
 
-Contributions are welcome! Please open an issue or submit a pull request on GitHub.
+### Template Variables
 
-## About This Project 
+Available in task commands:
 
-This project is a complete rewrite from scratch of the original idea by [JamesCullum/multipart-upload-proxy](https://github.com/JamesCullum/multipart-upload-proxy). It has been designed with the following key goals:
+- `{{.src_folder}}` - Source directory path
+- `{{.dst_folder}}` - Destination directory path  
+- `{{.name}}` - Filename without extension
+- `{{.extension}}` - File extension without dot
 
-- **Transparent Proxy for Immich**  
-  Eliminates the need for Cloudflare or reverse proxies with path redirection, offering seamless integration.
+## 🔧 Troubleshooting
 
-- **Extensibility**  
-  Designed to support any CLI program or custom script, enabling custom workflows for file processing.
+### Common Issues
 
-## Acknowledgements
+**Connection Refused**
+```bash
+# Check Immich URL and network connectivity
+curl -I http://your-immich-instance:2283/api/server-info
+```
 
-- [JamesCullum/multipart-upload-proxy](https://github.com/JamesCullum/multipart-upload-proxy) for the original idea.
-- [Caesium](https://github.com/Lymphatus/caesium-image-compressor)
-- [libjxl](https://github.com/libjxl/libjxl)
-- [HandBrakeCLI](https://github.com/HandBrake/HandBrake)
-- [Immich](https://github.com/immich-app/immich)
+**Permission Denied**
+```bash
+# Ensure watch directory is accessible
+ls -la /path/to/watch
+# Fix permissions if needed
+chmod 755 /path/to/watch
+```
+
+**Task Failures**
+```bash
+# Check if required tools are installed
+docker exec immich-optimizer which cjxl
+docker exec immich-optimizer which caesiumclt
+```
+
+### Debug Mode
+
+Enable verbose logging by setting log level:
+
+```bash
+# For binary
+export LOG_LEVEL=debug
+immich-optimizer
+
+# For Docker
+docker run -e LOG_LEVEL=debug ...
+```
+
+### Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- [Immich](https://immich.app/) - The amazing self-hosted photo and video management solution
+- [JPEG XL](https://jpegxl.info/) - Next-generation image compression
+- [Caesium](https://saerasoft.com/caesium/) - Image compression tool
+- [HandBrake](https://handbrake.fr/) - Video transcoder
+
+## 📞 Support
+
+- 🐛 [Report Issues](https://github.com/miguelangel-nubla/immich-optimizer/issues)
+- 📖 [Documentation](https://github.com/miguelangel-nubla/immich-optimizer/wiki)

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"text/template"
 
 	"github.com/spf13/viper"
@@ -45,21 +44,19 @@ type Config struct {
 
 func NewConfig(configFile *string) (*Config, error) {
 	var c *Config
-	var err error
 	viper.SetConfigFile(*configFile)
 
 	if err := viper.ReadInConfig(); err != nil {
-		log.Fatalf("Error reading config file: %v", err)
+		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
 
 	if err := viper.Unmarshal(&c); err != nil {
-		log.Fatalf("Error unmarshaling config: %v", err)
+		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
 	for i := range c.Tasks {
-		err = c.Tasks[i].Init()
-		if err != nil {
-			return nil, fmt.Errorf("error validating config: %v", err)
+		if err := c.Tasks[i].Init(); err != nil {
+			return nil, fmt.Errorf("error validating config: %w", err)
 		}
 	}
 

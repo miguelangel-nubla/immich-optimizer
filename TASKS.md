@@ -16,11 +16,11 @@ The configuration file follows this format:
 ```yaml
 tasks:
   - name: taskA
-    command: <command> {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}-new.ext && rm {{.folder}}/{{.name}}.{{.extension}}
+    command: <command> {{.src_folder}}/{{.name}}.{{.extension}} {{.src_folder}}/{{.name}}.ext
     extensions:
       - jpeg
   - name: taskB
-    command: <command 2> {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}-new.ext && rm {{.folder}}/{{.name}}.{{.extension}}
+    command: <command 2> {{.src_folder}}/{{.name}}.{{.extension}} {{.src_folder}}/{{.name}}.ext
     extensions:
       - png
 ```
@@ -31,7 +31,7 @@ Below is an example task entry:
 
 ```yaml
   - name: jpeg-xl
-    command: cjxl --lossless_jpeg=1 {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}-new.jxl && rm {{.folder}}/{{.name}}.{{.extension}}
+    command: cjxl --lossless_jpeg=1 {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.name}}.jxl
     extensions:
       - jpeg
       - jpg
@@ -46,7 +46,7 @@ This task processes `.jpeg` and `.jpg` files.
 
 To ensure proper file handling, use these placeholders in your commands:
 
-- `{{.folder}}`: Temporary working directory.
+- `{{.src_folder}}`: Temporary working directory.
 - `{{.name}}`: Filename without extension.
 - `{{.extension}}`: File extension.
 
@@ -59,13 +59,13 @@ When a file is uploaded, IUO:
 3. Executes the configured task command:
 
    ```sh
-   cjxl --lossless_jpeg=1 {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}-new.jxl && rm {{.folder}}/{{.name}}.{{.extension}}
+   cjxl --lossless_jpeg=1 {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.name}}.jxl
    ```
 
    This translates to:
 
    ```sh
-   cjxl --lossless_jpeg=1 /tmp/processing-3398346076/file-2612480203.jpg /tmp/processing-3398346076/file-2612480203-new.jxl && rm /tmp/processing-3398346076/file-2612480203.jpg
+   cjxl --lossless_jpeg=1 /tmp/processing-3398346076/file-2612480203.jpg /tmp/processing-3398346076/file-2612480203.jxl && rm /tmp/processing-3398346076/file-2612480203.jpg
    ```
 
 4. If successful, IUO replaces the original file with the processed one and uploads it to Immich.
@@ -76,12 +76,12 @@ If using Docker, remember to mount a folder containing the `tasks.yaml` configur
 
 ```yaml
 services:
-  immich-upload-optimizer:
-    image: ghcr.io/miguelangel-nubla/immich-upload-optimizer:latest
+  immich-optimizer:
+    image: ghcr.io/miguelangel-nubla/immich-optimizer:latest
     ports:
       - "2283:2283"
     volumes:
-      - <full path to config folder>:/etc/immich-upload-optimizer/config
+      - <full path to config folder>:/etc/immich-optimizer/config
     environment:
       - IUO_UPSTREAM=http://immich-server:2283
     depends_on:

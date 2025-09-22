@@ -2,7 +2,8 @@ package main
 
 import (
 	"fmt"
-	"regexp"
+	"slices"
+	"strings"
 )
 
 func humanReadableSize(size int64) string {
@@ -28,7 +29,23 @@ func humanReadableSize(size int64) string {
 	}
 }
 
-func isValidFilename(s string) bool {
-	re := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
-	return re.MatchString(s)
+func normalizeExtension(extension string) string {
+	return strings.TrimPrefix(strings.ToLower(extension), ".")
+}
+
+func shouldProcessExtension(extension string, tasks []Task) bool {
+	checkExt := normalizeExtension(extension)
+	for _, task := range tasks {
+		if slices.Contains(task.Extensions, checkExt) {
+			return true
+		}
+	}
+	return false
+}
+
+func trimSuffixCaseInsensitive(str, suffix string) string {
+	if strings.HasSuffix(strings.ToLower(str), strings.ToLower(suffix)) {
+		return str[:len(str)-len(suffix)]
+	}
+	return str
 }

@@ -72,7 +72,7 @@
       "PicturePadBottom": 0,
       "PicturePadLeft": 0,
       "PicturePadRight": 0,
-      "PresetName": "immich-upload-optimizer",
+      "PresetName": "immich-optimizer",
       "Type": 1,
       "SubtitleAddCC": false,
       "SubtitleAddForeignAudioSearch": false,

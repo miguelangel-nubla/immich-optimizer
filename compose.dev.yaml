@@ -1,0 +1,10 @@
+services:
+  immich-optimizer:
+    build:
+      context: .
+      dockerfile: Dockerfile.amd64.goreleaser
+    env_file:
+      - .env
+    volumes:
+      - ./watch:/watch
+    restart: unless-stopped

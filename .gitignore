@@ -27,4 +27,7 @@ go.work.sum
 # goreleaser
 dist/
 
-immich-upload-optimizer
+# watch directory (for local testing)
+watch/
+
+immich-optimizer
