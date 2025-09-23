@@ -34,6 +34,7 @@ docker pull ghcr.io/miguelangel-nubla/immich-optimizer:latest
 docker run -d \
   --name immich-optimizer \
   -v /path/to/watch:/watch \
+  -v /path/to/undone:/undone \
   -e IUO_IMMICH_URL=http://your-immich-instance:2283 \
   -e IUO_IMMICH_API_KEY=your-api-key \
   ghcr.io/miguelangel-nubla/immich-optimizer:latest
@@ -53,6 +54,7 @@ services:
       - IUO_TASKS_FILE=/etc/immich-optimizer/config/tasks.yaml
     volumes:
       - /path/to/watch:/watch
+      - /path/to/undone:/undone
       # Optional: Custom configuration
       - ./custom-config:/etc/immich-optimizer/config
     restart: unless-stopped
@@ -67,6 +69,7 @@ services:
 | `IUO_IMMICH_URL` | Immich server URL (required) | - |
 | `IUO_IMMICH_API_KEY` | Immich API key (required) | - |
 | `IUO_WATCH_DIR` | Directory to watch for files | `/watch` |
+| `IUO_UNDONE_DIR` | Directory for files that failed processing/upload | `/undone` |
 | `IUO_TASKS_FILE` | Path to tasks configuration | `tasks.yaml` |
 
 ### Command Line Options
@@ -78,6 +81,7 @@ Options:
   -immich_url string     Immich server URL
   -immich_api_key string Immich API key  
   -watch_dir string      Directory to watch (default "/watch")
+  -undone_dir string     Directory for failed files (default "/undone")
   -tasks_file string     Tasks configuration file (default "tasks.yaml")
   -version               Show version information
 ```

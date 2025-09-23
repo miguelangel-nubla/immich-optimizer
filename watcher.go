@@ -184,8 +184,10 @@ func (fw *FileWatcher) processFile(filePath string) {
 	err = tp.Process(fw.config.Tasks)
 	if err != nil {
 		fw.logger.Printf("Error processing file %s: %v", filePath, err)
-		// Upload original file if processing fails
-		fw.uploadToImmich(filePath)
+		// Copy file to undone directory
+		if copyErr := copyFileToUndone(filePath, fw.watchDir, fw.appConfig.UndoneDir); copyErr != nil {
+			fw.logger.Printf("Error copying file %s to undone directory: %v", filePath, copyErr)
+		}
 		return
 	}
 
@@ -213,6 +215,10 @@ func (fw *FileWatcher) uploadToImmich(filePath string) {
 	err := fw.immichClient.UploadAsset(filePath)
 	if err != nil {
 		fw.logger.Printf("Error uploading file %s to Immich: %v", filePath, err)
+		// Copy file to undone directory when upload fails
+		if copyErr := copyFileToUndone(filePath, fw.watchDir, fw.appConfig.UndoneDir); copyErr != nil {
+			fw.logger.Printf("Error copying file %s to undone directory: %v", filePath, copyErr)
+		}
 		return
 	}
 

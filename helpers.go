@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -48,4 +51,36 @@ func trimSuffixCaseInsensitive(str, suffix string) string {
 		return str[:len(str)-len(suffix)]
 	}
 	return str
+}
+
+func copyFileToUndone(filePath, watchDir, undoneDir string) error {
+	relPath, err := filepath.Rel(watchDir, filePath)
+	if err != nil {
+		return fmt.Errorf("failed to get relative path: %w", err)
+	}
+
+	destPath := filepath.Join(undoneDir, relPath)
+	destDir := filepath.Dir(destPath)
+
+	if err := os.MkdirAll(destDir, 0750); err != nil {
+		return fmt.Errorf("failed to create destination directory: %w", err)
+	}
+
+	src, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %w", err)
+	}
+	defer src.Close()
+
+	dst, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file: %w", err)
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("failed to copy file: %w", err)
+	}
+
+	return nil
 }

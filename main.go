@@ -26,6 +26,7 @@ type AppConfig struct {
 	ImmichURL             string
 	ImmichAPIKey          string
 	WatchDir              string
+	UndoneDir             string
 	ConfigFile            string
 	MaxConcurrentRequests int
 	HTTPTimeoutSeconds    int
@@ -54,17 +55,20 @@ func init() {
 	viper.BindEnv("immich_url")
 	viper.BindEnv("immich_api_key")
 	viper.BindEnv("watch_dir")
+	viper.BindEnv("undone_dir")
 	viper.BindEnv("tasks_file")
 
 	viper.SetDefault("immich_url", "")
 	viper.SetDefault("immich_api_key", "")
 	viper.SetDefault("watch_dir", "/watch")
+	viper.SetDefault("undone_dir", "/undone")
 	viper.SetDefault("tasks_file", "tasks.yaml")
 
 	flag.BoolVar(&appConfig.ShowVersion, "version", false, "Show the current version")
 	flag.StringVar(&appConfig.ImmichURL, "immich_url", viper.GetString("immich_url"), "Immich server URL. Example: http://immich-server:2283")
 	flag.StringVar(&appConfig.ImmichAPIKey, "immich_api_key", viper.GetString("immich_api_key"), "Immich API key")
 	flag.StringVar(&appConfig.WatchDir, "watch_dir", viper.GetString("watch_dir"), "Directory to watch for new files")
+	flag.StringVar(&appConfig.UndoneDir, "undone_dir", viper.GetString("undone_dir"), "Directory to copy files that failed processing or upload")
 	flag.StringVar(&appConfig.ConfigFile, "tasks_file", viper.GetString("tasks_file"), "Path to the configuration file")
 	flag.Parse()
 
@@ -111,6 +115,11 @@ func (ac *AppConfig) validate() error {
 	// Create watch directory if it doesn't exist
 	if mkdirErr := os.MkdirAll(ac.WatchDir, 0750); mkdirErr != nil {
 		return fmt.Errorf("error creating watch directory: %v", mkdirErr)
+	}
+
+	// Create undone directory if it doesn't exist
+	if mkdirErr := os.MkdirAll(ac.UndoneDir, 0750); mkdirErr != nil {
+		return fmt.Errorf("error creating undone directory: %v", mkdirErr)
 	}
 
 	var err error
