@@ -30,4 +30,6 @@ dist/
 # watch directory (for local testing)
 watch/
 
+undone/
+
 immich-optimizer

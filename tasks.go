@@ -106,8 +106,6 @@ func (tp *TaskProcessor) Process(tasks []Task) (err error) {
 }
 
 func (tp *TaskProcessor) Close() (err error) {
-	tp.cleanWorkDir()
-
 	err = tp.OriginalFile.Close()
 	if err != nil {
 		tp.logf("unable to close original file: %v", err)
@@ -119,6 +117,8 @@ func (tp *TaskProcessor) Close() (err error) {
 			tp.logf("unable to remove temp file: %v", err)
 		}
 	}
+
+	tp.cleanWorkDir()
 
 	return
 }

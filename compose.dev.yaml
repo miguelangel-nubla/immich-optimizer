@@ -7,4 +7,5 @@ services:
       - .env
     volumes:
       - ./watch:/watch
+      - ./undone:/undone
     restart: unless-stopped

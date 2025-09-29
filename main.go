@@ -132,6 +132,10 @@ func (ac *AppConfig) validate() error {
 }
 
 func main() {
+	// Setup graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
 	config := appConfig
 
 	baseLogger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
@@ -155,14 +159,6 @@ func main() {
 		customLogger.Printf("Error starting file watcher: %v", err)
 		os.Exit(1)
 	}
-
-	// Setup graceful shutdown
-
-	// Wait for interrupt signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	customLogger.Printf("Service started. Press Ctrl+C to stop.")
 
 	// Block until we receive our signal
 	<-sigChan
