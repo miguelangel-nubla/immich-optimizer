@@ -29,7 +29,7 @@ RUN set -eux; \
     caesiumclt --version
 
 # Runtime stage
-FROM jlesage/handbrake:v24.01.1
+FROM jlesage/handbrake:v25.12.1
 
 # Create non-root user for security
 RUN addgroup -g 1001 appuser && \
@@ -48,7 +48,10 @@ RUN apk update && \
         libjxl-tools \
         musl-dev \
         tzdata \
-        vips-tools && \
+        vips-tools \
+        libva \
+        libva-utils \
+        mesa-va-gallium && \
     rm -rf /var/cache/apk/*
 
 # Create symlink for libresolv compatibility
