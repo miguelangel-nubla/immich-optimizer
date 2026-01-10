@@ -31,6 +31,11 @@ tasks:
   - webp
   - gif
 
+- name: vips
+  command: vips copy {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.name}}.jxl[Q=75]
+  extensions:
+  - dng
+
 - name: handbrake
   command: HandBrakeCLI --preset-import-file handbrake.json -Z immich-optimizer -i {{.src_folder}}/{{.name}}.{{.extension}} -o {{.dst_folder}}/{{.name}}.mkv
   extensions:
