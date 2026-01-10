@@ -45,6 +45,7 @@ RUN apk update && \
         imagemagick \
         jq \
         libc6-compat \
+        libjxl \
         libjxl-tools \
         musl-dev \
         tzdata \
