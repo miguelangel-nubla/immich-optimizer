@@ -49,6 +49,8 @@ RUN apk update && \
         musl-dev \
         tzdata \
         vips-tools \
+        libheif \
+        libde265 \
         libva \
         libva-utils \
         mesa-va-gallium && \
