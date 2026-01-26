@@ -37,7 +37,7 @@ tasks:
   - dng
 
 - name: handbrake
-  command: HandBrakeCLI --preset-import-file handbrake.json -Z immich-optimizer -i {{.src_folder}}/{{.name}}.{{.extension}} -o {{.dst_folder}}/{{.name}}.mkv
+  command: ffmpeg -i {{.src_folder}}/{{.name}}.{{.extension}} -movflags use_metadata_tags -map_metadata 0 -c:v libx265 -crf 26 -preset fast -c:a aac -b:a 128k {{.dst_folder}}/{{.name}}.mp4
   extensions:
   - 3gp
   - 3gpp
