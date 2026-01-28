@@ -15,4 +15,5 @@ if [[ $(exiftool -b -MotionPhoto "$ORIGINAL_FILE") -gt 0 ]]; then
   exit 0
 else
   vips copy ${ORIGINAL_FILE} ${TARGET_FILE}[Q=75]
+  exiftool -m -overwrite_original -tagsfromfile ${ORIGINAL_FILE} -exif ${TARGET_FILE}
 fi
