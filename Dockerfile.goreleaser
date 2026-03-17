@@ -46,7 +46,9 @@ RUN apt-get update && \
         imagemagick \
         jq \
         libc6 \
-        libjxl-tools \
+        # libjxl-tools \ install it manually because in debian bookworm stable version is v0.7.0 which is old
+        libgif7 \
+        libtcmalloc-minimal4 \
         libvips-tools \
         tzdata \
         vainfo \
@@ -55,6 +57,14 @@ RUN apt-get update && \
         mesa-va-drivers && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+# install new cjxl
+RUN curl -fsSL -o /tmp/jxl-debs.tar.gz \
+    "https://github.com/libjxl/libjxl/releases/download/v0.11.1/jxl-debs-amd64-debian-bookworm-v0.11.1.tar.gz" && \
+    tar xzf /tmp/jxl-debs.tar.gz -C /tmp && \
+    dpkg -i /tmp/libjxl_0.11.1_amd64.deb && \
+    dpkg -i /tmp/jxl_0.11.1_amd64.deb && \
+    apt-get install -f -y && \
+    rm -rf /tmp/*.deb
 
 # Copy caesium-clt from builder
 COPY --from=builder /usr/local/bin/caesiumclt /usr/local/bin/caesiumclt
