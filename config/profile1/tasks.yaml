@@ -37,7 +37,16 @@ tasks:
   - dng
 
 - name: handbrake
-  command: HandBrakeCLI --preset-import-file handbrake.json -Z immich-optimizer -i {{.src_folder}}/{{.name}}.{{.extension}} -o {{.dst_folder}}/{{.name}}.mkv
+  command: >
+    HandBrakeCLI --preset-import-file handbrake.json -Z immich-optimizer \
+      -i {{.src_folder}}/{{.name}}.{{.extension}} \
+      -o {{.dst_folder}}/{{.name}}.temp.mkv \
+    && ffmpeg \
+      -i {{.dst_folder}}/{{.name}}.temp.mkv \
+      -i {{.src_folder}}/{{.name}}.{{.extension}} \
+      -map 0 -map_metadata 1 -c copy -y \
+      {{.dst_folder}}/{{.name}}.mkv \
+    && rm {{.dst_folder}}/{{.name}}.temp.mkv
   extensions:
   - 3gp
   - 3gpp
