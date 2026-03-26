@@ -1,35 +1,34 @@
 # Builder stage for downloading caesium-clt
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 # Install required packages with security updates
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        jq && \
+    ca-certificates \
+    curl \
+    jq && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 ARG TARGETPLATFORM
-ARG CAESIUM_GITHUB_REPO=Lymphatus/caesium-clt
 
-# Download and install caesium-clt with error handling
+ARG CAESIUM_GITHUB_REPO=Lymphatus/caesium-clt
 RUN set -eux; \
     CAESIUM_LATEST_RELEASE=$(curl -s https://api.github.com/repos/$CAESIUM_GITHUB_REPO/releases/latest | jq -r '.tag_name'); \
     case "$TARGETPLATFORM" in \
-        "linux/amd64") CAESIUM_ARCH=x86_64-unknown-linux-musl ;; \
-        "linux/arm64") CAESIUM_ARCH=aarch64-unknown-linux-musl ;; \
-        *) echo "Platform $TARGETPLATFORM not supported by ${CAESIUM_GITHUB_REPO}"; exit 1 ;; \
+    "linux/amd64") CAESIUM_ARCH=x86_64-unknown-linux-musl ;; \
+    "linux/arm64") CAESIUM_ARCH=aarch64-unknown-linux-musl ;; \
+    *) echo "Platform $TARGETPLATFORM not supported by ${CAESIUM_GITHUB_REPO}"; exit 1 ;; \
     esac; \
     CAESIUM_ARCHIVE=caesiumclt-${CAESIUM_LATEST_RELEASE}-${CAESIUM_ARCH}; \
     curl -fsSL -o "/tmp/${CAESIUM_ARCHIVE}.tar.gz" \
-        "https://github.com/$CAESIUM_GITHUB_REPO/releases/latest/download/${CAESIUM_ARCHIVE}.tar.gz"; \
+    "https://github.com/$CAESIUM_GITHUB_REPO/releases/latest/download/${CAESIUM_ARCHIVE}.tar.gz"; \
     tar xzf "/tmp/${CAESIUM_ARCHIVE}.tar.gz" -C /tmp; \
     install -m 755 "/tmp/${CAESIUM_ARCHIVE}/caesiumclt" /usr/local/bin/caesiumclt; \
     caesiumclt --version
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 # Create non-root user for security
 RUN groupadd -r appuser && \
@@ -38,41 +37,33 @@ RUN groupadd -r appuser && \
 # Install runtime dependencies with security updates
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        exiftool \
-        ffmpeg \
-        handbrake-cli \
-        imagemagick \
-        jq \
-        libc6 \
-        # libjxl-tools \ install it manually because in debian bookworm stable version is v0.7.0 which is old
-        libgif7 \
-        libtcmalloc-minimal4 \
-        libvips-tools \
-        tzdata \
-        vainfo \
-        libva2 \
-        libva-drm2 \
-        mesa-va-drivers && \
+    ca-certificates \
+    curl \
+    exiftool \
+    ffmpeg \
+    handbrake-cli \
+    imagemagick \
+    jq \
+    libc6 \
+    libjxl-tools \
+    libgif7 \
+    libtcmalloc-minimal4 \
+    libvips-tools \
+    tzdata \
+    vainfo \
+    libva2 \
+    libva-drm2 \
+    mesa-va-drivers && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-# install new cjxl
-RUN curl -fsSL -o /tmp/jxl-debs.tar.gz \
-    "https://github.com/libjxl/libjxl/releases/download/v0.11.1/jxl-debs-amd64-debian-bookworm-v0.11.1.tar.gz" && \
-    tar xzf /tmp/jxl-debs.tar.gz -C /tmp && \
-    dpkg -i /tmp/libjxl_0.11.1_amd64.deb && \
-    dpkg -i /tmp/jxl_0.11.1_amd64.deb && \
-    apt-get install -f -y && \
-    rm -rf /tmp/*.deb
 
 # Copy caesium-clt from builder
 COPY --from=builder /usr/local/bin/caesiumclt /usr/local/bin/caesiumclt
 
 # Create directories with proper permissions
 RUN mkdir -p /etc/immich-optimizer/config \
-             /etc/immich-optimizer/bundled-configs \
-             /watch && \
+    /etc/immich-optimizer/bundled-configs \
+    /watch && \
     chown -R appuser:appuser /etc/immich-optimizer /watch
 
 # Copy configuration files
@@ -84,11 +75,12 @@ COPY --chown=appuser:appuser immich-optimizer /usr/local/bin/
 RUN chmod +x /usr/local/bin/immich-optimizer
 
 # Add metadata labels
-LABEL org.opencontainers.image.title="Immich Optimizer" \
-      org.opencontainers.image.description="File optimization service for Immich" \
-      org.opencontainers.image.vendor="miguelangel-nubla" \
-      org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.documentation="https://github.com/miguelangel-nubla/immich-optimizer"
+LABEL \
+    org.opencontainers.image.title="Immich Optimizer" \
+    org.opencontainers.image.description="File optimization service for Immich" \
+    org.opencontainers.image.vendor="miguelangel-nubla" \
+    org.opencontainers.image.licenses="MIT" \
+    org.opencontainers.image.documentation="https://github.com/miguelangel-nubla/immich-optimizer"
 
 # Set environment variables
 ENV IUO_TASKS_FILE=/etc/immich-optimizer/config/tasks.yaml \
