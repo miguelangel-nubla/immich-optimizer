@@ -11,7 +11,7 @@ A file optimization service that automatically processes and uploads media files
 
 - **📁 File Watching**: Automatically monitors directories for new media files
 - **🔄 Configurable Processing**: Support for multiple optimization profiles
-- **📸 Image Optimization**: 
+- **📸 Image Optimization**:
   - Lossless JPEG-XL conversion
   - Caesium compression
   - Format-specific optimization
@@ -60,6 +60,32 @@ services:
       # Optional: Custom configuration
       - ./custom-config:/etc/immich-optimizer/config
     restart: unless-stopped
+```
+
+### 🚀 Custom Image (GPU Acceleration, FFMPEG, etc.)
+
+Hardware-accelerated video encoding (NVidia NVENC, Intel VAAPI, etc.) is **not included in the base image** because providing a one-size-fits-all solution is complex and leads to massive image fragmentation. Furthermore, there are some limitations with the upstream HandBrake base image not supporting `arm64` (see [jlesage/docker-handbrake#48](https://github.com/jlesage/docker-handbrake/issues/48)).
+
+Instead of using the pre-built image, you can use your own Dockerfile, I provide a example [Dockerfile.custom](Dockerfile.custom) as a starting point to bundle the latest **Immich Optimizer** binary directly **INTO your own specialized container environment**. This approach allows you to install **any additional packages or specific versions** (e.g. CUDA, specialized ffmpeg builds, specific driver versions, or custom tools) required for your specific hardware/workflow.
+
+This is also a great alternative for users who want to **rely solely on `ffmpeg`** for video optimization without the overhead or specific requirements of the HandBrake base image. Or just want to run immich-optimizer binary directly without any container at all.
+
+The following script downloads the latest **Immich Optimizer** binary from the GitHub releases page and installs it:
+
+```Dockerfile
+ARG IMMICH_OPTIMIZER_REPO=miguelangel-nubla/immich-optimizer
+RUN set -eux; \
+    LATEST_TAG=$(curl -s https://api.github.com/repos/$IMMICH_OPTIMIZER_REPO/releases/latest | jq -r '.tag_name'); \
+    case "$TARGETPLATFORM" in \
+    "linux/amd64") ARCH=x86_64 ;; \
+    "linux/arm64") ARCH=arm64 ;; \
+    *) echo "Platform $TARGETPLATFORM not supported"; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/immich-optimizer.tar.gz \
+    "https://github.com/$IMMICH_OPTIMIZER_REPO/releases/download/${LATEST_TAG}/immich-optimizer_Linux_${ARCH}.tar.gz"; \
+    tar xzf /tmp/immich-optimizer.tar.gz -C /usr/local/bin immich-optimizer; \
+    rm /tmp/immich-optimizer.tar.gz; \
+    chmod +x /usr/local/bin/immich-optimizer
 ```
 
 ## ⚙️ Configuration
