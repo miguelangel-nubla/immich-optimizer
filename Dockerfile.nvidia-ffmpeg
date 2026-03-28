@@ -1,0 +1,89 @@
+# Example of image based on latest ffmpeg:8.0.1 with nvidia support
+# Latest cjxl version (v0.11.1) and caesium
+# This will bring new options/flags for compressing images/videos. You can use this image in pair with 'storage-saver-cjxl-ffmpeg' profile or write your own
+
+# Stage 1: Build the Go application
+FROM golang:1.26.1-alpine3.22 AS builder
+
+RUN apk add --no-cache \
+    git \
+    go \
+    musl-dev \
+    ca-certificates
+
+ENV GO111MODULE=on \
+    GOPROXY=https://proxy.golang.org,direct \
+    CGO_ENABLED=0 \
+    GOOS=linux
+
+WORKDIR /build
+RUN git clone https://github.com/miguelangel-nubla/immich-optimizer.git .
+
+RUN go build -ldflags="-s -w" -o immich-optimizer .
+
+
+FROM jrottenberg/ffmpeg:8.0.1-nvidia2404
+# Clear the entrypoint from base image
+ENTRYPOINT []
+ARG TARGETPLATFORM
+
+# Copy binary from builder
+COPY --from=builder /build/immich-optimizer /usr/local/bin/immich-optimizer
+
+RUN apt update
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    exiftool \
+    ffmpeg \
+    handbrake-cli \
+    imagemagick \
+    jq \
+    libc6 \
+    libjxl-tools \
+    libgif7 \
+    libtcmalloc-minimal4 \
+    libvips-tools \
+    tzdata \
+    vainfo \
+    libva2 \
+    libva-drm2 \
+    mesa-va-drivers && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+ARG CAESIUM_GITHUB_REPO=Lymphatus/caesium-clt
+
+RUN curl -fsSL -o /tmp/jxl-debs.tar.gz \
+    "https://github.com/libjxl/libjxl/releases/download/v0.11.1/jxl-debs-amd64-ubuntu-24.04-v0.11.1.tar.gz" && \
+     tar xzf /tmp/jxl-debs.tar.gz -C /tmp && \
+    apt-get update && \
+    apt remove -y libjxl-tools && \
+    apt-get install -y /tmp/*.deb && \
+    rm -rf /tmp/*
+RUN CAESIUM_LATEST_RELEASE=$(curl -s https://api.github.com/repos/$CAESIUM_GITHUB_REPO/releases/latest | jq -r '.tag_name') \
+    && if [ "$TARGETPLATFORM" = "linux/amd64" ]; then CAESIUM_ARCH=x86_64-unknown-linux-musl; \
+       elif [ "$TARGETPLATFORM" = "linux/arm64" ]; then CAESIUM_ARCH=aarch64-unknown-linux-musl; \
+       else echo "Platform not supported by ${CAESIUM_GITHUB_REPO}"; exit 126; fi \
+    && CAESIUM_ARCHIVE=caesiumclt-${CAESIUM_LATEST_RELEASE}-${CAESIUM_ARCH} \
+    && curl -sS -L -O --output-dir /tmp/ --create-dirs  "https://github.com/$CAESIUM_GITHUB_REPO/releases/latest/download/${CAESIUM_ARCHIVE}.tar.gz" \
+    && tar xzf "/tmp/${CAESIUM_ARCHIVE}.tar.gz" -C /tmp \
+    && mv "/tmp/${CAESIUM_ARCHIVE}/caesiumclt" /usr/local/bin/caesiumclt
+
+
+# Set environment variables
+ENV IUO_TASKS_FILE=/etc/immich-optimizer/config/tasks.yaml \
+    IUO_WATCH_DIR=/watch
+
+# Add health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD immich-optimizer -version || exit 1
+
+# Switch to non-root user
+USER appuser
+
+# Set working directory
+WORKDIR /watch
+
+# Default command
+CMD ["immich-optimizer"]
