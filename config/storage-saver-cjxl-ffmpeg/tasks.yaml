@@ -1,8 +1,6 @@
 tasks:
   - name: jpeg-xl
-    command: cjxl --lossless_jpeg=0 -q 80 --container=1 --compress_boxes=0 {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.name}}-new.jxl && exiftool -overwrite_original
-      -tagsfromfile "{{.src_folder}}/{{.name}}.{{.extension}}"
-      -all:all -m -Orientation=1 "{{.dst_folder}}/{{.name}}-new.jxl"
+    command: cjxl --lossless_jpeg=0 -q 80 --container=1 --compress_boxes=0 {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.name}}-new.jxl 
     extensions:
       - jpeg
       - jpg
