@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -24,8 +25,16 @@ type FileWatcher struct {
 	logger       *log.Logger    // logger instance
 	watchMap     map[string]int // maps directory paths to watch descriptors
 	bufferSize   int            // buffer size for reading inotify events
-	appConfig    *AppConfig     // application configuration
-	processing   sync.Map       // tracks files actively being processed to avoid duplicate concurrent tasks
+	appConfig      *AppConfig     // application configuration
+	processing     sync.Map       // tracks files actively being processed to avoid duplicate concurrent tasks
+	closedInodes   sync.Map       // tracks inodes of recently closed temporary files
+	pendingCreates sync.Map       // tracks inodes of recently created non-temp files waiting for IN_CLOSE_WRITE
+}
+
+// pendingCreate stores an IN_CREATE event waiting for an IN_CLOSE_WRITE
+type pendingCreate struct {
+	path string
+	ts   time.Time
 }
 
 // NewFileWatcher creates a new file watcher instance
@@ -62,10 +71,37 @@ func (fw *FileWatcher) Start(config *AppConfig) error {
 	// Process existing files in all directories asynchronously
 	go fw.processExistingFilesRecursive(fw.watchDir)
 
+	// Start sweeping stale cached inodes
+	go fw.cleanupLoop()
+
 	// Start watching for new files
 	go fw.watchLoop()
 
 	return nil
+}
+
+// cleanupLoop periodically sweeps stale cached inodes to prevent memory leaks
+func (fw *FileWatcher) cleanupLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		now := time.Now()
+		
+		fw.closedInodes.Range(func(key, value any) bool {
+			if ts, ok := value.(time.Time); ok && now.Sub(ts) > time.Minute {
+				fw.closedInodes.Delete(key)
+			}
+			return true
+		})
+
+		fw.pendingCreates.Range(func(key, value any) bool {
+			if pc, ok := value.(pendingCreate); ok && now.Sub(pc.ts) > time.Minute {
+				fw.pendingCreates.Delete(key)
+			}
+			return true
+		})
+	}
 }
 
 // Stop closes the file watcher and cleans up resources

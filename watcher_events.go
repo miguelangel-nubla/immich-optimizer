@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -62,9 +64,48 @@ func (fw *FileWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, watche
 
 	if event.Mask&unix.IN_CREATE != 0 {
 		fw.handleDirectoryCreation(filePath)
+
+		// Rescue hardlinks / atomic creations sent by sync clients (like FolderSync)
+		// Because they only emit IN_CREATE without IN_MOVED_TO or IN_CLOSE_WRITE, we identify 
+		// them by matching their inode to a temporary file that just finished writing.
+		if info, err := os.Stat(filePath); err == nil && !info.IsDir() && !fw.isTempFile(filePath) {
+			if statT, ok := info.Sys().(*syscall.Stat_t); ok {
+				if _, loaded := fw.closedInodes.LoadAndDelete(statT.Ino); loaded {
+					// Matched a previous IN_CLOSE_WRITE
+					if watchedDir != "" {
+						go fw.processFile(filePath)
+					}
+				} else if watchedDir != "" {
+					// Arrived before IN_CLOSE_WRITE, cache it for the central sweeper
+					fw.pendingCreates.Store(statT.Ino, pendingCreate{
+						path: filePath,
+						ts:   time.Now(),
+					})
+				}
+			}
+		}
 	}
 
 	if event.Mask&unix.IN_CLOSE_WRITE != 0 || event.Mask&unix.IN_MOVED_TO != 0 {
+		// If a temporary file finishes writing, store its inode to check against future IN_CREATE linkings
+		if event.Mask&unix.IN_CLOSE_WRITE != 0 && fw.isTempFile(filePath) {
+			if info, err := os.Stat(filePath); err == nil {
+				if statT, ok := info.Sys().(*syscall.Stat_t); ok {
+					if pendingV, found := fw.pendingCreates.LoadAndDelete(statT.Ino); found {
+						// Arrived after IN_CREATE
+						if pc, ok := pendingV.(pendingCreate); ok {
+							go fw.processFile(pc.path)
+						}
+					} else {
+						// Store for the sweeper loop in case IN_CREATE comes later
+						fw.closedInodes.Store(statT.Ino, time.Now())
+					}
+					// Return explicitly to prevent a double processing attempt here below
+					return
+				}
+			}
+		}
+
 		if watchedDir != "" {
 			go fw.processFile(filePath)
 		}
