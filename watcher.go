@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"golang.org/x/sys/unix"
 )
@@ -24,6 +25,7 @@ type FileWatcher struct {
 	watchMap     map[string]int // maps directory paths to watch descriptors
 	bufferSize   int            // buffer size for reading inotify events
 	appConfig    *AppConfig     // application configuration
+	processing   sync.Map       // tracks files actively being processed to avoid duplicate concurrent tasks
 }
 
 // NewFileWatcher creates a new file watcher instance
@@ -57,8 +59,8 @@ func (fw *FileWatcher) Start(config *AppConfig) error {
 		return fmt.Errorf("failed to add recursive watches: %w", err)
 	}
 
-	// Process existing files in all directories
-	fw.processExistingFilesRecursive(fw.watchDir)
+	// Process existing files in all directories asynchronously
+	go fw.processExistingFilesRecursive(fw.watchDir)
 
 	// Start watching for new files
 	go fw.watchLoop()
@@ -109,7 +111,7 @@ func (fw *FileWatcher) processExistingFilesRecursive(dir string) {
 		}
 
 		if !d.IsDir() {
-			fw.processFile(path)
+			go fw.processFile(path)
 		}
 
 		return nil

@@ -31,7 +31,6 @@ type TaskProcessor struct {
 	tempWorkDirDst string
 
 	logger    *customLogger
-	semaphore chan struct{}
 	configDir string
 }
 
@@ -61,10 +60,6 @@ func NewTaskProcessor(filename string) (tp *TaskProcessor, err error) {
 
 func (tp *TaskProcessor) SetLogger(logger *customLogger) {
 	tp.logger = logger
-}
-
-func (tp *TaskProcessor) SetSemaphore(semaphore chan struct{}) {
-	tp.semaphore = semaphore
 }
 
 func (tp *TaskProcessor) SetConfigDir(configDir string) {
@@ -219,12 +214,6 @@ func (tp *TaskProcessor) buildCommand(commandTemplate *template.Template, tempFi
 }
 
 func (tp *TaskProcessor) executeCommand(command string) error {
-	// Limit the number of concurrent tasks running
-	if tp.semaphore != nil {
-		tp.semaphore <- struct{}{}
-		defer func() { <-tp.semaphore }()
-	}
-
 	tp.logf("running: %s", command)
 
 	cmd := exec.Command("sh", "-c", command)

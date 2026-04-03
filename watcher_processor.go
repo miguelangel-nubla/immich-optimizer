@@ -4,11 +4,40 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+// isTempFile checks if a file is a known temporary file format used by sync clients
+func (fw *FileWatcher) isTempFile(filePath string) bool {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".tmp", ".temp", ".part", ".crdownload", ".tacitpart", ".pending":
+		return true
+	}
+	if strings.HasPrefix(ext, ".syncthing") {
+		return true
+	}
+	return false
+}
 
 // processFile handles the complete file processing workflow
 func (fw *FileWatcher) processFile(originalFilePath string) {
+	// Deduplicate parallel events: abort if this file is already running in another goroutine
+	if _, loaded := fw.processing.LoadOrStore(originalFilePath, true); loaded {
+		return
+	}
+	defer fw.processing.Delete(originalFilePath)
+
+	if fw.appConfig != nil && fw.appConfig.Semaphore != nil {
+		fw.appConfig.Semaphore <- struct{}{}
+		defer func() { <-fw.appConfig.Semaphore }()
+	}
+
 	if !fw.validateFile(originalFilePath) {
+		return
+	}
+
+	if fw.isTempFile(originalFilePath) {
 		return
 	}
 
@@ -66,7 +95,6 @@ func (fw *FileWatcher) createTaskProcessor(filePath string) (*TaskProcessor, err
 	tp.SetLogger(jobLogger)
 
 	if fw.appConfig != nil {
-		tp.SetSemaphore(fw.appConfig.Semaphore)
 		tp.SetConfigDir(filepath.Dir(fw.appConfig.ConfigFile))
 	}
 

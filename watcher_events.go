@@ -57,13 +57,16 @@ func (fw *FileWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, watche
 
 	filePath := filepath.Join(watchedDir, name)
 
+	// Debug log to confirm what raw events are produced (especially for rename operations)
+	fw.logger.Printf("[DEBUG] raw inotify event: mask=0x%x, name=%s, watchedDir=%s", event.Mask, name, watchedDir)
+
 	if event.Mask&unix.IN_CREATE != 0 {
 		fw.handleDirectoryCreation(filePath)
 	}
 
 	if event.Mask&unix.IN_CLOSE_WRITE != 0 || event.Mask&unix.IN_MOVED_TO != 0 {
 		if watchedDir != "" {
-			fw.processFile(filePath)
+			go fw.processFile(filePath)
 		}
 	}
 }
@@ -72,5 +75,6 @@ func (fw *FileWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, watche
 func (fw *FileWatcher) handleDirectoryCreation(path string) {
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
 		fw.addWatchRecursive(path)
+		go fw.processExistingFilesRecursive(path) // catch any files missed during inotify race conditions
 	}
 }
