@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"sync"
@@ -220,3 +221,105 @@ func TestShouldUploadProcessedFileNil(t *testing.T) {
 		t.Errorf("Expected shouldUploadProcessedFile(nil) to return false, got true")
 	}
 }
+
+type errorUploader struct {
+	failMap map[string]error
+	uploaded []string
+	sync.Mutex
+}
+
+func (e *errorUploader) UploadAsset(ctx context.Context, filePath string) error {
+	e.Lock()
+	defer e.Unlock()
+	if err, found := e.failMap[filePath]; found {
+		return err
+	}
+	e.uploaded = append(e.uploaded, filePath)
+	return nil
+}
+
+func (e *errorUploader) UploadAssetWithFilename(ctx context.Context, filePath, filename string) error {
+	e.Lock()
+	defer e.Unlock()
+	if err, found := e.failMap[filename]; found {
+		return err
+	}
+	e.uploaded = append(e.uploaded, filename)
+	return nil
+}
+
+func TestPipelineServiceUploadQuotaExceededContinuesProcessing(t *testing.T) {
+	events := make(chan entity.FileEvent, 10)
+	watcher := &mockWatcher{events: events}
+	processor := &mockProcessor{}
+	fs := &mockFileSystem{}
+	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
+
+	f1, _ := os.CreateTemp("", "test_file1_*.jpg")
+	f1.Close()
+	defer os.Remove(f1.Name())
+
+	f2, _ := os.CreateTemp("", "test_file2_*.jpg")
+	f2.Close()
+	defer os.Remove(f2.Name())
+
+	f3, _ := os.CreateTemp("", "test_file3_*.jpg")
+	f3.Close()
+	defer os.Remove(f3.Name())
+
+	// f1 will fail with 400 Quota Exceeded error on upload ("processed.jpg" returned by mockProcessor)
+	uploader := &errorUploader{
+		failMap: map[string]error{
+			"processed.jpg": errors.New(`upload failed with status 400: {"message":"Quota has been exceeded!","error":"Bad Request","statusCode":400}`),
+		},
+	}
+
+	tasks := []entity.Task{
+		{
+			Name:       "TestTask",
+			Extensions: []string{"jpg"},
+		},
+	}
+
+	service := NewService(watcher, processor, uploader, fs, logger, tasks, 2)
+	service.Start()
+
+	// Send file 1 (which fails upload due to quota exceeded)
+	events <- entity.FileEvent{Path: f1.Name(), Timestamp: time.Now()}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Send file 2 and file 3
+	// Now remove the failMap error so file 2 and file 3 succeed
+	uploader.Lock()
+	delete(uploader.failMap, "processed.jpg")
+	uploader.Unlock()
+
+	events <- entity.FileEvent{Path: f2.Name(), Timestamp: time.Now()}
+	events <- entity.FileEvent{Path: f3.Name(), Timestamp: time.Now()}
+
+	time.Sleep(200 * time.Millisecond)
+	service.Stop()
+
+	fs.Lock()
+	undoneCount := len(fs.undone)
+	removedCount := len(fs.removed)
+	fs.Unlock()
+
+	uploader.Lock()
+	uploadedCount := len(uploader.uploaded)
+	uploader.Unlock()
+
+	if undoneCount != 1 {
+		t.Errorf("Expected 1 file (file 1) to be moved to undone directory, got %d", undoneCount)
+	}
+
+	if uploadedCount != 2 {
+		t.Errorf("Expected 2 files (file 2 and 3) to be uploaded successfully after quota error, got %d", uploadedCount)
+	}
+
+	if removedCount != 2 {
+		t.Errorf("Expected 2 files (file 2 and 3) to be removed after successful upload, got %d", removedCount)
+	}
+}
+

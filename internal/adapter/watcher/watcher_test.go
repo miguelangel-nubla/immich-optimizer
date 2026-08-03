@@ -28,3 +28,4 @@ func TestNewInotifyWatcher(t *testing.T) {
 		}
 	}
 }
+

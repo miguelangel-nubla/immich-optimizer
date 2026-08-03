@@ -177,7 +177,8 @@ func (fw *inotifyWatcher) watchLoop() {
 				default:
 				}
 				fw.logger.Printf("Error reading inotify events: %v", err)
-				return
+				time.Sleep(100 * time.Millisecond)
+				continue
 			}
 			fw.processInotifyEvents(buf, n)
 		}
@@ -226,12 +227,19 @@ func (fw *inotifyWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, wat
 	}
 
 	filePath := filepath.Join(watchedDir, name)
+	fw.logger.Debugf("Inotify raw event 0x%x for %s", event.Mask, filePath)
+
+	if info, err := os.Stat(filePath); err == nil && info.IsDir() {
+		if event.Mask&(unix.IN_CREATE|unix.IN_MOVED_TO) != 0 {
+			fw.logger.Debugf("New directory detected (%s), adding recursive watches", filePath)
+			_ = fw.addWatchRecursive(filePath)
+			go fw.processExistingFilesRecursive(filePath)
+		}
+		return
+	}
 
 	if event.Mask&unix.IN_CREATE != 0 {
-		if info, err := os.Stat(filePath); err == nil && info.IsDir() {
-			fw.addWatchRecursive(filePath)
-			go fw.processExistingFilesRecursive(filePath)
-		} else if err == nil && !info.IsDir() && !utils.IsTempFile(filePath) {
+		if info, err := os.Stat(filePath); err == nil && !info.IsDir() && !utils.IsTempFile(filePath) {
 			if statT, ok := info.Sys().(*syscall.Stat_t); ok {
 				if _, loaded := fw.closedInodes.LoadAndDelete(statT.Ino); loaded {
 					if watchedDir != "" {
@@ -269,6 +277,7 @@ func (fw *inotifyWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, wat
 }
 
 func (fw *inotifyWatcher) emitEvent(path string) {
+	fw.logger.Debugf("Emitting file event for processing: %s", path)
 	select {
 	case fw.events <- entity.FileEvent{Path: path, Timestamp: time.Now()}:
 	case <-fw.stopChan:
