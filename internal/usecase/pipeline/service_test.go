@@ -125,6 +125,56 @@ func TestPipelineService(t *testing.T) {
 	}
 }
 
+func TestPipelineServiceBlocksUnmatchedExtension(t *testing.T) {
+	events := make(chan entity.FileEvent, 10)
+	watcher := &mockWatcher{events: events}
+	processor := &mockProcessor{
+		processFunc: func(filePath string) (*entity.ProcessResult, error) {
+			t.Fatalf("processor should not be called for unmatched extension")
+			return nil, nil
+		},
+	}
+	uploader := &mockUploader{}
+	fs := &mockFileSystem{}
+	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
+
+	tasks := []entity.Task{
+		{
+			Name:       "TestTask",
+			Extensions: []string{"jpg"},
+		},
+	}
+
+	service := NewService(watcher, processor, uploader, fs, logger, tasks, 1)
+
+	f, _ := os.CreateTemp("", "test_event*.pdf")
+	f.Close()
+	defer os.Remove(f.Name())
+
+	service.Start()
+
+	events <- entity.FileEvent{
+		Path:      f.Name(),
+		Timestamp: time.Now(),
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	service.Stop()
+
+	uploader.Lock()
+	if len(uploader.uploadedOriginal) != 0 || len(uploader.uploadedProcessed) != 0 {
+		t.Fatalf("expected no uploads for unmatched extension, got original=%d processed=%d", len(uploader.uploadedOriginal), len(uploader.uploadedProcessed))
+	}
+	uploader.Unlock()
+
+	fs.Lock()
+	defer fs.Unlock()
+	if len(fs.undone) != 1 {
+		t.Fatalf("expected unmatched file to be moved to undone, got %d", len(fs.undone))
+	}
+}
+
 func TestShouldOptimizeFileExtensionNormalization(t *testing.T) {
 	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
 	tasks := []entity.Task{

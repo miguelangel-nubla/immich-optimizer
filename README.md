@@ -38,6 +38,7 @@ If you are migrating from `immich-upload-optimizer` to `immich-optimizer`, updat
    In `immich-optimizer`, input files and output files are cleanly isolated into separate directories:
    - Replace `{{.folder}}` with `{{.src_folder}}` for the input file path.
    - Replace `{{.folder}}` with `{{.dst_folder}}` for the output file path.
+   - Files with no matching task extension are blocked. Add an empty-command task for formats you want to pass through unchanged.
    
    *Example:*
    ```yaml
@@ -140,11 +141,14 @@ RUN set -eux; \
 | `IUO_IMMICH_URL` | All | Immich server URL (required) | - |
 | `IUO_TASKS_FILE` | All | Path to tasks configuration file | `tasks.yaml` |
 | `IUO_LOG_LEVEL` | All | Log level filtering (`debug`, `info`, `warn`, `error`) | `info` |
+| `IUO_MAX_CONCURRENT_REQUESTS` | All | Maximum number of files/uploads to process concurrently | `10` |
+| `IUO_HTTP_TIMEOUT_SECONDS` | All | HTTP client timeout for Immich/proxy requests, in seconds | `120` |
 | `IUO_PROXY_BIND_ADDR` | `proxy` | Address for reverse proxy server to listen on | `:8080` |
 | `IUO_PROXY_FILTER_PATH` | `proxy` | Path pattern to intercept for proxy uploads | `/api/assets` |
 | `IUO_PROXY_FILTER_FORM_KEY` | `proxy` | Form key for upload files | `assetData` |
 | `IUO_WATCHER_WATCH_DIR` | `watcher` | Directory to watch for files | `/watch` |
 | `IUO_WATCHER_UNDONE_DIR` | `watcher` | Directory for files that failed processing/upload | `/undone` |
+| `IUO_WATCHER_INOTIFY_BUFFER_SIZE` | `watcher` | Inotify event read buffer size, in bytes | `8192` |
 | `IUO_IMMICH_API_KEY` | `watcher` | Immich API key (required in `watcher` mode) | - |
 
 ### Command Line Options
@@ -157,6 +161,10 @@ General Options:
   -immich_url string     Immich server URL (required)
   -tasks_file string     Tasks configuration file (default "tasks.yaml")
   -log_level string      Log level: debug, info, warn, error (default "info")
+  -max_concurrent_requests int
+                         Maximum number of files/uploads to process concurrently (default 10)
+  -http_timeout_seconds int
+                         HTTP client timeout for Immich/proxy requests, in seconds (default 120)
   -version               Show version information
 
 Proxy Mode Options:
@@ -168,6 +176,8 @@ Watcher Mode Options:
   -immich_api_key string Immich API key (required in watcher mode)
   -watch_dir string      Directory to watch (default "/watch")
   -undone_dir string     Directory for failed files (default "/undone")
+  -inotify_buffer_size int
+                         Inotify event read buffer size, in bytes (default 8192)
 ```
 
 ## 📋 Optimization Profiles
@@ -195,6 +205,7 @@ The optimizer includes three pre-configured profiles:
 ```yaml
 # Located at: config/passthrough-all/tasks.yaml
 # - No optimization, uploads files as-is
+# - Allows only the extensions listed in the profile
 # - Useful for testing or when optimization is not desired
 ```
 
@@ -219,7 +230,7 @@ tasks:
       - mov
       
   - name: passthrough
-    command: ""  # Empty command passes file through unchanged
+    command: ""  # Empty command passes matching files through unchanged
     extensions:
       - webp
       - avif
@@ -230,7 +241,7 @@ tasks:
 Available in task commands:
 
 - `{{.src_folder}}` - Source directory path
-- `{{.dst_folder}}` - Destination directory path  
+- `{{.dst_folder}}` - Destination directory path; non-empty commands must write exactly one output file here
 - `{{.name}}` - Filename without extension
 - `{{.extension}}` - File extension without dot
 

@@ -143,15 +143,11 @@ func TestProxyUploadOptimization(t *testing.T) {
 	}
 }
 
-func TestProxyUploadNonMatchingExtensionPassThrough(t *testing.T) {
-	var upstreamReceivedBody []byte
+func TestProxyUploadNonMatchingExtensionBlocked(t *testing.T) {
+	var upstreamCalled bool
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var err error
-		upstreamReceivedBody, err = io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("upstream failed to read body: %v", err)
-		}
+		upstreamCalled = true
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
@@ -187,11 +183,11 @@ func TestProxyUploadNonMatchingExtensionPassThrough(t *testing.T) {
 
 	server.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", rec.Code)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected status 415, got %d", rec.Code)
 	}
-	if !strings.Contains(string(upstreamReceivedBody), "pdf-content") {
-		t.Fatalf("expected un-modified pdf content in body, got: %s", string(upstreamReceivedBody))
+	if upstreamCalled {
+		t.Fatalf("expected upstream not to be called for unmatched extension")
 	}
 }
 
@@ -215,7 +211,14 @@ func TestProxyAsyncJobRedirect(t *testing.T) {
 		},
 	}
 
-	server := NewServer(u, "127.0.0.1:0", "/api/assets", "assetData", mockProc, nil, logger, 5, 10)
+	tasks := []entity.Task{
+		{
+			Name:       "jpeg-opt",
+			Extensions: []string{"jpg", "jpeg"},
+		},
+	}
+
+	server := NewServer(u, "127.0.0.1:0", "/api/assets", "assetData", mockProc, tasks, logger, 5, 10)
 
 	body := &bytes.Buffer{}
 	mw := multipart.NewWriter(body)

@@ -6,7 +6,7 @@ The YAML configuration file defines a list of tasks executed sequentially based 
 
 1. **Task Execution**: Tasks run in order when the file extension matches.
 2. **Upload Refusal**: If no matching extension is found, the upload is rejected.
-3. **Preserving Extensions**: To leave files unchanged, set the command to an empty string.
+3. **Preserving Extensions**: To leave matching files unchanged, set the command to an empty string.
 4. **Fallback Execution**: When multiple tasks match an extension, they execute in sequence. The process stops when a task completes successfully. If all tasks fail, the upload is blocked.
 
 ## Configuration Structure
@@ -16,11 +16,11 @@ The configuration file follows this format:
 ```yaml
 tasks:
   - name: taskA
-    command: <command> {{.src_folder}}/{{.name}}.{{.extension}} {{.src_folder}}/{{.name}}.ext
+    command: <command> {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.name}}.ext
     extensions:
       - jpeg
   - name: taskB
-    command: <command 2> {{.src_folder}}/{{.name}}.{{.extension}} {{.src_folder}}/{{.name}}.ext
+    command: <command 2> {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.name}}.ext
     extensions:
       - png
 ```
@@ -46,7 +46,8 @@ This task processes `.jpeg` and `.jpg` files.
 
 To ensure proper file handling, use these placeholders in your commands:
 
-- `{{.src_folder}}`: Temporary working directory.
+- `{{.src_folder}}`: Temporary source directory containing the staged input file.
+- `{{.dst_folder}}`: Temporary output directory. Commands must write exactly one output file here, unless the command is empty.
 - `{{.name}}`: Filename without extension.
 - `{{.extension}}`: File extension.
 
@@ -54,8 +55,8 @@ To ensure proper file handling, use these placeholders in your commands:
 
 When a file is uploaded, IUO:
 
-1. Creates a temporary folder, e.g., `/tmp/processing-3398346076`.
-2. Saves the file with a unique name, e.g., `file-2612480203.jpg`.
+1. Creates temporary source and output folders, e.g., `/tmp/processing-3398346076/src` and `/tmp/processing-3398346076/dst`.
+2. Saves the file with a unique name, e.g., `/tmp/processing-3398346076/src/file-2612480203.jpg`.
 3. Executes the configured task command:
 
    ```sh
@@ -65,7 +66,7 @@ When a file is uploaded, IUO:
    This translates to:
 
    ```sh
-   cjxl --lossless_jpeg=1 /tmp/processing-3398346076/file-2612480203.jpg /tmp/processing-3398346076/file-2612480203.jxl && rm /tmp/processing-3398346076/file-2612480203.jpg
+   cjxl --lossless_jpeg=1 /tmp/processing-3398346076/src/file-2612480203.jpg /tmp/processing-3398346076/dst/file-2612480203.jxl
    ```
 
 4. If successful, IUO replaces the original file with the processed one and uploads it to Immich.
@@ -94,4 +95,3 @@ services:
 - Ensure file extensions and commands are correctly specified.
 - Tasks execute in the order they appear in the configuration file.
 - Long-running tasks (e.g., video transcoding) may exceed HTTP timeouts. IUO attempts to mitigate this by sending periodic HTTP redirects, but tasks will continue in the background even if the client disconnects. The processed file will still be uploaded to Immich regardless of client disconnection.
-

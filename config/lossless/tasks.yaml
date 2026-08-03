@@ -1,6 +1,6 @@
 tasks:
 - name: jpeg-xl
-  command: cjxl --lossless_jpeg=1 {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.name}}.jxl
+  command: cjxl --lossless_jpeg=1 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
   extensions:
   - jpeg
   - jpg
@@ -15,7 +15,7 @@ tasks:
   - exr
 
 - name: caesium
-  command: caesiumclt --keep-dates --exif --quality=0 --output={{.src_folder}} {{.dst_folder}}/{{.name}}.{{.extension}}
+  command: caesiumclt --keep-dates --exif --quality=0 --output="{{.dst_folder}}" "{{.src_folder}}/{{.name}}.{{.extension}}"
   extensions:
   - jpeg
   - jpg

@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -23,6 +24,8 @@ import (
 	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/utils"
 )
+
+var errBlockedExtension = errors.New("blocked unmatched file extension")
 
 type jobResult struct {
 	resp *http.Response
@@ -147,9 +150,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.handleUploadProxy(r)
 	if err != nil {
-		s.logger.Printf("Proxy upload error: %v; falling back to direct proxy", err)
-		r.Host = s.upstreamURL.Host
-		s.proxy.ServeHTTP(w, r)
+		if errors.Is(err, errBlockedExtension) {
+			http.Error(w, err.Error(), http.StatusUnsupportedMediaType)
+			return
+		}
+		s.logger.Printf("Proxy upload error: %v", err)
+		http.Error(w, "failed to process upload, view logs for more info", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -177,6 +183,25 @@ func (s *Server) clientFollowsRedirects(r *http.Request) bool {
 }
 
 func (s *Server) newAsyncJob(w http.ResponseWriter, r *http.Request) {
+	bodyFile, err := os.CreateTemp("", "proxy-async-body-*")
+	if err != nil {
+		http.Error(w, "failed to create async upload buffer", http.StatusInternalServerError)
+		return
+	}
+	if _, err := io.Copy(bodyFile, r.Body); err != nil {
+		bodyFile.Close()
+		os.Remove(bodyFile.Name())
+		http.Error(w, "failed to buffer async upload", http.StatusBadRequest)
+		return
+	}
+	stat, err := bodyFile.Stat()
+	if err != nil {
+		bodyFile.Close()
+		os.Remove(bodyFile.Name())
+		http.Error(w, "failed to inspect async upload buffer", http.StatusInternalServerError)
+		return
+	}
+
 	jobID := generateUUID()
 	job := &jobState{
 		respCh: make(chan jobResult, 1),
@@ -194,20 +219,35 @@ func (s *Server) newAsyncJob(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer func() {
+			bodyFile.Close()
+			os.Remove(bodyFile.Name())
+		}()
+		defer func() {
 			s.jobsMu.Lock()
 			delete(s.jobs, jobID)
 			s.jobsMu.Unlock()
 		}()
 
-		select {
-		case s.semaphore <- struct{}{}:
-			defer func() { <-s.semaphore }()
-		case <-r.Context().Done():
-			job.respCh <- jobResult{err: r.Context().Err()}
+		s.semaphore <- struct{}{}
+		defer func() { <-s.semaphore }()
+
+		timeout := s.client.Timeout
+		if timeout <= 0 {
+			timeout = 120 * time.Second
+		}
+		jobCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		if _, err := bodyFile.Seek(0, io.SeekStart); err != nil {
+			job.respCh <- jobResult{err: err}
 			return
 		}
 
-		resp, err := s.handleUploadProxy(r)
+		jobReq := r.Clone(jobCtx)
+		jobReq.Body = bodyFile
+		jobReq.ContentLength = stat.Size()
+
+		resp, err := s.handleUploadProxy(jobReq)
 		job.respCh <- jobResult{resp: resp, err: err}
 
 		if err == nil && resp != nil {
@@ -343,8 +383,10 @@ func (s *Server) handleUploadProxy(r *http.Request) (*http.Response, error) {
 
 		if filename != "" && shouldTarget && s.shouldOptimizeExt(filepath.Ext(filename)) {
 			if err := s.processFilePart(r.Context(), part, mw, formname, filename); err != nil {
-				s.logger.Printf("Error optimizing file part %s: %v; forwarding original", filename, err)
+				return nil, fmt.Errorf("error optimizing file part %s: %w", filename, err)
 			}
+		} else if filename != "" && shouldTarget {
+			return nil, fmt.Errorf("%w: %s", errBlockedExtension, filepath.Ext(filename))
 		} else {
 			h := part.Header
 			if h == nil {
@@ -413,7 +455,10 @@ func (s *Server) processFilePart(ctx context.Context, part *multipart.Part, mw *
 	tempSrc.Close()
 
 	res, procErr := s.processor.Process(ctx, tempSrc.Name(), s.tasks)
-	if procErr == nil && res != nil {
+	if procErr != nil {
+		return procErr
+	}
+	if res != nil {
 		if res.Cleanup != nil {
 			defer res.Cleanup()
 		}

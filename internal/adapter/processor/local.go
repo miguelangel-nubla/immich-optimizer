@@ -169,6 +169,10 @@ func (fp *fileProcessor) run(ctx context.Context, commandTemplate *template.Temp
 		return err
 	}
 
+	if strings.TrimSpace(command) == "" {
+		return fp.copyPassthroughResult(tempFile)
+	}
+
 	if err := fp.executeCommand(ctx, command); err != nil {
 		return err
 	}
@@ -214,6 +218,28 @@ func (fp *fileProcessor) copySourceFile() (*os.File, error) {
 	}
 
 	return tempFile, nil
+}
+
+func (fp *fileProcessor) copyPassthroughResult(tempFile *os.File) error {
+	srcPath := tempFile.Name()
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("unable to open passthrough source file: %w", err)
+	}
+	defer src.Close()
+
+	dstPath := filepath.Join(fp.tempWorkDirDst, filepath.Base(srcPath))
+	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("unable to create passthrough output file: %w", err)
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("unable to copy passthrough output file: %w", err)
+	}
+
+	return nil
 }
 
 func (fp *fileProcessor) buildCommand(commandTemplate *template.Template, tempFile *os.File) (string, error) {

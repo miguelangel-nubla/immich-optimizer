@@ -43,11 +43,7 @@ func main() {
 }
 
 func parseConfig(args []string) (*entity.AppConfig, bool, error) {
-	ac := &entity.AppConfig{
-		MaxConcurrentRequests: 10,
-		HTTPTimeoutSeconds:    120,
-		InotifyBufferSize:     8192,
-	}
+	ac := &entity.AppConfig{}
 
 	viper.SetEnvPrefix("iuo")
 	viper.AutomaticEnv()
@@ -57,6 +53,8 @@ func parseConfig(args []string) (*entity.AppConfig, bool, error) {
 	_ = viper.BindEnv("immich_api_key", "IUO_IMMICH_API_KEY")
 	_ = viper.BindEnv("tasks_file", "IUO_TASKS_FILE")
 	_ = viper.BindEnv("log_level", "IUO_LOG_LEVEL")
+	_ = viper.BindEnv("max_concurrent_requests", "IUO_MAX_CONCURRENT_REQUESTS")
+	_ = viper.BindEnv("http_timeout_seconds", "IUO_HTTP_TIMEOUT_SECONDS")
 
 	_ = viper.BindEnv("bind_addr", "IUO_PROXY_BIND_ADDR", "IUO_BIND_ADDR")
 	_ = viper.BindEnv("filter_path", "IUO_PROXY_FILTER_PATH", "IUO_FILTER_PATH")
@@ -64,6 +62,7 @@ func parseConfig(args []string) (*entity.AppConfig, bool, error) {
 
 	_ = viper.BindEnv("watch_dir", "IUO_WATCHER_WATCH_DIR", "IUO_WATCH_DIR")
 	_ = viper.BindEnv("undone_dir", "IUO_WATCHER_UNDONE_DIR", "IUO_UNDONE_DIR")
+	_ = viper.BindEnv("inotify_buffer_size", "IUO_WATCHER_INOTIFY_BUFFER_SIZE", "IUO_INOTIFY_BUFFER_SIZE")
 
 	viper.SetDefault("mode", "watcher")
 	viper.SetDefault("bind_addr", ":8080")
@@ -75,6 +74,9 @@ func parseConfig(args []string) (*entity.AppConfig, bool, error) {
 	viper.SetDefault("undone_dir", "/undone")
 	viper.SetDefault("tasks_file", "tasks.yaml")
 	viper.SetDefault("log_level", "info")
+	viper.SetDefault("max_concurrent_requests", 10)
+	viper.SetDefault("http_timeout_seconds", 120)
+	viper.SetDefault("inotify_buffer_size", 8192)
 
 	fs := flag.NewFlagSet("immich-optimizer", flag.ContinueOnError)
 	fs.BoolVar(&ac.ShowVersion, "version", false, "Show the current version")
@@ -88,6 +90,9 @@ func parseConfig(args []string) (*entity.AppConfig, bool, error) {
 	fs.StringVar(&ac.UndoneDir, "undone_dir", viper.GetString("undone_dir"), "Directory to copy files that failed")
 	fs.StringVar(&ac.ConfigFile, "tasks_file", viper.GetString("tasks_file"), "Path to the configuration file")
 	fs.StringVar(&ac.LogLevel, "log_level", viper.GetString("log_level"), "Log level (debug, info, warn, error)")
+	fs.IntVar(&ac.MaxConcurrentRequests, "max_concurrent_requests", viper.GetInt("max_concurrent_requests"), "Maximum number of files/uploads to process concurrently")
+	fs.IntVar(&ac.HTTPTimeoutSeconds, "http_timeout_seconds", viper.GetInt("http_timeout_seconds"), "HTTP client timeout in seconds")
+	fs.IntVar(&ac.InotifyBufferSize, "inotify_buffer_size", viper.GetInt("inotify_buffer_size"), "Inotify event read buffer size in bytes")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, false, err
@@ -140,6 +145,16 @@ func validateAppConfig(ac *entity.AppConfig) error {
 
 	if ac.ImmichURL == "" {
 		return fmt.Errorf("the -immich_url flag is required")
+	}
+
+	if ac.MaxConcurrentRequests <= 0 {
+		return fmt.Errorf("max_concurrent_requests must be greater than 0")
+	}
+	if ac.HTTPTimeoutSeconds <= 0 {
+		return fmt.Errorf("http_timeout_seconds must be greater than 0")
+	}
+	if ac.InotifyBufferSize <= 0 {
+		return fmt.Errorf("inotify_buffer_size must be greater than 0")
 	}
 
 	parsedURL, urlErr := url.Parse(ac.ImmichURL)

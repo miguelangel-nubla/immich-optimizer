@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -103,13 +104,7 @@ func (s *Service) handleEvent(ctx context.Context, event entity.FileEvent) {
 	s.logger.Printf("Processing file: %s", event.Path)
 
 	if !s.shouldOptimizeFile(event.Path) {
-		if err := s.uploader.UploadAsset(ctx, event.Path); err != nil {
-			s.handleUploadError(ctx, event.Path, err)
-			return
-		}
-		if err := s.fs.RemoveFile(event.Path); err != nil {
-			s.logger.Printf("Error removing file %s after upload: %v", event.Path, err)
-		}
+		s.handleProcessingError(ctx, event.Path, fmt.Errorf("no task found for file extension %s", filepath.Ext(event.Path)))
 		return
 	}
 
