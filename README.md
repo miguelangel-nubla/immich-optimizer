@@ -9,7 +9,9 @@ A file optimization service that automatically processes and uploads media files
 
 ## ✨ Features
 
-- **📁 File Watching**: Automatically monitors directories for new media files
+- **📁 File Watching**: Automatically monitors directories for new media files (`IUO_MODE=watcher`)
+- **🌐 HTTP Reverse Proxy Mode**: Intercepts upload requests on-the-fly to optimize media uploads (`IUO_MODE=proxy`)
+- **⚡ Concurrent Modes**: Combine modes by comma-separating them (e.g., `IUO_MODE=watcher,proxy`)
 - **🔄 Configurable Processing**: Support for multiple optimization profiles
 - **📸 Image Optimization**:
   - Lossless JPEG-XL conversion
@@ -21,6 +23,36 @@ A file optimization service that automatically processes and uploads media files
 - **⚡ Performance**: Concurrent processing with configurable limits
 - **📊 Monitoring**: Built-in health checks and structured logging
 - **🐳 Docker Ready**: Production-ready container images
+
+> 💡 **Note on `immich-upload-optimizer` Deprecation**:
+> `immich-optimizer` now incorporates all functionality from `immich-upload-optimizer`. Set `IUO_MODE=proxy` to run as an HTTP reverse proxy in front of Immich. See the [Migration Guide](#-migrating-from-immich-upload-optimizer) below.
+
+## 🔄 Migrating from `immich-upload-optimizer`
+
+If you are migrating from `immich-upload-optimizer` to `immich-optimizer`, update your configuration as follows:
+
+1. **Set Proxy Mode**:
+   Set `IUO_MODE=proxy` (or CLI flag `-mode proxy`).
+
+2. **Update Custom `tasks.yaml` Templates**:
+   In `immich-optimizer`, input files and output files are cleanly isolated into separate directories:
+   - Replace `{{.folder}}` with `{{.src_folder}}` for the input file path.
+   - Replace `{{.folder}}` with `{{.dst_folder}}` for the output file path.
+   
+   *Example:*
+   ```yaml
+   # ❌ Old syntax (immich-upload-optimizer):
+   command: cjxl --lossless_jpeg=1 {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}.jxl
+
+   # ✅ New syntax (immich-optimizer):
+   command: cjxl --lossless_jpeg=1 {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.name}}.jxl
+   ```
+
+3. **Environment Variable Changes**:
+   - `IUO_UPSTREAM` / `-upstream` $\rightarrow$ `IUO_IMMICH_URL` / `-immich_url`
+   - `IUO_LISTEN` / `-listen` $\rightarrow$ `IUO_BIND_ADDR` / `-bind_addr`
+   - `IUO_FILTER_PATH` (`-filter_path`) and `IUO_FILTER_FORM_KEY` (`-filter_form_key`) remain fully supported.
+
 
 ## 📦 Installation
 
@@ -102,28 +134,40 @@ RUN set -eux; \
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `IUO_IMMICH_URL` | Immich server URL (required) | - |
-| `IUO_IMMICH_API_KEY` | Immich API key (required) | - |
-| `IUO_WATCH_DIR` | Directory to watch for files | `/watch` |
-| `IUO_UNDONE_DIR` | Directory for files that failed processing/upload | `/undone` |
-| `IUO_TASKS_FILE` | Path to tasks configuration | `tasks.yaml` |
-| `IUO_LOG_LEVEL` | Log level filtering (`debug`, `info`, `warn`, `error`) | `info` |
+| Variable | Mode | Description | Default |
+|----------|------|-------------|---------|
+| `IUO_MODE` | All | Operating mode: `watcher`, `proxy` (comma-separated for multiple) | `watcher` |
+| `IUO_IMMICH_URL` | All | Immich server URL (required) | - |
+| `IUO_TASKS_FILE` | All | Path to tasks configuration file | `tasks.yaml` |
+| `IUO_LOG_LEVEL` | All | Log level filtering (`debug`, `info`, `warn`, `error`) | `info` |
+| `IUO_PROXY_BIND_ADDR` | `proxy` | Address for reverse proxy server to listen on | `:8080` |
+| `IUO_PROXY_FILTER_PATH` | `proxy` | Path pattern to intercept for proxy uploads | `/api/assets` |
+| `IUO_PROXY_FILTER_FORM_KEY` | `proxy` | Form key for upload files | `assetData` |
+| `IUO_WATCHER_WATCH_DIR` | `watcher` | Directory to watch for files | `/watch` |
+| `IUO_WATCHER_UNDONE_DIR` | `watcher` | Directory for files that failed processing/upload | `/undone` |
+| `IUO_IMMICH_API_KEY` | `watcher` | Immich API key (required in `watcher` mode) | - |
 
 ### Command Line Options
 
 ```bash
 immich-optimizer [options]
 
-Options:
-  -immich_url string     Immich server URL
-  -immich_api_key string Immich API key  
+General Options:
+  -mode string           Operating mode: watcher or proxy (comma-separated for multiple) (default "watcher")
+  -immich_url string     Immich server URL (required)
+  -tasks_file string     Tasks configuration file (default "tasks.yaml")
+  -log_level string      Log level: debug, info, warn, error (default "info")
+  -version               Show version information
+
+Proxy Mode Options:
+  -bind_addr string      Address for reverse proxy server to listen on (default ":8080")
+  -filter_path string    Path pattern to intercept for proxy uploads (default "/api/assets")
+  -filter_form_key string Form key for upload files (default "assetData")
+
+Watcher Mode Options:
+  -immich_api_key string Immich API key (required in watcher mode)
   -watch_dir string      Directory to watch (default "/watch")
   -undone_dir string     Directory for failed files (default "/undone")
-  -tasks_file string     Tasks configuration file (default "tasks.yaml")
-  -log_level string      Log level (debug, info, warn, error) (default "info")
-  -version               Show version information
 ```
 
 ## 📋 Optimization Profiles
@@ -217,7 +261,7 @@ docker exec immich-optimizer which caesiumclt
 
 ### Logs & Monitoring
 
-The optimizer prints timestamped logs to stdout. You can filter log levels (`debug`, `info`, `warn`, `error`) using `IUO_LOG_LEVEL`, `LOG_LEVEL`, or the `-log_level` flag:
+The optimizer prints timestamped logs to stdout. You can filter log levels (`debug`, `info`, `warn`, `error`) using `IUO_LOG_LEVEL` or the `-log_level` flag:
 
 ```bash
 # Set log level for binary

@@ -12,6 +12,10 @@ type Config struct {
 
 type AppConfig struct {
 	ShowVersion           bool
+	Mode                  string
+	BindAddr              string
+	FilterPath            string
+	FilterFormKey         string
 	ImmichURL             string
 	ImmichAPIKey          string
 	WatchDir              string
@@ -23,3 +27,4 @@ type AppConfig struct {
 	LogLevel              string
 	Tasks                 *Config
 }
+
