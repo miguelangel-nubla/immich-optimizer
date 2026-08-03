@@ -164,7 +164,7 @@ func (fw *FileWatcher) uploadOriginalFile(filePath string) error {
 
 // cleanupOriginalFile removes the original file after successful processing
 func (fw *FileWatcher) cleanupOriginalFile(filePath string) {
-	if err := os.Remove(filePath); err != nil {
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
 		fw.logger.Printf("Error removing file %s after upload: %v", filePath, err)
 	}
 }

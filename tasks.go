@@ -108,7 +108,7 @@ func (tp *TaskProcessor) Close() (err error) {
 
 	if tp.tempFileOriginalFile != "" {
 		err = os.Remove(tp.tempFileOriginalFile)
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
 			tp.logf("unable to remove temp file: %v", err)
 		}
 	}

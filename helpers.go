@@ -85,6 +85,14 @@ func copyFileToUndone(filePath, watchDir, undoneDir string) error {
 		return fmt.Errorf("failed to copy file: %w", err)
 	}
 
+	if err := dst.Sync(); err != nil {
+		return fmt.Errorf("failed to sync destination file: %w", err)
+	}
+
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("failed to close destination file: %w", err)
+	}
+
 	return nil
 }
 
