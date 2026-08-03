@@ -44,13 +44,18 @@ func (fw *FileWatcher) processFile(originalFilePath string) {
 	fw.logger.Printf("Processing file: %s", originalFilePath)
 
 	if !fw.shouldOptimizeFile(originalFilePath) {
-		fw.uploadToImmich(originalFilePath)
+		if err := fw.uploadToImmich(originalFilePath); err != nil {
+			fw.handleUploadError(originalFilePath, err)
+			return
+		}
+		fw.cleanupOriginalFile(originalFilePath)
 		return
 	}
 
 	tp, err := fw.createTaskProcessor(originalFilePath)
 	if err != nil {
 		fw.logger.Printf("Error creating task processor for %s: %v", originalFilePath, err)
+		fw.handleProcessingError(originalFilePath, err)
 		return
 	}
 	defer tp.Close()
@@ -60,7 +65,11 @@ func (fw *FileWatcher) processFile(originalFilePath string) {
 		return
 	}
 
-	fw.handleProcessingSuccess(originalFilePath, tp)
+	if err := fw.handleProcessingSuccess(originalFilePath, tp); err != nil {
+		fw.handleUploadError(originalFilePath, err)
+		return
+	}
+
 	fw.cleanupOriginalFile(originalFilePath)
 }
 
@@ -104,18 +113,17 @@ func (fw *FileWatcher) createTaskProcessor(filePath string) (*TaskProcessor, err
 // handleProcessingError handles errors that occur during file processing
 func (fw *FileWatcher) handleProcessingError(filePath string, err error) {
 	fw.logger.Printf("Error processing file %s: %v", filePath, err)
-	if copyErr := copyFileToUndone(filePath, fw.watchDir, fw.appConfig.UndoneDir); copyErr != nil {
-		fw.logger.Printf("Error copying file %s to undone directory: %v", filePath, copyErr)
+	if moveErr := moveToUndone(filePath, fw.watchDir, fw.appConfig.UndoneDir); moveErr != nil {
+		fw.logger.Printf("Error moving file %s to undone directory: %v", filePath, moveErr)
 	}
 }
 
 // handleProcessingSuccess handles successful file processing and determines upload strategy
-func (fw *FileWatcher) handleProcessingSuccess(originalFilePath string, tp *TaskProcessor) {
+func (fw *FileWatcher) handleProcessingSuccess(originalFilePath string, tp *TaskProcessor) error {
 	if fw.shouldUploadProcessedFile(tp) {
-		fw.uploadProcessedFile(originalFilePath, tp)
-	} else {
-		fw.uploadOriginalFile(originalFilePath)
+		return fw.uploadProcessedFile(originalFilePath, tp)
 	}
+	return fw.uploadOriginalFile(originalFilePath)
 }
 
 // shouldUploadProcessedFile determines if the processed file should be uploaded instead of original
@@ -124,28 +132,34 @@ func (fw *FileWatcher) shouldUploadProcessedFile(tp *TaskProcessor) bool {
 }
 
 // uploadProcessedFile uploads the optimized version of the file
-func (fw *FileWatcher) uploadProcessedFile(originalFilePath string, tp *TaskProcessor) {
+func (fw *FileWatcher) uploadProcessedFile(originalFilePath string, tp *TaskProcessor) error {
 	processedFilePath, err := tp.GetProcessedFilePath()
 	if err != nil {
 		fw.logger.Printf("Error getting processed file path: %v", err)
-		fw.uploadToImmich(originalFilePath)
-		return
+		return fw.uploadToImmich(originalFilePath)
+	}
+
+	processedFilename := tp.ProcessedFilename
+	if processedFilename == "" {
+		processedFilename = filepath.Base(originalFilePath)
+	}
+	if err := fw.uploadToImmichWithFilename(processedFilePath, processedFilename); err != nil {
+		return err
 	}
 
 	fw.logger.Printf("Optimized file uploaded: %s -> %s",
 		humanReadableSize(tp.OriginalSize),
 		humanReadableSize(tp.ProcessedSize))
-	processedFilename := tp.ProcessedFilename
-	if processedFilename == "" {
-		processedFilename = filepath.Base(originalFilePath)
-	}
-	fw.uploadToImmichWithFilename(processedFilePath, processedFilename)
+	return nil
 }
 
 // uploadOriginalFile uploads the original file without optimization
-func (fw *FileWatcher) uploadOriginalFile(filePath string) {
+func (fw *FileWatcher) uploadOriginalFile(filePath string) error {
+	if err := fw.uploadToImmich(filePath); err != nil {
+		return err
+	}
 	fw.logger.Printf("Original file uploaded (no optimization achieved)")
-	fw.uploadToImmich(filePath)
+	return nil
 }
 
 // cleanupOriginalFile removes the original file after successful processing

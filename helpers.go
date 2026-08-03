@@ -58,6 +58,9 @@ func copyFileToUndone(filePath, watchDir, undoneDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get relative path: %w", err)
 	}
+	if strings.HasPrefix(relPath, "..") {
+		return fmt.Errorf("file %s is outside watch directory %s", filePath, watchDir)
+	}
 
 	destPath := filepath.Join(undoneDir, relPath)
 	destDir := filepath.Dir(destPath)
@@ -82,5 +85,15 @@ func copyFileToUndone(filePath, watchDir, undoneDir string) error {
 		return fmt.Errorf("failed to copy file: %w", err)
 	}
 
+	return nil
+}
+
+func moveToUndone(filePath, watchDir, undoneDir string) error {
+	if err := copyFileToUndone(filePath, watchDir, undoneDir); err != nil {
+		return err
+	}
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove file after copying to undone: %w", err)
+	}
 	return nil
 }
