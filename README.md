@@ -26,6 +26,16 @@ A file optimization service that automatically processes and uploads media files
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) to understand the whole picture.
 
+### Local Binary
+
+```bash
+# Build binary from source
+go build -o immich-optimizer ./cmd/optimizer
+
+# Run binary
+./immich-optimizer -immich_url http://your-immich-instance:2283 -immich_api_key your-api-key
+```
+
 ### Docker (Recommended)
 
 ```bash
@@ -99,6 +109,7 @@ RUN set -eux; \
 | `IUO_WATCH_DIR` | Directory to watch for files | `/watch` |
 | `IUO_UNDONE_DIR` | Directory for files that failed processing/upload | `/undone` |
 | `IUO_TASKS_FILE` | Path to tasks configuration | `tasks.yaml` |
+| `IUO_LOG_LEVEL` | Log level filtering (`debug`, `info`, `warn`, `error`) | `info` |
 
 ### Command Line Options
 
@@ -111,6 +122,7 @@ Options:
   -watch_dir string      Directory to watch (default "/watch")
   -undone_dir string     Directory for failed files (default "/undone")
   -tasks_file string     Tasks configuration file (default "tasks.yaml")
+  -log_level string      Log level (debug, info, warn, error) (default "info")
   -version               Show version information
 ```
 
@@ -203,17 +215,17 @@ docker exec immich-optimizer which cjxl
 docker exec immich-optimizer which caesiumclt
 ```
 
-### Debug Mode
+### Logs & Monitoring
 
-Enable verbose logging by setting log level:
+The optimizer prints timestamped logs to stdout. You can filter log levels (`debug`, `info`, `warn`, `error`) using `IUO_LOG_LEVEL`, `LOG_LEVEL`, or the `-log_level` flag:
 
 ```bash
-# For binary
-export LOG_LEVEL=debug
-immich-optimizer
+# Set log level for binary
+export IUO_LOG_LEVEL=debug
+immich-optimizer -immich_url http://... -immich_api_key ...
 
-# For Docker
-docker run -e LOG_LEVEL=debug ...
+# Set log level for Docker container
+docker run -e IUO_LOG_LEVEL=debug ghcr.io/miguelangel-nubla/immich-optimizer:latest
 ```
 
 ### Contributing

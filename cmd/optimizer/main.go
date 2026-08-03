@@ -54,12 +54,19 @@ func parseConfig(args []string) (*entity.AppConfig, bool, error) {
 	viper.BindEnv("watch_dir")
 	viper.BindEnv("undone_dir")
 	viper.BindEnv("tasks_file")
+	viper.BindEnv("log_level")
+
+	defaultLogLevel := "info"
+	if legacyLogLevel := os.Getenv("LOG_LEVEL"); legacyLogLevel != "" {
+		defaultLogLevel = legacyLogLevel
+	}
 
 	viper.SetDefault("immich_url", "")
 	viper.SetDefault("immich_api_key", "")
 	viper.SetDefault("watch_dir", "/watch")
 	viper.SetDefault("undone_dir", "/undone")
 	viper.SetDefault("tasks_file", "tasks.yaml")
+	viper.SetDefault("log_level", defaultLogLevel)
 
 	fs := flag.NewFlagSet("immich-optimizer", flag.ContinueOnError)
 	fs.BoolVar(&ac.ShowVersion, "version", false, "Show the current version")
@@ -68,6 +75,7 @@ func parseConfig(args []string) (*entity.AppConfig, bool, error) {
 	fs.StringVar(&ac.WatchDir, "watch_dir", viper.GetString("watch_dir"), "Directory to watch for new files")
 	fs.StringVar(&ac.UndoneDir, "undone_dir", viper.GetString("undone_dir"), "Directory to copy files that failed")
 	fs.StringVar(&ac.ConfigFile, "tasks_file", viper.GetString("tasks_file"), "Path to the configuration file")
+	fs.StringVar(&ac.LogLevel, "log_level", viper.GetString("log_level"), "Log level (debug, info, warn, error)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, false, err
@@ -189,7 +197,7 @@ func run(args []string) error {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	baseLogger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
-	logger := customlogger.New(baseLogger, "")
+	logger := customlogger.NewWithLevel(baseLogger, config.LogLevel, "")
 	logger.Printf("Starting %s", printVersion())
 
 	// Initialize Adapters

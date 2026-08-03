@@ -78,12 +78,13 @@ If using Docker, remember to mount a folder containing the `tasks.yaml` configur
 services:
   immich-optimizer:
     image: ghcr.io/miguelangel-nubla/immich-optimizer:latest
-    ports:
-      - "2283:2283"
-    volumes:
-      - <full path to config folder>:/etc/immich-optimizer/config
     environment:
-      - IUO_UPSTREAM=http://immich-server:2283
+      - IUO_IMMICH_URL=http://immich-server:2283
+      - IUO_IMMICH_API_KEY=your-api-key
+    volumes:
+      - /path/to/watch:/watch
+      - /path/to/undone:/undone
+      - <full path to config folder>:/etc/immich-optimizer/config
     depends_on:
       - immich-server
 ```

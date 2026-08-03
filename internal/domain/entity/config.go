@@ -20,5 +20,6 @@ type AppConfig struct {
 	MaxConcurrentRequests int
 	HTTPTimeoutSeconds    int
 	InotifyBufferSize     int
+	LogLevel              string
 	Tasks                 *Config
 }

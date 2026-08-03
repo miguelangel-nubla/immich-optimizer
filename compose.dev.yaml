@@ -2,7 +2,7 @@ services:
   immich-optimizer:
     build:
       context: .
-      dockerfile: Dockerfile.amd64.goreleaser
+      dockerfile: Dockerfile.goreleaser
     env_file:
       - .env
     volumes:
