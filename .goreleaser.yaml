@@ -4,7 +4,8 @@ before:
   - go generate ./...
   - go mod tidy
 builds:
-- env:
+- main: ./cmd/optimizer
+  env:
   - CGO_ENABLED=0
   goos:
   - linux

@@ -1,0 +1,24 @@
+package entity
+
+type Task struct {
+	Name       string   `mapstructure:"name"`
+	Extensions []string `mapstructure:"extensions"`
+	Command    string   `mapstructure:"command"`
+}
+
+type Config struct {
+	Tasks []Task `mapstructure:"tasks"`
+}
+
+type AppConfig struct {
+	ShowVersion           bool
+	ImmichURL             string
+	ImmichAPIKey          string
+	WatchDir              string
+	UndoneDir             string
+	ConfigFile            string
+	MaxConcurrentRequests int
+	HTTPTimeoutSeconds    int
+	InotifyBufferSize     int
+	Tasks                 *Config
+}
