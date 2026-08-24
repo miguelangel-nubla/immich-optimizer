@@ -158,6 +158,8 @@ func (s *Service) handleFailure(ctx context.Context, filePath, stage string, err
 	s.logger.Printf("Error %s file %s: %v", stage, filePath, err)
 	if moveErr := s.fs.MoveToUndone(filePath); moveErr != nil {
 		s.logger.Printf("Error moving file %s to undone directory: %v", filePath, moveErr)
+	} else {
+		s.logger.Printf("Moved file %s to undone directory", filePath)
 	}
 }
 
