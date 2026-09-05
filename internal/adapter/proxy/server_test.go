@@ -141,6 +141,12 @@ func TestProxyUploadOptimization(t *testing.T) {
 	if strings.Contains(string(upstreamReceivedBody), strings.Repeat("A", 100)) {
 		t.Fatalf("expected original unoptimized body to be replaced")
 	}
+
+	// Check filename same as original instead of temporary filename / Kiểm tra upstream nhận đúng filename gốc với đuôi mới (thay vì tên file temp)
+	expectedFilenameHeader := `filename="original.jpg"` // hoặc extension tương ứng sau khi transcode
+	if !strings.Contains(string(upstreamReceivedBody), expectedFilenameHeader) {
+		t.Fatalf("expected upstream body to contain %s, got body header: %s", expectedFilenameHeader, string(upstreamReceivedBody))
+	}
 }
 
 func TestProxyUploadNonMatchingExtensionBlocked(t *testing.T) {
