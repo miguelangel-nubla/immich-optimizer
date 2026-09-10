@@ -78,8 +78,8 @@ func TestProxyUploadOptimization(t *testing.T) {
 
 	mockProc := &mockProcessor{
 		processFunc: func(ctx context.Context, filePath string, tasks []entity.Task) (*entity.ProcessResult, error) {
-			// Simulate optimization: create temporary optimized file smaller than original
-			optFile, err := os.CreateTemp("", "opt-*.jpg")
+			// Simulate optimization: create temporary optimized file smaller than original (transcoded to jxl)
+			optFile, err := os.CreateTemp("", "opt-*.jxl")
 			if err != nil {
 				return nil, err
 			}
@@ -94,7 +94,7 @@ func TestProxyUploadOptimization(t *testing.T) {
 
 			return &entity.ProcessResult{
 				ProcessedFilePath: optFile.Name(),
-				ProcessedFilename: "test_opt.jpg",
+				ProcessedFilename: "temp-src-123456.jxl",
 				OriginalSize:      origSize,
 				ProcessedSize:     5,
 				Cleanup: func() {
@@ -140,6 +140,12 @@ func TestProxyUploadOptimization(t *testing.T) {
 	}
 	if strings.Contains(string(upstreamReceivedBody), strings.Repeat("A", 100)) {
 		t.Fatalf("expected original unoptimized body to be replaced")
+	}
+
+	// Verify upstream receives original basename with new transcode extension instead of temporary name
+	expectedFilenameHeader := `filename="original.jxl"`
+	if !strings.Contains(string(upstreamReceivedBody), expectedFilenameHeader) {
+		t.Fatalf("expected upstream body to contain %s, got body header: %s", expectedFilenameHeader, string(upstreamReceivedBody))
 	}
 }
 

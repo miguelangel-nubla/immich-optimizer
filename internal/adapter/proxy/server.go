@@ -472,10 +472,16 @@ func (s *Server) processFilePart(ctx context.Context, part *multipart.Part, mw *
 			if openErr == nil {
 				defer procFile.Close()
 				h := make(textproto.MIMEHeader)
-				outFilename := res.ProcessedFilename
-				if outFilename == "" {
-					outFilename = filename
+
+				outExt := filepath.Ext(res.ProcessedFilename)
+				if outExt == "" && res.ProcessedFilePath != "" {
+					outExt = filepath.Ext(res.ProcessedFilePath)
 				}
+				if outExt == "" {
+					outExt = ext
+				}
+				outFilename := utils.TrimSuffixCaseInsensitive(filename, ext) + outExt
+
 				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, formname, outFilename))
 				if part.Header != nil && part.Header.Get("Content-Type") != "" {
 					h.Set("Content-Type", part.Header.Get("Content-Type"))
