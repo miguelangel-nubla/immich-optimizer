@@ -473,20 +473,14 @@ func (s *Server) processFilePart(ctx context.Context, part *multipart.Part, mw *
 				defer procFile.Close()
 				h := make(textproto.MIMEHeader)
 
-				// FIX BY THIS BLOCK / SỬA ĐOẠN NÀY:
-				// Lấy extension mới từ res.ProcessedFilename (ví dụ: .jxl)
 				outExt := filepath.Ext(res.ProcessedFilename)
+				if outExt == "" && res.ProcessedFilePath != "" {
+					outExt = filepath.Ext(res.ProcessedFilePath)
+				}
 				if outExt == "" {
 					outExt = ext
 				}
-				// Keep filename / Giữ nguyên tên file gốc của client và ghép extension mới
 				outFilename := utils.TrimSuffixCaseInsensitive(filename, ext) + outExt
-
-				// BUG BLOCK
-				// outFilename := res.ProcessedFilename
-				// if outFilename == "" {
-				// 	outFilename = filename
-				// }
 
 				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, formname, outFilename))
 				if part.Header != nil && part.Header.Get("Content-Type") != "" {
