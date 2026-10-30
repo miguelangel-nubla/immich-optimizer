@@ -51,6 +51,7 @@ func parseConfig(args []string) (*entity.AppConfig, bool, error) {
 	_ = viper.BindEnv("mode", "IUO_MODE")
 	_ = viper.BindEnv("immich_url", "IUO_IMMICH_URL")
 	_ = viper.BindEnv("immich_api_key", "IUO_IMMICH_API_KEY")
+	_ = viper.BindEnv("immich_api_key_file", "IUO_IMMICH_API_KEY_FILE")
 	_ = viper.BindEnv("tasks_file", "IUO_TASKS_FILE")
 	_ = viper.BindEnv("log_level", "IUO_LOG_LEVEL")
 	_ = viper.BindEnv("max_concurrent_requests", "IUO_MAX_CONCURRENT_REQUESTS")
@@ -70,6 +71,7 @@ func parseConfig(args []string) (*entity.AppConfig, bool, error) {
 	viper.SetDefault("filter_form_key", "assetData")
 	viper.SetDefault("immich_url", "")
 	viper.SetDefault("immich_api_key", "")
+	viper.SetDefault("immich_api_key_file", "")
 	viper.SetDefault("watch_dir", "/watch")
 	viper.SetDefault("undone_dir", "/undone")
 	viper.SetDefault("tasks_file", "tasks.yaml")
@@ -86,6 +88,8 @@ func parseConfig(args []string) (*entity.AppConfig, bool, error) {
 	fs.StringVar(&ac.FilterFormKey, "filter_form_key", viper.GetString("filter_form_key"), "Form key for upload files")
 	fs.StringVar(&ac.ImmichURL, "immich_url", viper.GetString("immich_url"), "Immich server URL")
 	fs.StringVar(&ac.ImmichAPIKey, "immich_api_key", viper.GetString("immich_api_key"), "Immich API key")
+	var immichAPIKeyFile string
+	fs.StringVar(&immichAPIKeyFile, "immich_api_key_file", viper.GetString("immich_api_key_file"), "Path to a file containing the Immich API key (takes precedence over immich_api_key)")
 	fs.StringVar(&ac.WatchDir, "watch_dir", viper.GetString("watch_dir"), "Directory to watch for new files")
 	fs.StringVar(&ac.UndoneDir, "undone_dir", viper.GetString("undone_dir"), "Directory to copy files that failed")
 	fs.StringVar(&ac.ConfigFile, "tasks_file", viper.GetString("tasks_file"), "Path to the configuration file")
@@ -102,11 +106,41 @@ func parseConfig(args []string) (*entity.AppConfig, bool, error) {
 		return ac, true, nil
 	}
 
+	if immichAPIKeyFile != "" {
+		source := "IUO_IMMICH_API_KEY_FILE"
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "immich_api_key_file" {
+				source = "-immich_api_key_file"
+			}
+		})
+		key, err := readSecretFile(source, immichAPIKeyFile)
+		if err != nil {
+			return nil, false, err
+		}
+		ac.ImmichAPIKey = key
+	}
+
 	if err := validateAppConfig(ac); err != nil {
 		return nil, false, err
 	}
 
 	return ac, false, nil
+}
+
+// readSecretFile reads a secret value from path (Docker secrets style),
+// stripping a single trailing newline. Errors name the setting and the path,
+// never the file contents.
+func readSecretFile(name, path string) (string, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- path is operator-supplied configuration
+	if err != nil {
+		return "", fmt.Errorf("%s: unable to read secret file %q: %w", name, path, err)
+	}
+	value := strings.TrimSuffix(string(data), "\n")
+	value = strings.TrimSuffix(value, "\r")
+	if value == "" {
+		return "", fmt.Errorf("%s: secret file %q is empty", name, path)
+	}
+	return value, nil
 }
 
 func parseModes(modeStr string) (runWatcher bool, runProxy bool, err error) {

@@ -150,6 +150,23 @@ RUN set -eux; \
 | `IUO_WATCHER_UNDONE_DIR` | `watcher` | Directory for files that failed processing/upload | `/undone` |
 | `IUO_WATCHER_INOTIFY_BUFFER_SIZE` | `watcher` | Inotify event read buffer size, in bytes | `8192` |
 | `IUO_IMMICH_API_KEY` | `watcher` | Immich API key (required in `watcher` mode) | - |
+| `IUO_IMMICH_API_KEY_FILE` | `watcher` | Path to a file containing the Immich API key (e.g. a Docker secret); takes precedence over `IUO_IMMICH_API_KEY` | - |
+
+#### Reading secrets from files
+
+Secret settings can be read from a file instead of passing the value directly, Docker secrets style. Set `IUO_IMMICH_API_KEY_FILE` (or `-immich_api_key_file`) to the path of a file holding the API key. One trailing newline is stripped. When a key file is set it takes precedence over `IUO_IMMICH_API_KEY` / `-immich_api_key`. An unreadable or empty file is a startup error.
+
+```yaml
+services:
+  immich-optimizer:
+    environment:
+      - IUO_IMMICH_API_KEY_FILE=/run/secrets/immich_api_key
+    secrets:
+      - immich_api_key
+secrets:
+  immich_api_key:
+    file: ./immich_api_key.txt
+```
 
 ### Command Line Options
 
@@ -174,6 +191,8 @@ Proxy Mode Options:
 
 Watcher Mode Options:
   -immich_api_key string Immich API key (required in watcher mode)
+  -immich_api_key_file string
+                         Path to a file containing the Immich API key (takes precedence over -immich_api_key)
   -watch_dir string      Directory to watch (default "/watch")
   -undone_dir string     Directory for failed files (default "/undone")
   -inotify_buffer_size int
