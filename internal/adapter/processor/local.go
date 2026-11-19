@@ -3,6 +3,7 @@ package processor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
@@ -90,40 +92,70 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 	fp.originalExtension = strings.ToLower(filepath.Ext(filePath))
 	fp.originalFilename = filepath.Base(filePath)
 
-	err = fmt.Errorf("no task found for file extension %s", fp.originalExtension)
-	var errors []error
+	var attempts []entity.TaskAttempt
+	matched := false
+	succeeded := false
 
 	for _, task := range tasks {
 		if !slices.Contains(task.Extensions, utils.NormalizeExtension(fp.originalExtension)) {
 			continue
 		}
+		matched = true
+
+		start := time.Now()
+		attempt := entity.TaskAttempt{Task: task.Name, ExitCode: -1}
 
 		cmdTmpl, tmplErr := template.New("command").Parse(task.Command)
 		if tmplErr != nil {
-			errors = append(errors, fmt.Errorf("\ntask %s unable to parse command template: %w", task.Name, tmplErr))
+			attempt.Err = fmt.Sprintf("unable to parse command template: %v", tmplErr)
+			attempt.Duration = time.Since(start)
+			attempts = append(attempts, attempt)
 			continue
 		}
 
-		convErr := fp.run(ctx, cmdTmpl)
+		convErr := fp.run(ctx, cmdTmpl, &attempt)
+		attempt.Duration = time.Since(start)
 		if convErr != nil {
-			errors = append(errors, fmt.Errorf("\ntask %s failed: %w", task.Name, convErr))
+			attempt.Err = convErr.Error()
+			attempts = append(attempts, attempt)
+			fp.logf("task %s failed for %s: %v", task.Name, fp.originalFilename, convErr)
 			fp.cleanWorkDir()
+			if ctx.Err() != nil {
+				// No point trying further tasks once cancelled.
+				break
+			}
 			continue
 		}
-		err = nil
+		attempt.ExitCode = 0
+		attempts = append(attempts, attempt)
+		succeeded = true
 		break
 	}
 
-	if err != nil {
-		if len(errors) > 1 {
-			return nil, fmt.Errorf("errors: %v", errors)
-		} else if len(errors) == 1 {
-			return nil, errors[0]
+	if !matched {
+		return nil, &entity.ProcessError{Err: fmt.Errorf("%w: %s", entity.ErrNoTask, fp.originalExtension)}
+	}
+	if !succeeded {
+		last := attempts[len(attempts)-1]
+		return nil, &entity.ProcessError{
+			Attempts: attempts,
+			Err:      fmt.Errorf("all %d matching task(s) failed (last: %s: %s)", len(attempts), last.Task, firstLine(last.Err)),
 		}
-		return nil, err
 	}
 
-	return fp.processResults()
+	res, err := fp.processResults()
+	if err != nil {
+		attempts[len(attempts)-1].Err = err.Error()
+		return nil, &entity.ProcessError{Attempts: attempts, Err: err}
+	}
+	return res, nil
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 func (fp *fileProcessor) close() {
@@ -154,7 +186,7 @@ func (fp *fileProcessor) cleanWorkDir() {
 	fp.tempWorkDirDst = ""
 }
 
-func (fp *fileProcessor) run(ctx context.Context, commandTemplate *template.Template) error {
+func (fp *fileProcessor) run(ctx context.Context, commandTemplate *template.Template, attempt *entity.TaskAttempt) error {
 	if err := fp.setupWorkDirectories(); err != nil {
 		return err
 	}
@@ -168,16 +200,13 @@ func (fp *fileProcessor) run(ctx context.Context, commandTemplate *template.Temp
 	if err != nil {
 		return err
 	}
+	attempt.Command = command
 
 	if strings.TrimSpace(command) == "" {
 		return fp.copyPassthroughResult(tempFile)
 	}
 
-	if err := fp.executeCommand(ctx, command); err != nil {
-		return err
-	}
-
-	return nil
+	return fp.executeCommand(ctx, command, attempt)
 }
 
 func (fp *fileProcessor) setupWorkDirectories() error {
@@ -260,16 +289,38 @@ func (fp *fileProcessor) buildCommand(commandTemplate *template.Template, tempFi
 	return cmdLine.String(), nil
 }
 
-func (fp *fileProcessor) executeCommand(ctx context.Context, command string) error {
+const (
+	// outputBufferSize bounds the memory kept for a task's combined output.
+	outputBufferSize = 64 << 10
+	// OutputTailSize is how much trailing output is kept per attempt.
+	OutputTailSize = 4 << 10
+)
+
+func (fp *fileProcessor) executeCommand(ctx context.Context, command string, attempt *entity.TaskAttempt) error {
 	fp.logf("running: %s", command)
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	if fp.configDir != "" {
 		cmd.Dir = fp.configDir
 	}
-	output, err := cmd.CombinedOutput()
+	configureCmd(cmd)
+	out := newTailBuffer(outputBufferSize)
+	cmd.Stdout = out
+	cmd.Stderr = out
+
+	err := cmd.Run()
+	attempt.OutputTail = out.Tail(OutputTailSize)
 	if err != nil {
-		return fmt.Errorf("%w while running command:\n%s\nOutput:\n%s", err, command, string(output))
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			attempt.ExitCode = exitErr.ExitCode()
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if cause := context.Cause(ctx); cause != nil {
+				return fmt.Errorf("command killed (%v): %w", cause, err)
+			}
+		}
+		return fmt.Errorf("%w while running command", err)
 	}
 
 	return nil

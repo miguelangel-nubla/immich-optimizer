@@ -1,9 +1,11 @@
+// Package pipeline is the watcher source: it hands files from the watch
+// directory to the conversion engine, uploads the result to Immich and
+// removes the source once it is either uploaded or saved to undone.
 package pipeline
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -15,54 +17,84 @@ import (
 )
 
 type Service struct {
-	watcher   port.FileWatcher
-	processor port.MediaProcessor
-	uploader  port.AssetUploader
-	fs        port.FileSystem
-	logger    *logger.Logger
-	tasks     []entity.Task
+	watcher  port.FileWatcher
+	conv     port.Converter
+	uploader port.AssetUploader
+	fs       port.FileSystem
+	logger   *logger.Logger
+	watchDir string
 
 	semaphore  chan struct{}
 	processing sync.Map
 	stopChan   chan struct{}
+	stopOnce   sync.Once
 	ctx        context.Context
-	cancel     context.CancelFunc
+	cancel     context.CancelCauseFunc
 	wg         sync.WaitGroup
 }
 
 func NewService(
 	watcher port.FileWatcher,
-	processor port.MediaProcessor,
+	conv port.Converter,
 	uploader port.AssetUploader,
 	fs port.FileSystem,
 	log *logger.Logger,
-	tasks []entity.Task,
 	maxConcurrent int,
+	watchDir string,
 ) *Service {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
 	return &Service{
 		watcher:   watcher,
-		processor: processor,
+		conv:      conv,
 		uploader:  uploader,
 		fs:        fs,
 		logger:    log,
-		tasks:     tasks,
+		watchDir:  watchDir,
 		semaphore: make(chan struct{}, maxConcurrent),
 		stopChan:  make(chan struct{}),
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 }
 
 func (s *Service) Start() {
-	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.wg.Add(1)
 	go s.consumeEvents()
 }
 
-func (s *Service) Stop() {
-	if s.cancel != nil {
-		s.cancel()
+// Drain stops accepting events and waits for in-flight files until ctx is done.
+func (s *Service) Drain(ctx context.Context) error {
+	s.stopOnce.Do(func() { close(s.stopChan) })
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	default:
 	}
-	close(s.stopChan)
-	s.wg.Wait()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Cancel aborts in-flight conversions and uploads. Affected files stay in the
+// watch directory and are picked up again at the next start.
+func (s *Service) Cancel() {
+	s.cancel(entity.ErrShuttingDown)
+}
+
+// Stop drains without a deadline. Kept for tests and simple callers.
+func (s *Service) Stop() {
+	_ = s.Drain(context.Background())
 }
 
 func (s *Service) consumeEvents() {
@@ -73,7 +105,10 @@ func (s *Service) consumeEvents() {
 		select {
 		case <-s.stopChan:
 			return
-		case event := <-events:
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
 			s.wg.Add(1)
 			go func(e entity.FileEvent) {
 				defer s.wg.Done()
@@ -84,132 +119,104 @@ func (s *Service) consumeEvents() {
 }
 
 func (s *Service) handleEvent(ctx context.Context, event entity.FileEvent) {
+	path := event.Path
 	// Deduplicate parallel events: abort if this file is already running
-	if _, loaded := s.processing.LoadOrStore(event.Path, true); loaded {
+	if _, loaded := s.processing.LoadOrStore(path, true); loaded {
 		return
 	}
-	defer s.processing.Delete(event.Path)
+	defer s.processing.Delete(path)
 
-	s.semaphore <- struct{}{}
-	defer func() { <-s.semaphore }()
-
-	if !s.validateFile(event.Path) {
+	if utils.IsTempFile(path) || utils.IsUndoneArtifact(path) {
 		return
 	}
 
-	if utils.IsTempFile(event.Path) {
+	// Files still queued when shutdown starts are left in the watch directory
+	// for the next start instead of being started during the grace period.
+	select {
+	case s.semaphore <- struct{}{}:
+		defer func() { <-s.semaphore }()
+	case <-ctx.Done():
+		return
+	case <-s.stopChan:
 		return
 	}
-
-	s.logger.Printf("Processing file: %s", event.Path)
-
-	if !s.shouldOptimizeFile(event.Path) {
-		s.handleProcessingError(ctx, event.Path, fmt.Errorf("no task found for file extension %s", filepath.Ext(event.Path)))
+	select {
+	case <-s.stopChan:
 		return
+	default:
 	}
 
-	result, err := s.processor.Process(ctx, event.Path, s.tasks)
+	info, err := os.Stat(path)
 	if err != nil {
-		s.handleProcessingError(ctx, event.Path, err)
+		s.logger.Printf("Error getting file info for %s: %v", path, err)
 		return
 	}
-	if result != nil && result.Cleanup != nil {
-		defer result.Cleanup()
-	}
-
-	if err := s.handleProcessingSuccess(ctx, event.Path, result); err != nil {
-		s.handleUploadError(ctx, event.Path, err)
+	if info.IsDir() {
 		return
 	}
 
-	if err := s.fs.RemoveFile(event.Path); err != nil {
-		s.logger.Printf("Error removing file %s after upload: %v", event.Path, err)
-	}
-}
+	s.logger.Printf("Processing file: %s", path)
 
-func (s *Service) validateFile(filePath string) bool {
-	info, err := os.Stat(filePath)
+	in := entity.ConvertInput{
+		Path:        path,
+		Filename:    filepath.Base(path),
+		Source:      entity.SourceWatcher,
+		OriginalDir: s.relDir(path),
+		ModTime:     info.ModTime(),
+	}
+
+	res, err := s.conv.Convert(ctx, in)
 	if err != nil {
-		s.logger.Printf("Error getting file info for %s: %v", filePath, err)
-		return false
-	}
-	return !info.IsDir()
-}
-
-func (s *Service) shouldOptimizeFile(filePath string) bool {
-	extension := filepath.Ext(filePath)
-	checkExt := utils.NormalizeExtension(extension)
-	for _, task := range s.tasks {
-		for _, ext := range task.Extensions {
-			if utils.NormalizeExtension(ext) == checkExt {
-				return true
-			}
+		var ce *entity.ConversionError
+		switch {
+		case errors.Is(err, entity.ErrCanceled) || ctx.Err() != nil:
+			s.logger.Printf("Processing of %s canceled; it stays in the watch directory: %v", path, err)
+		case errors.As(err, &ce) && ce.Undone != nil:
+			s.removeSource(path, "after saving it to undone")
+		default:
+			// Not saved anywhere: never delete the only copy.
+			s.logger.Errorf("Keeping %s in the watch directory: %v", path, err)
 		}
-	}
-	s.logger.Printf("Skipping file %s (extension %s not configured for processing)", filePath, extension)
-	return false
-}
-
-func (s *Service) handleFailure(ctx context.Context, filePath, stage string, err error) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
-		s.logger.Printf("Operation %s for file %s canceled due to context termination: %v", stage, filePath, err)
 		return
 	}
-	s.logger.Printf("Error %s file %s: %v", stage, filePath, err)
-	if moveErr := s.fs.MoveToUndone(filePath); moveErr != nil {
-		s.logger.Printf("Error moving file %s to undone directory: %v", filePath, moveErr)
+	defer res.Release()
+
+	if err := s.uploader.UploadAssetWithFilename(ctx, res.DeliverPath, res.DeliverName); err != nil {
+		if ctx.Err() != nil {
+			s.logger.Printf("Upload of %s canceled; it stays in the watch directory: %v", path, err)
+			return
+		}
+		f := entity.Failure{Stage: entity.StageUpload, Err: err}
+		if _, saveErr := s.conv.SaveUndone(in, f); saveErr != nil {
+			s.logger.Errorf("Keeping %s in the watch directory: %v", path, saveErr)
+			return
+		}
+		s.removeSource(path, "after saving it to undone")
+		return
+	}
+
+	if res.Outcome == entity.OutcomeOptimized {
+		s.logger.Printf("Optimized file uploaded: %s -> %s",
+			utils.HumanReadableSize(res.OriginalSize), utils.HumanReadableSize(res.OutputSize))
 	} else {
-		s.logger.Printf("Moved file %s to undone directory", filePath)
+		s.logger.Printf("Original file uploaded (no optimization achieved)")
 	}
+	s.removeSource(path, "after upload")
 }
 
-func (s *Service) handleProcessingError(ctx context.Context, filePath string, err error) {
-	s.handleFailure(ctx, filePath, "processing", err)
+func (s *Service) relDir(path string) string {
+	if s.watchDir == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(s.watchDir, filepath.Dir(path))
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
+		return ""
+	}
+	return rel
 }
 
-func (s *Service) handleUploadError(ctx context.Context, filePath string, err error) {
-	s.handleFailure(ctx, filePath, "uploading", err)
-}
-
-func (s *Service) handleProcessingSuccess(ctx context.Context, originalFilePath string, result *entity.ProcessResult) error {
-	if s.shouldUploadProcessedFile(result) {
-		return s.uploadProcessedFile(ctx, originalFilePath, result)
+func (s *Service) removeSource(path, why string) {
+	if err := s.fs.RemoveFile(path); err != nil {
+		s.logger.Printf("Error removing file %s %s: %v", path, why, err)
 	}
-	return s.uploadOriginalFile(ctx, originalFilePath)
-}
-
-func (s *Service) shouldUploadProcessedFile(result *entity.ProcessResult) bool {
-	if result == nil || result.ProcessedSize == 0 {
-		return false
-	}
-	return result.ProcessedSize < result.OriginalSize
-}
-
-func (s *Service) uploadProcessedFile(ctx context.Context, originalFilePath string, result *entity.ProcessResult) error {
-	if result.ProcessedFilePath == "" {
-		s.logger.Printf("Error getting processed file path: no path available")
-		return s.uploader.UploadAsset(ctx, originalFilePath)
-	}
-
-	processedFilename := result.ProcessedFilename
-	if processedFilename == "" {
-		processedFilename = filepath.Base(originalFilePath)
-	}
-
-	if err := s.uploader.UploadAssetWithFilename(ctx, result.ProcessedFilePath, processedFilename); err != nil {
-		return err
-	}
-
-	s.logger.Printf("Optimized file uploaded: %s -> %s",
-		utils.HumanReadableSize(result.OriginalSize),
-		utils.HumanReadableSize(result.ProcessedSize))
-	return nil
-}
-
-func (s *Service) uploadOriginalFile(ctx context.Context, filePath string) error {
-	if err := s.uploader.UploadAsset(ctx, filePath); err != nil {
-		return err
-	}
-	s.logger.Printf("Original file uploaded (no optimization achieved)")
-	return nil
 }

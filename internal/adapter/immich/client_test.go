@@ -11,7 +11,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/httpclient"
 	customlogger "github.com/miguelangel-nubla/immich-optimizer/internal/logger"
 )
 
@@ -61,7 +63,7 @@ func TestUploadAssetWithFilenameSuccess(t *testing.T) {
 	defer server.Close()
 
 	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
-	c := NewClient(server.URL, "test-api-key", 10, logger)
+	c := NewClient(server.URL, "test-api-key", nil, logger)
 
 	err := c.UploadAssetWithFilename(context.Background(), testFilePath, "custom_name.jpg")
 	if err != nil {
@@ -93,9 +95,9 @@ func TestUploadAssetErrorStatus(t *testing.T) {
 	defer server.Close()
 
 	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
-	c := NewClient(server.URL, "bad-key", 10, logger)
+	c := NewClient(server.URL, "bad-key", nil, logger)
 
-	err := c.UploadAsset(context.Background(), testFilePath)
+	err := c.UploadAssetWithFilename(context.Background(), testFilePath, filepath.Base(testFilePath))
 	if err == nil {
 		t.Fatalf("expected error on 401 unauthorized, got nil")
 	}
@@ -122,13 +124,42 @@ func TestUploadAssetRetryOnServerError(t *testing.T) {
 	defer server.Close()
 
 	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
-	c := NewClient(server.URL, "key", 10, logger)
+	c := NewClient(server.URL, "key", nil, logger)
 
-	err := c.UploadAsset(context.Background(), testFilePath)
+	err := c.UploadAssetWithFilename(context.Background(), testFilePath, filepath.Base(testFilePath))
 	if err != nil {
 		t.Fatalf("expected upload to succeed after retry, got: %v", err)
 	}
 	if atomic.LoadInt32(&attempts) != 2 {
 		t.Errorf("expected 2 attempts (1 failure + 1 retry success), got %d", attempts)
+	}
+}
+
+func TestUploadThroughSlowReadingServer(t *testing.T) {
+	// The body is much larger than socket buffers, so the client is blocked
+	// sending while the server stalls. The whole exchange takes longer than
+	// the response-header timeout, which a whole-request http.Client.Timeout
+	// would have killed.
+	testFilePath := filepath.Join(t.TempDir(), "big.mp4")
+	if err := os.WriteFile(testFilePath, make([]byte, 32<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 1<<10)
+		_, _ = io.ReadFull(r.Body, buf)
+		time.Sleep(1200 * time.Millisecond)
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	hc := httpclient.New(httpclient.Options{ResponseHeaderTimeout: 500 * time.Millisecond})
+	c := NewClient(server.URL, "key", hc, customlogger.NewWithLevel(nil, "error", ""))
+	start := time.Now()
+	if err := c.UploadAssetWithFilename(context.Background(), testFilePath, filepath.Base(testFilePath)); err != nil {
+		t.Fatalf("upload through slow server failed: %v", err)
+	}
+	if time.Since(start) < time.Second {
+		t.Fatalf("test did not exercise a slow upload")
 	}
 }

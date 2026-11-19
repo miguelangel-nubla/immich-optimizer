@@ -1,0 +1,466 @@
+package proxy
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
+	"net/http"
+	"net/textproto"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
+)
+
+var errSpoolCreate = errors.New("unable to create upload spool file")
+
+// spoolBody copies the request body to a temp file. This is the only phase
+// bound to the client connection: an aborted or short body never reaches the
+// engine and is never saved to undone, because the input is incomplete.
+func spoolBody(r *http.Request) (string, error) {
+	f, err := os.CreateTemp("", "io-proxy-body-*")
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", errSpoolCreate, err)
+	}
+	_, err = io.Copy(f, r.Body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+// targetPart is a file part handed to the conversion engine.
+type targetPart struct {
+	index       int
+	formName    string
+	fileName    string // base name of the client's multipart filename
+	fileDir     string // directory part of the client's filename, if it sent one
+	contentType string
+	srcPath     string
+	sha256      string
+	res         *entity.ConvertResult
+}
+
+// smallFields are non-file form fields read for diagnostics and mtime.
+var smallFields = map[string]bool{"fileModifiedAt": true, "fileCreatedAt": true, "deviceId": true}
+
+func (s *Server) isTarget(part *multipart.Part) bool {
+	return part.FileName() != "" && (s.cfg.FilterFormKey == "" || part.FormName() == s.cfg.FilterFormKey)
+}
+
+// runJob processes one spooled upload on the detached server context.
+func (s *Server) runJob(ctx context.Context, j *job, spec jobSpec) jobResult {
+	_, params, err := mime.ParseMediaType(spec.header.Get("Content-Type"))
+	boundary := params["boundary"]
+	if err != nil || boundary == "" {
+		return resultFromError(fmt.Errorf("%w: invalid multipart content type", errBadRequest))
+	}
+
+	// Pass 1: extract target file parts (hashing them) and small fields.
+	targets, fields, formHash, err := s.extractTargets(spec.spoolPath, boundary)
+	releaseTargets := func() {
+		for _, t := range targets {
+			if t.res != nil {
+				t.res.Release()
+			}
+			_ = os.Remove(t.srcPath)
+		}
+		targets = nil
+	}
+	defer func() { releaseTargets() }()
+	if err != nil {
+		s.logger.Printf("Proxy job %s: %v", j.id, err)
+		return resultFromError(err)
+	}
+
+	// Coalesce identical uploads from the same user (single-file requests).
+	// The key covers the file content, every other form field (e.g.
+	// livePhotoVideoId, visibility), the request path and query and the
+	// caller's identity, so only true retries share a result.
+	if len(targets) == 1 {
+		key := coalesceKey(targets[0].sha256, formHash, spec)
+		if existing, dup := s.jobs.attach(key, j); dup {
+			s.logger.Printf("Proxy job %s: identical upload of %s already handled by job %s, reusing its result",
+				j.id, targets[0].fileName, existing.id)
+			// This job's copies are never used: free the disk now instead of
+			// holding them for as long as the original job runs.
+			releaseTargets()
+			_ = os.Remove(spec.spoolPath)
+			select {
+			case <-existing.done:
+				res := existing.result
+				res.cacheable = false
+				return res
+			case <-ctx.Done():
+				return resultFromError(fmt.Errorf("%w: %w", entity.ErrCanceled, context.Cause(ctx)))
+			}
+		}
+	}
+
+	modTime := parseTime(fields["fileModifiedAt"])
+	for _, t := range targets {
+		in := entity.ConvertInput{
+			Path:        t.srcPath,
+			Filename:    t.fileName,
+			OriginalDir: t.fileDir,
+			Source:      entity.SourceProxy,
+			ModTime:     modTime,
+			SHA256:      t.sha256,
+			Details: map[string]string{
+				"remote_addr": spec.remoteAddr,
+				"user_agent":  spec.userAgent,
+				"device_id":   fields["deviceId"],
+			},
+		}
+		res, err := s.conv.Convert(ctx, in)
+		if err != nil {
+			return resultFromError(err)
+		}
+		t.res = res
+	}
+
+	// Pass 2: build the outgoing multipart in the original part order.
+	outPath, contentType, err := s.buildOutgoing(spec.spoolPath, boundary, targets)
+	if outPath != "" {
+		defer os.Remove(outPath)
+	}
+	if err != nil {
+		s.logger.Errorf("Proxy job %s: %v", j.id, err)
+		return resultFromError(err)
+	}
+	_ = os.Remove(spec.spoolPath) // no longer needed; frees disk during the upload
+
+	res := s.upload(ctx, spec, outPath, contentType)
+	if res.err != nil {
+		s.logger.Errorf("Proxy job %s: upload to Immich failed: %v", j.id, res.err)
+	} else {
+		s.logger.Printf("Proxy job %s: Immich responded %d", j.id, res.status)
+	}
+	return res
+}
+
+// extractTargets copies target file parts to temp files and reads the small
+// diagnostic fields. formHash digests every part except the target files'
+// content (names, filenames, content types and all other values, in order),
+// so uploads that differ in any form field never coalesce.
+func (s *Server) extractTargets(spoolPath, boundary string) (targets []*targetPart, fields map[string]string, formHash string, err error) {
+	f, err := os.Open(spoolPath)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("open spool: %w", err)
+	}
+	defer f.Close()
+
+	fields = map[string]string{}
+	form := sha256.New()
+	mr := multipart.NewReader(f, boundary)
+	for idx := 0; ; idx++ {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return targets, fields, "", fmt.Errorf("%w: reading multipart part: %w", errBadRequest, err)
+		}
+		ph := sha256.New()
+		writeField(ph, part.FormName())
+		writeField(ph, rawFileName(part))
+		writeField(ph, part.Header.Get("Content-Type"))
+		if s.isTarget(part) {
+			t, err := extractPart(part, idx)
+			if t != nil {
+				targets = append(targets, t)
+			}
+			if err != nil {
+				return targets, fields, "", err
+			}
+			_, _ = form.Write(ph.Sum([]byte("file")))
+			continue
+		}
+		var small bytes.Buffer
+		var r io.Reader = part
+		if part.FileName() == "" && smallFields[part.FormName()] {
+			r = io.MultiReader(io.TeeReader(io.LimitReader(part, 256), &small), part)
+		}
+		if _, err := io.Copy(ph, r); err != nil {
+			return targets, fields, "", fmt.Errorf("%w: reading multipart field %s: %w", errBadRequest, part.FormName(), err)
+		}
+		if small.Len() > 0 {
+			fields[part.FormName()] = strings.TrimSpace(small.String())
+		}
+		_, _ = form.Write(ph.Sum([]byte("field")))
+	}
+	return targets, fields, hex.EncodeToString(form.Sum(nil)), nil
+}
+
+// writeField writes a length-prefixed value so field boundaries are
+// unambiguous in a digest.
+func writeField(w io.Writer, v string) {
+	_, _ = fmt.Fprintf(w, "%d:%s", len(v), v)
+}
+
+// rawFileName returns the filename exactly as the client sent it in the
+// Content-Disposition header (multipart.Part.FileName strips directories).
+func rawFileName(part *multipart.Part) string {
+	_, params, err := mime.ParseMediaType(part.Header.Get("Content-Disposition"))
+	if err != nil {
+		return part.FileName()
+	}
+	return params["filename"]
+}
+
+// splitClientFilename splits a client filename into its directory and base
+// name on '/' only. The base equals what multipart.Part.FileName returns, so
+// the name delivered to Immich is unchanged; a backslash is a legal filename
+// character on the clients and is kept. The directory is informational.
+func splitClientFilename(raw string) (dir, base string) {
+	if i := strings.LastIndex(raw, "/"); i >= 0 {
+		dir, base = raw[:i], raw[i+1:]
+	} else {
+		base = raw
+	}
+	if base == "" || base == "." || base == ".." {
+		base = filepath.Base(raw)
+	}
+	return dir, base
+}
+
+func extractPart(part *multipart.Part, idx int) (*targetPart, error) {
+	// Deliver exactly the name Go's multipart parser reports (as before the
+	// engine refactor); only the directory part is taken from the raw value.
+	dir, _ := splitClientFilename(rawFileName(part))
+	name := part.FileName()
+	ext := filepath.Ext(name)
+	if strings.ContainsAny(ext, `/\*`) || len(ext) > 32 {
+		ext = ""
+	}
+	src, err := os.CreateTemp("", "io-proxy-src-*"+ext)
+	if err != nil {
+		return nil, fmt.Errorf("create temp src file: %w", err)
+	}
+	t := &targetPart{
+		index:       idx,
+		formName:    part.FormName(),
+		fileName:    name,
+		fileDir:     dir,
+		contentType: part.Header.Get("Content-Type"),
+		srcPath:     src.Name(),
+	}
+	h := sha256.New()
+	_, err = io.Copy(io.MultiWriter(src, h), part)
+	if cerr := src.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return t, fmt.Errorf("%w: copying file part %s: %w", errBadRequest, t.fileName, err)
+	}
+	t.sha256 = hex.EncodeToString(h.Sum(nil))
+	return t, nil
+}
+
+func (s *Server) buildOutgoing(spoolPath, boundary string, targets []*targetPart) (string, string, error) {
+	byIndex := make(map[int]*targetPart, len(targets))
+	for _, t := range targets {
+		byIndex[t.index] = t
+	}
+
+	in, err := os.Open(spoolPath)
+	if err != nil {
+		return "", "", fmt.Errorf("open spool: %w", err)
+	}
+	defer in.Close()
+
+	out, err := os.CreateTemp("", "io-proxy-out-*")
+	if err != nil {
+		return "", "", fmt.Errorf("create outgoing temp file: %w", err)
+	}
+	outPath := out.Name()
+	fail := func(err error) (string, string, error) {
+		_ = out.Close()
+		return outPath, "", err
+	}
+
+	mw := multipart.NewWriter(out)
+	mr := multipart.NewReader(in, boundary)
+	for idx := 0; ; idx++ {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fail(fmt.Errorf("%w: re-reading multipart part: %w", errBadRequest, err))
+		}
+		if t := byIndex[idx]; t != nil {
+			if err := writeDelivered(mw, t); err != nil {
+				return fail(err)
+			}
+			continue
+		}
+		pw, err := mw.CreatePart(part.Header)
+		if err != nil {
+			return fail(fmt.Errorf("create multipart part: %w", err))
+		}
+		if _, err := io.Copy(pw, part); err != nil {
+			return fail(fmt.Errorf("copy multipart part: %w", err))
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return fail(fmt.Errorf("close multipart writer: %w", err))
+	}
+	if err := out.Close(); err != nil {
+		return outPath, "", fmt.Errorf("close outgoing temp file: %w", err)
+	}
+	return outPath, mw.FormDataContentType(), nil
+}
+
+// writeDelivered writes the converted file as a part. Any failure here is a
+// job error: the original is never forwarded as a fallback.
+func writeDelivered(mw *multipart.Writer, t *targetPart) error {
+	f, err := os.Open(t.res.DeliverPath)
+	if err != nil {
+		return fmt.Errorf("open converted file for %s: %w", t.fileName, err)
+	}
+	defer f.Close()
+
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`,
+		escapeQuotes(t.formName), escapeQuotes(t.res.DeliverName)))
+	ct := t.contentType
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	h.Set("Content-Type", ct)
+	pw, err := mw.CreatePart(h)
+	if err != nil {
+		return fmt.Errorf("create part for converted file %s: %w", t.fileName, err)
+	}
+	if _, err := io.Copy(pw, f); err != nil {
+		return fmt.Errorf("copy converted file %s: %w", t.fileName, err)
+	}
+	return nil
+}
+
+var quoteEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\r", "%0D", "\n", "%0A")
+
+func escapeQuotes(s string) string { return quoteEscaper.Replace(s) }
+
+var hopHeaders = []string{"Content-Length", "Connection", "Keep-Alive", "Transfer-Encoding", "Proxy-Connection", "Upgrade", "Te", "Trailer"}
+
+func (s *Server) upload(ctx context.Context, spec jobSpec, outPath, contentType string) jobResult {
+	f, err := os.Open(outPath)
+	if err != nil {
+		return resultFromError(fmt.Errorf("open outgoing file: %w", err))
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return resultFromError(fmt.Errorf("stat outgoing file: %w", err))
+	}
+
+	targetURL := s.cfg.UpstreamURL.ResolveReference(spec.url)
+	req, err := http.NewRequestWithContext(ctx, spec.method, targetURL.String(), f)
+	if err != nil {
+		return resultFromError(fmt.Errorf("create outgoing request: %w", err))
+	}
+	for k, vv := range spec.header {
+		if strings.EqualFold(k, "Content-Type") || strings.EqualFold(k, "Content-Length") {
+			continue
+		}
+		for _, v := range vv {
+			req.Header.Add(k, v)
+		}
+	}
+	req.Host = s.cfg.UpstreamURL.Host
+	req.Header.Set("Content-Type", contentType)
+	req.ContentLength = st.Size()
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return resultFromError(fmt.Errorf("%w: %w", entity.ErrCanceled, context.Cause(ctx)))
+		}
+		return resultFromError(fmt.Errorf("%w: %w", errUpstream, err))
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody+1))
+	if err != nil {
+		if ctx.Err() != nil {
+			return resultFromError(fmt.Errorf("%w: %w", entity.ErrCanceled, context.Cause(ctx)))
+		}
+		return resultFromError(fmt.Errorf("%w: reading response: %w", errUpstream, err))
+	}
+	if len(body) > maxUpstreamBody {
+		return resultFromError(fmt.Errorf("%w: response body larger than %d bytes", errUpstream, maxUpstreamBody))
+	}
+
+	h := resp.Header.Clone()
+	for _, k := range hopHeaders {
+		h.Del(k)
+	}
+	return jobResult{
+		status:    resp.StatusCode,
+		header:    h,
+		body:      body,
+		cacheable: cacheableStatus(resp.StatusCode),
+	}
+}
+
+// cacheableStatus reports whether an Immich answer is definitive enough to be
+// replayed to identical retries. 5xx and transient 4xx answers (often from a
+// reverse proxy in front of Immich) must reach Immich again on retry.
+func cacheableStatus(code int) bool {
+	switch code {
+	case http.StatusRequestTimeout, http.StatusRequestEntityTooLarge, http.StatusTooEarly, http.StatusTooManyRequests:
+		return false
+	}
+	return code >= 200 && code < 500
+}
+
+// coalesceKey identifies an upload for in-flight and recent-result
+// deduplication: file content, all other form fields, method, path, query
+// and the caller's credentials. Credentials are only ever hashed.
+func coalesceKey(fileSHA, formHash string, spec jobSpec) string {
+	return "v2|" + fileSHA + "|" + formHash + "|" + authFingerprint(spec)
+}
+
+// authFingerprint identifies the caller and the request target so coalesced
+// results never leak across users or endpoints. It is hashed, never stored
+// or logged in clear.
+func authFingerprint(spec jobSpec) string {
+	var b bytes.Buffer
+	b.WriteString(spec.method)
+	b.WriteByte(0)
+	b.WriteString(spec.url.Path)
+	b.WriteByte(0)
+	b.WriteString(spec.url.RawQuery)
+	for _, k := range []string{"Authorization", "X-Api-Key", "X-Immich-User-Token", "X-Immich-Session-Token", "X-Immich-Share-Key", "Cookie"} {
+		b.WriteByte(0)
+		b.WriteString(strings.Join(spec.header.Values(k), ","))
+	}
+	sum := sha256.Sum256(b.Bytes())
+	return hex.EncodeToString(sum[:])
+}
+
+func parseTime(v string) time.Time {
+	if v == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.000Z0700", "2006-01-02T15:04:05"} {
+		if t, err := time.Parse(layout, v); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}

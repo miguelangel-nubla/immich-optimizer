@@ -1,172 +1,295 @@
+// Package proxy is the reverse-proxy source: it intercepts Immich upload
+// requests, hands the file to the conversion engine and uploads the result.
+//
+// Jobs are detached from the client connection. The request body is first
+// spooled to disk (bound to the client), then conversion and the upstream
+// upload run on a server-lifetime context that is cancelled only on
+// shutdown. A client that disconnects or times out does not stop the job,
+// and an identical retry is coalesced onto the running or recently finished
+// job instead of being processed and uploaded twice.
 package proxy
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
-	"mime"
-	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/textproto"
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/httpclient"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
-	"github.com/miguelangel-nubla/immich-optimizer/internal/utils"
 )
 
-var errBlockedExtension = errors.New("blocked unmatched file extension")
+// WaitPath is the browser keep-alive redirect target (kept for compatibility
+// with immich-upload-optimizer).
+const WaitPath = "/_immich-upload-optimizer/wait"
 
-type jobResult struct {
-	resp *http.Response
-	err  error
-}
+const (
+	defaultResultTTL   = 30 * time.Minute
+	defaultWaitPoll    = 55 * time.Second
+	defaultMaxKeptJobs = 10_000
+)
 
-type jobState struct {
-	respCh chan jobResult
-	doneCh chan struct{}
+type Config struct {
+	UpstreamURL   *url.URL
+	BindAddr      string
+	FilterPath    string
+	FilterFormKey string
+	// HTTPClient is used for the upstream upload. It should have
+	// transport-level timeouts only (see httpclient.New).
+	HTTPClient *http.Client
+	// ResultTTL is how long finished results are kept for coalescing retries
+	// and late /wait requests. Default 30m.
+	ResultTTL time.Duration
+	// WaitPoll is how long a /wait request blocks before redirecting again.
+	// Default 55s.
+	WaitPoll time.Duration
+	// MaxKeptJobs bounds retained finished jobs. Default 10000.
+	MaxKeptJobs int
 }
 
 type Server struct {
-	upstreamURL   *url.URL
-	bindAddr      string
-	filterPath    string
-	filterFormKey string
-	processor     port.MediaProcessor
-	tasks         []entity.Task
-	logger        *logger.Logger
-	proxy         *httputil.ReverseProxy
-	server        *http.Server
-	semaphore     chan struct{}
-	client        *http.Client
+	cfg      Config
+	conv     port.Converter
+	logger   *logger.Logger
+	revProxy *httputil.ReverseProxy
+	server   *http.Server
+	client   *http.Client
+	jobs     *jobManager
 
-	jobsMu sync.Mutex
-	jobs   map[string]*jobState
+	baseCtx    context.Context
+	cancelBase context.CancelCauseFunc
+
+	// lifecycle guards jobsWG.Add against a concurrent Drain.
+	lifecycle    sync.Mutex
+	shuttingDown bool
+	jobsWG       sync.WaitGroup
+
+	listenerMu sync.Mutex
+	listener   net.Listener
 }
 
-func NewServer(
-	upstreamURL *url.URL,
-	bindAddr string,
-	filterPath string,
-	filterFormKey string,
-	processor port.MediaProcessor,
-	tasks []entity.Task,
-	log *logger.Logger,
-	maxConcurrent int,
-	httpTimeout int,
-) *Server {
-	if maxConcurrent <= 0 {
-		maxConcurrent = 10
+func NewServer(cfg Config, conv port.Converter, log *logger.Logger) *Server {
+	if cfg.FilterPath == "" {
+		cfg.FilterPath = "/api/assets"
 	}
-	if filterPath == "" {
-		filterPath = "/api/assets"
+	if cfg.ResultTTL <= 0 {
+		cfg.ResultTTL = defaultResultTTL
 	}
-	if filterFormKey == "" {
-		filterFormKey = "assetData"
+	if cfg.WaitPoll <= 0 {
+		cfg.WaitPoll = defaultWaitPoll
+	}
+	if cfg.MaxKeptJobs <= 0 {
+		cfg.MaxKeptJobs = defaultMaxKeptJobs
+	}
+	client := cfg.HTTPClient
+	if client == nil {
+		client = httpclient.New(httpclient.Options{})
 	}
 
-	revProxy := httputil.NewSingleHostReverseProxy(upstreamURL)
+	baseCtx, cancel := context.WithCancelCause(context.Background())
 
-	timeout := 120 * time.Second
-	if httpTimeout > 0 {
-		timeout = time.Duration(httpTimeout) * time.Second
-	}
+	// Pass-through traffic keeps the default transport: some Immich endpoints
+	// (downloads, websockets) can legitimately take long to send headers.
+	revProxy := httputil.NewSingleHostReverseProxy(cfg.UpstreamURL)
 
 	s := &Server{
-		upstreamURL:   upstreamURL,
-		bindAddr:      bindAddr,
-		filterPath:    filterPath,
-		filterFormKey: filterFormKey,
-		processor:     processor,
-		tasks:         tasks,
-		logger:        log,
-		proxy:         revProxy,
-		semaphore:     make(chan struct{}, maxConcurrent),
-		client: &http.Client{
-			Timeout: timeout,
-		},
-		jobs: make(map[string]*jobState),
+		cfg:        cfg,
+		conv:       conv,
+		logger:     log,
+		revProxy:   revProxy,
+		client:     client,
+		jobs:       newJobManager(cfg.ResultTTL, cfg.MaxKeptJobs),
+		baseCtx:    baseCtx,
+		cancelBase: cancel,
 	}
-
 	s.server = &http.Server{
-		Addr:    bindAddr,
-		Handler: s,
+		Addr:              cfg.BindAddr,
+		Handler:           s,
+		ReadHeaderTimeout: 30 * time.Second,
+		// No ReadTimeout/WriteTimeout: big uploads and long waits must work.
 	}
-
 	return s
 }
 
+// Start binds the listener synchronously (so a busy port is a startup error)
+// and serves in the background.
 func (s *Server) Start() error {
-	s.logger.Printf("Starting reverse proxy server on %s -> %s", s.bindAddr, s.upstreamURL.String())
+	ln, err := net.Listen("tcp", s.cfg.BindAddr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", s.cfg.BindAddr, err)
+	}
+	s.listenerMu.Lock()
+	s.listener = ln
+	s.listenerMu.Unlock()
+	s.logger.Printf("Starting reverse proxy server on %s -> %s", ln.Addr(), s.cfg.UpstreamURL.String())
+	go s.jobs.janitor(s.baseCtx)
 	go func() {
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.logger.Printf("Reverse proxy server error: %v", err)
+		if err := s.server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Errorf("Reverse proxy server error: %v", err)
 		}
 	}()
 	return nil
 }
 
-func (s *Server) Stop(ctx context.Context) error {
+// Addr returns the bound address once started.
+func (s *Server) Addr() string {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+	if s.listener == nil {
+		return ""
+	}
+	return s.listener.Addr().String()
+}
+
+// BeginShutdown stops accepting connections and new jobs. Handlers waiting
+// on jobs keep their connections until the jobs finish or Close is called.
+func (s *Server) BeginShutdown() {
 	s.logger.Printf("Stopping reverse proxy server...")
-	return s.server.Shutdown(ctx)
+	s.lifecycle.Lock()
+	s.shuttingDown = true
+	s.lifecycle.Unlock()
+	go func() { _ = s.server.Shutdown(context.Background()) }()
+}
+
+// Drain waits for running jobs until ctx is done.
+func (s *Server) Drain(ctx context.Context) error {
+	s.lifecycle.Lock()
+	s.shuttingDown = true
+	s.lifecycle.Unlock()
+	done := make(chan struct{})
+	go func() {
+		s.jobsWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Cancel aborts running jobs (conversion processes are killed). Clients get
+// 503 with Retry-After.
+func (s *Server) Cancel() {
+	s.cancelBase(entity.ErrShuttingDown)
+}
+
+// FinishShutdown waits up to ctx for active handlers to write the results of
+// jobs that have already finished, then force-closes whatever is left. Call
+// it after Drain (or Cancel and Drain) so a job that completed during the
+// grace period still reaches its client.
+func (s *Server) FinishShutdown(ctx context.Context) error {
+	s.lifecycle.Lock()
+	s.shuttingDown = true
+	s.lifecycle.Unlock()
+	err := s.server.Shutdown(ctx)
+	if cerr := s.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// Close force-closes remaining connections.
+func (s *Server) Close() error {
+	s.cancelBase(entity.ErrShuttingDown)
+	return s.server.Close()
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/_immich-upload-optimizer/wait" {
+	if r.URL.Path == WaitPath {
 		s.continueJob(w, r)
 		return
 	}
 
 	if !s.isUploadRequest(r) {
-		r.Host = s.upstreamURL.Host
-		s.proxy.ServeHTTP(w, r)
+		r.Host = s.cfg.UpstreamURL.Host
+		s.revProxy.ServeHTTP(w, r)
 		return
 	}
 
 	s.logger.Printf("Intercepted upload request from %s: %s", r.RemoteAddr, r.URL.Path)
+	async := s.clientFollowsRedirects(r)
 
-	if s.clientFollowsRedirects(r) {
-		s.newAsyncJob(w, r)
+	// Phase A (bound to the client): spool the body to disk.
+	spoolPath, err := spoolBody(r)
+	if err != nil {
+		if errors.Is(err, syscall.ENOSPC) || errors.Is(err, errSpoolCreate) {
+			s.logger.Errorf("Unable to buffer upload from %s: %v", r.RemoteAddr, err)
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "temporarily unable to buffer upload", http.StatusServiceUnavailable)
+			return
+		}
+		s.logger.Printf("Incomplete upload from %s, not processed: %v", r.RemoteAddr, err)
+		http.Error(w, "failed to read upload body", http.StatusBadRequest)
+		return
+	}
+
+	// Phase B (detached): process and upload.
+	j, ok := s.startJob(newJobSpec(r, spoolPath), async)
+	if !ok {
+		_ = os.Remove(spoolPath)
+		w.Header().Set("Retry-After", "30")
+		http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
+		return
+	}
+
+	if async {
+		http.Redirect(w, r, fmt.Sprintf("%s?job=%s", WaitPath, j.id), http.StatusTemporaryRedirect)
 		return
 	}
 
 	select {
-	case s.semaphore <- struct{}{}:
-		defer func() { <-s.semaphore }()
+	case <-j.done:
+		j.result.write(w)
 	case <-r.Context().Done():
-		http.Error(w, "Request context canceled", http.StatusGatewayTimeout)
-		return
+		s.logger.Printf("Client %s disconnected; job %s continues in background", r.RemoteAddr, j.id)
 	}
+}
 
-	resp, err := s.handleUploadProxy(r)
-	if err != nil {
-		if errors.Is(err, errBlockedExtension) {
-			http.Error(w, err.Error(), http.StatusUnsupportedMediaType)
-			return
-		}
-		s.logger.Printf("Proxy upload error: %v", err)
-		http.Error(w, "failed to process upload, view logs for more info", http.StatusBadGateway)
-		return
+func (s *Server) startJob(spec jobSpec, async bool) (*job, bool) {
+	s.lifecycle.Lock()
+	if s.shuttingDown {
+		s.lifecycle.Unlock()
+		return nil, false
 	}
-	defer resp.Body.Close()
+	s.jobsWG.Add(1)
+	s.lifecycle.Unlock()
 
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	j := s.jobs.create(async)
+	go func() {
+		defer s.jobsWG.Done()
+		defer os.Remove(spec.spoolPath)
+		var res jobResult
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					s.logger.Errorf("Proxy job %s panicked: %v", j.id, p)
+					res = textResult(http.StatusInternalServerError, "internal error, view logs for more info", false)
+				}
+			}()
+			res = s.runJob(s.baseCtx, j, spec)
+		}()
+		s.jobs.finish(j, res)
+	}()
+	return j, true
 }
 
 func (s *Server) clientFollowsRedirects(r *http.Request) bool {
@@ -182,130 +305,31 @@ func (s *Server) clientFollowsRedirects(r *http.Request) bool {
 	return follows
 }
 
-func (s *Server) newAsyncJob(w http.ResponseWriter, r *http.Request) {
-	bodyFile, err := os.CreateTemp("", "proxy-async-body-*")
-	if err != nil {
-		http.Error(w, "failed to create async upload buffer", http.StatusInternalServerError)
-		return
-	}
-	if _, err := io.Copy(bodyFile, r.Body); err != nil {
-		bodyFile.Close()
-		os.Remove(bodyFile.Name())
-		http.Error(w, "failed to buffer async upload", http.StatusBadRequest)
-		return
-	}
-	stat, err := bodyFile.Stat()
-	if err != nil {
-		bodyFile.Close()
-		os.Remove(bodyFile.Name())
-		http.Error(w, "failed to inspect async upload buffer", http.StatusInternalServerError)
-		return
-	}
-
-	jobID := generateUUID()
-	job := &jobState{
-		respCh: make(chan jobResult, 1),
-		doneCh: make(chan struct{}, 1),
-	}
-
-	s.jobsMu.Lock()
-	s.jobs[jobID] = job
-	s.jobsMu.Unlock()
-
-	http.Redirect(w, r, fmt.Sprintf("/_immich-upload-optimizer/wait?job=%s", jobID), http.StatusTemporaryRedirect)
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
-
-	go func() {
-		defer func() {
-			bodyFile.Close()
-			os.Remove(bodyFile.Name())
-		}()
-		defer func() {
-			s.jobsMu.Lock()
-			delete(s.jobs, jobID)
-			s.jobsMu.Unlock()
-		}()
-
-		s.semaphore <- struct{}{}
-		defer func() { <-s.semaphore }()
-
-		timeout := s.client.Timeout
-		if timeout <= 0 {
-			timeout = 120 * time.Second
-		}
-		jobCtx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-
-		if _, err := bodyFile.Seek(0, io.SeekStart); err != nil {
-			job.respCh <- jobResult{err: err}
-			return
-		}
-
-		jobReq := r.Clone(jobCtx)
-		jobReq.Body = bodyFile
-		jobReq.ContentLength = stat.Size()
-
-		resp, err := s.handleUploadProxy(jobReq)
-		job.respCh <- jobResult{resp: resp, err: err}
-
-		if err == nil && resp != nil {
-			select {
-			case <-job.doneCh:
-			case <-time.After(10 * time.Second):
-			}
-		}
-	}()
-}
-
 func (s *Server) continueJob(w http.ResponseWriter, r *http.Request) {
+	// The browser's 307 re-sends the whole upload; discard it.
+	if r.Body != nil {
+		_, _ = io.Copy(io.Discard, r.Body)
+	}
+
 	jobID := r.URL.Query().Get("job")
 	if jobID == "" {
 		http.Error(w, "missing job parameter", http.StatusBadRequest)
 		return
 	}
-
-	s.jobsMu.Lock()
-	job, exists := s.jobs[jobID]
-	s.jobsMu.Unlock()
-
-	if !exists {
-		http.Error(w, "job not found", http.StatusBadRequest)
+	j := s.jobs.get(jobID)
+	if j == nil {
+		http.Error(w, "job not found or expired", http.StatusNotFound)
 		return
 	}
 
-	_ = r.ParseMultipartForm(10 << 20)
-
-	safeTimeout := 55 * time.Second
-
+	t := time.NewTimer(s.cfg.WaitPoll)
+	defer t.Stop()
 	select {
-	case res, ok := <-job.respCh:
-		if !ok || res.err != nil {
-			msg := "job failed or channel closed"
-			if res.err != nil {
-				msg = fmt.Sprintf("job failed: %v", res.err)
-			}
-			http.Error(w, msg, http.StatusInternalServerError)
-			return
-		}
-
-		defer res.resp.Body.Close()
-
-		for k, vv := range res.resp.Header {
-			for _, v := range vv {
-				w.Header().Add(k, v)
-			}
-		}
-		w.WriteHeader(res.resp.StatusCode)
-		_, _ = io.Copy(w, res.resp.Body)
-
-		select {
-		case job.doneCh <- struct{}{}:
-		default:
-		}
-	case <-time.After(safeTimeout):
+	case <-j.done:
+		j.result.write(w)
+	case <-t.C:
 		http.Redirect(w, r, r.URL.String(), http.StatusTemporaryRedirect)
+	case <-r.Context().Done():
 	}
 }
 
@@ -319,7 +343,7 @@ func (s *Server) isUploadRequest(r *http.Request) bool {
 	}
 
 	pathStr := r.URL.Path
-	matched, err := path.Match(s.filterPath, pathStr)
+	matched, err := path.Match(s.cfg.FilterPath, pathStr)
 	if err == nil && matched {
 		return true
 	}
@@ -330,195 +354,4 @@ func (s *Server) isUploadRequest(r *http.Request) bool {
 		strings.HasSuffix(pathLower, "/api/asset/upload") ||
 		strings.HasSuffix(pathLower, "/api/asset/upload/") ||
 		strings.Contains(pathLower, "/assets/upload")
-}
-
-func (s *Server) shouldOptimizeExt(checkExt string) bool {
-	checkExt = utils.NormalizeExtension(checkExt)
-	for _, task := range s.tasks {
-		for _, ext := range task.Extensions {
-			if utils.NormalizeExtension(ext) == checkExt {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func (s *Server) handleUploadProxy(r *http.Request) (*http.Response, error) {
-	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || !strings.HasPrefix(mediaType, "multipart/") {
-		return nil, fmt.Errorf("invalid multipart media type: %w", err)
-	}
-	boundary, ok := params["boundary"]
-	if !ok {
-		return nil, fmt.Errorf("missing multipart boundary")
-	}
-
-	mr := multipart.NewReader(r.Body, boundary)
-
-	outgoingFile, err := os.CreateTemp("", "proxy-out-*")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp output file: %w", err)
-	}
-	defer func() {
-		outgoingFile.Close()
-		os.Remove(outgoingFile.Name())
-	}()
-
-	mw := multipart.NewWriter(outgoingFile)
-
-	for {
-		part, err := mr.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("error reading multipart part: %w", err)
-		}
-
-		filename := part.FileName()
-		formname := part.FormName()
-
-		shouldTarget := (s.filterFormKey == "" || formname == s.filterFormKey)
-
-		if filename != "" && shouldTarget && s.shouldOptimizeExt(filepath.Ext(filename)) {
-			if err := s.processFilePart(r.Context(), part, mw, formname, filename); err != nil {
-				return nil, fmt.Errorf("error optimizing file part %s: %w", filename, err)
-			}
-		} else if filename != "" && shouldTarget {
-			return nil, fmt.Errorf("%w: %s", errBlockedExtension, filepath.Ext(filename))
-		} else {
-			h := part.Header
-			if h == nil {
-				h = make(textproto.MIMEHeader)
-				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, formname, filename))
-			}
-			pw, createErr := mw.CreatePart(h)
-			if createErr != nil {
-				return nil, fmt.Errorf("failed to create part in multipart writer: %w", createErr)
-			}
-			if _, copyErr := io.Copy(pw, part); copyErr != nil {
-				return nil, fmt.Errorf("failed to copy part: %w", copyErr)
-			}
-		}
-	}
-
-	if err := mw.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close multipart writer: %w", err)
-	}
-
-	if _, err := outgoingFile.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("failed to seek output file: %w", err)
-	}
-
-	stat, err := outgoingFile.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat output file: %w", err)
-	}
-
-	targetURL := s.upstreamURL.ResolveReference(r.URL)
-	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), outgoingFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create outgoing request: %w", err)
-	}
-
-	for k, vv := range r.Header {
-		if strings.EqualFold(k, "Content-Type") || strings.EqualFold(k, "Content-Length") {
-			continue
-		}
-		for _, v := range vv {
-			outReq.Header.Add(k, v)
-		}
-	}
-
-	outReq.Host = s.upstreamURL.Host
-	outReq.Header.Set("Content-Type", mw.FormDataContentType())
-	outReq.ContentLength = stat.Size()
-
-	return s.client.Do(outReq)
-}
-
-func (s *Server) processFilePart(ctx context.Context, part *multipart.Part, mw *multipart.Writer, formname, filename string) error {
-	ext := filepath.Ext(filename)
-	tempSrc, err := os.CreateTemp("", "proxy-src-*"+ext)
-	if err != nil {
-		return fmt.Errorf("failed to create temp src file: %w", err)
-	}
-	defer func() {
-		tempSrc.Close()
-		os.Remove(tempSrc.Name())
-	}()
-
-	if _, err := io.Copy(tempSrc, part); err != nil {
-		return fmt.Errorf("failed to copy part to temp src file: %w", err)
-	}
-	tempSrc.Close()
-
-	res, procErr := s.processor.Process(ctx, tempSrc.Name(), s.tasks)
-	if procErr != nil {
-		return procErr
-	}
-	if res != nil {
-		if res.Cleanup != nil {
-			defer res.Cleanup()
-		}
-		if res.ProcessedSize < res.OriginalSize && res.ProcessedFilePath != "" {
-			s.logger.Printf("Proxy optimized asset %s: %s -> %s",
-				filename,
-				utils.HumanReadableSize(res.OriginalSize),
-				utils.HumanReadableSize(res.ProcessedSize))
-
-			procFile, openErr := os.Open(res.ProcessedFilePath)
-			if openErr == nil {
-				defer procFile.Close()
-				h := make(textproto.MIMEHeader)
-
-				outExt := filepath.Ext(res.ProcessedFilename)
-				if outExt == "" && res.ProcessedFilePath != "" {
-					outExt = filepath.Ext(res.ProcessedFilePath)
-				}
-				if outExt == "" {
-					outExt = ext
-				}
-				outFilename := utils.TrimSuffixCaseInsensitive(filename, ext) + outExt
-
-				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, formname, outFilename))
-				if part.Header != nil && part.Header.Get("Content-Type") != "" {
-					h.Set("Content-Type", part.Header.Get("Content-Type"))
-				}
-				pw, createErr := mw.CreatePart(h)
-				if createErr == nil {
-					_, copyErr := io.Copy(pw, procFile)
-					return copyErr
-				}
-			}
-		}
-	}
-
-	s.logger.Printf("File %s not optimized (no reduction or processing failed), forwarding original", filename)
-	origFile, openErr := os.Open(tempSrc.Name())
-	if openErr != nil {
-		return fmt.Errorf("failed to re-open temp src file: %w", openErr)
-	}
-	defer origFile.Close()
-
-	h := part.Header
-	if h == nil {
-		h = make(textproto.MIMEHeader)
-		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, formname, filename))
-	}
-	pw, createErr := mw.CreatePart(h)
-	if createErr != nil {
-		return fmt.Errorf("failed to create part for original file: %w", createErr)
-	}
-	_, copyErr := io.Copy(pw, origFile)
-	return copyErr
-}
-
-func generateUUID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }

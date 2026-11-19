@@ -3,14 +3,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"text/template"
 	"time"
@@ -18,13 +22,16 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/filesystem"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/httpclient"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/immich"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/processor"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/proxy"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/undone"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/watcher"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
 	customlogger "github.com/miguelangel-nubla/immich-optimizer/internal/logger"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/usecase/convert"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/usecase/pipeline"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/utils"
 )
@@ -42,89 +49,171 @@ func main() {
 	}
 }
 
-func parseConfig(args []string) (*entity.AppConfig, bool, error) {
+// hiddenFlags are deprecated aliases accepted for immich-upload-optimizer
+// compatibility but not shown in -help.
+var hiddenFlags = map[string]bool{"upstream": true, "listen": true}
+
+// flagOutput is where usage and flag errors are printed (overridable in tests).
+var flagOutput io.Writer = os.Stderr
+
+const defaultTasksFile = "/etc/immich-optimizer/config/tasks.yaml"
+
+func parseConfig(args []string) (*entity.AppConfig, []deprecation, error) {
 	ac := &entity.AppConfig{}
 
-	viper.SetEnvPrefix("iuo")
-	viper.AutomaticEnv()
+	v := viper.New()
+	if err := bindEnv(v); err != nil {
+		return nil, nil, err
+	}
 
-	_ = viper.BindEnv("mode", "IUO_MODE")
-	_ = viper.BindEnv("immich_url", "IUO_IMMICH_URL")
-	_ = viper.BindEnv("immich_api_key", "IUO_IMMICH_API_KEY")
-	_ = viper.BindEnv("immich_api_key_file", "IUO_IMMICH_API_KEY_FILE")
-	_ = viper.BindEnv("tasks_file", "IUO_TASKS_FILE")
-	_ = viper.BindEnv("log_level", "IUO_LOG_LEVEL")
-	_ = viper.BindEnv("max_concurrent_requests", "IUO_MAX_CONCURRENT_REQUESTS")
-	_ = viper.BindEnv("http_timeout_seconds", "IUO_HTTP_TIMEOUT_SECONDS")
-
-	_ = viper.BindEnv("bind_addr", "IUO_PROXY_BIND_ADDR", "IUO_BIND_ADDR")
-	_ = viper.BindEnv("filter_path", "IUO_PROXY_FILTER_PATH", "IUO_FILTER_PATH")
-	_ = viper.BindEnv("filter_form_key", "IUO_PROXY_FILTER_FORM_KEY", "IUO_FILTER_FORM_KEY")
-
-	_ = viper.BindEnv("watch_dir", "IUO_WATCHER_WATCH_DIR", "IUO_WATCH_DIR")
-	_ = viper.BindEnv("undone_dir", "IUO_WATCHER_UNDONE_DIR", "IUO_UNDONE_DIR")
-	_ = viper.BindEnv("inotify_buffer_size", "IUO_WATCHER_INOTIFY_BUFFER_SIZE", "IUO_INOTIFY_BUFFER_SIZE")
-
-	viper.SetDefault("mode", "watcher")
-	viper.SetDefault("bind_addr", ":8080")
-	viper.SetDefault("filter_path", "/api/assets")
-	viper.SetDefault("filter_form_key", "assetData")
-	viper.SetDefault("immich_url", "")
-	viper.SetDefault("immich_api_key", "")
-	viper.SetDefault("immich_api_key_file", "")
-	viper.SetDefault("watch_dir", "/watch")
-	viper.SetDefault("undone_dir", "/undone")
-	viper.SetDefault("tasks_file", "tasks.yaml")
-	viper.SetDefault("log_level", "info")
-	viper.SetDefault("max_concurrent_requests", 10)
-	viper.SetDefault("http_timeout_seconds", 120)
-	viper.SetDefault("inotify_buffer_size", 8192)
+	v.SetDefault("mode", "watcher")
+	v.SetDefault("bind_addr", ":2283")
+	v.SetDefault("filter_path", "/api/assets")
+	v.SetDefault("filter_form_key", "assetData")
+	v.SetDefault("immich_url", "")
+	v.SetDefault("immich_api_key", "")
+	v.SetDefault("immich_api_key_file", "")
+	v.SetDefault("watch_dir", "/watch")
+	v.SetDefault("undone_dir", "/undone")
+	v.SetDefault("undone_unmatched", true)
+	v.SetDefault("tasks_file", "")
+	v.SetDefault("log_level", "info")
+	v.SetDefault("max_concurrent_requests", 10)
+	v.SetDefault("http_timeout_seconds", 120)
+	v.SetDefault("task_timeout_seconds", 0)
+	v.SetDefault("shutdown_timeout_seconds", 8)
+	v.SetDefault("inotify_buffer_size", 8192)
 
 	fs := flag.NewFlagSet("immich-optimizer", flag.ContinueOnError)
+	fs.SetOutput(flagOutput)
 	fs.BoolVar(&ac.ShowVersion, "version", false, "Show the current version")
-	fs.StringVar(&ac.Mode, "mode", viper.GetString("mode"), "Operating mode: watcher or proxy (comma-separated for multiple)")
-	fs.StringVar(&ac.BindAddr, "bind_addr", viper.GetString("bind_addr"), "Address for reverse proxy server to listen on")
-	fs.StringVar(&ac.FilterPath, "filter_path", viper.GetString("filter_path"), "Path pattern to intercept for proxy uploads")
-	fs.StringVar(&ac.FilterFormKey, "filter_form_key", viper.GetString("filter_form_key"), "Form key for upload files")
-	fs.StringVar(&ac.ImmichURL, "immich_url", viper.GetString("immich_url"), "Immich server URL")
-	fs.StringVar(&ac.ImmichAPIKey, "immich_api_key", viper.GetString("immich_api_key"), "Immich API key")
+	fs.StringVar(&ac.Mode, "mode", v.GetString("mode"), "Operating mode: watcher or proxy (comma-separated for multiple)")
+	fs.StringVar(&ac.BindAddr, "bind_addr", v.GetString("bind_addr"), "Address for reverse proxy server to listen on")
+	fs.StringVar(&ac.FilterPath, "filter_path", v.GetString("filter_path"), "Path pattern to intercept for proxy uploads")
+	fs.StringVar(&ac.FilterFormKey, "filter_form_key", v.GetString("filter_form_key"), "Form key for upload files")
+	fs.StringVar(&ac.ImmichURL, "immich_url", v.GetString("immich_url"), "Immich server URL")
+	fs.StringVar(&ac.ImmichAPIKey, "immich_api_key", v.GetString("immich_api_key"), "Immich API key")
 	var immichAPIKeyFile string
-	fs.StringVar(&immichAPIKeyFile, "immich_api_key_file", viper.GetString("immich_api_key_file"), "Path to a file containing the Immich API key (takes precedence over immich_api_key)")
-	fs.StringVar(&ac.WatchDir, "watch_dir", viper.GetString("watch_dir"), "Directory to watch for new files")
-	fs.StringVar(&ac.UndoneDir, "undone_dir", viper.GetString("undone_dir"), "Directory to copy files that failed")
-	fs.StringVar(&ac.ConfigFile, "tasks_file", viper.GetString("tasks_file"), "Path to the configuration file")
-	fs.StringVar(&ac.LogLevel, "log_level", viper.GetString("log_level"), "Log level (debug, info, warn, error)")
-	fs.IntVar(&ac.MaxConcurrentRequests, "max_concurrent_requests", viper.GetInt("max_concurrent_requests"), "Maximum number of files/uploads to process concurrently")
-	fs.IntVar(&ac.HTTPTimeoutSeconds, "http_timeout_seconds", viper.GetInt("http_timeout_seconds"), "HTTP client timeout in seconds")
-	fs.IntVar(&ac.InotifyBufferSize, "inotify_buffer_size", viper.GetInt("inotify_buffer_size"), "Inotify event read buffer size in bytes")
+	fs.StringVar(&immichAPIKeyFile, "immich_api_key_file", v.GetString("immich_api_key_file"), "Path to a file containing the Immich API key (takes precedence over immich_api_key)")
+	fs.StringVar(&ac.WatchDir, "watch_dir", v.GetString("watch_dir"), "Directory to watch for new files")
+	fs.StringVar(&ac.UndoneDir, "undone_dir", v.GetString("undone_dir"), "Directory where inputs that failed conversion are saved (all modes)")
+	fs.BoolVar(&ac.UndoneUnmatched, "undone_unmatched", v.GetBool("undone_unmatched"), "Save files with no matching task to the undone directory")
+	fs.StringVar(&ac.ConfigFile, "tasks_file", v.GetString("tasks_file"), "Path to the tasks file (default ./tasks.yaml, else "+defaultTasksFile+")")
+	fs.StringVar(&ac.LogLevel, "log_level", v.GetString("log_level"), "Log level (debug, info, warn, error)")
+	fs.IntVar(&ac.MaxConcurrentRequests, "max_concurrent_requests", v.GetInt("max_concurrent_requests"), "Maximum number of concurrent conversions, shared by all modes")
+	fs.IntVar(&ac.HTTPTimeoutSeconds, "http_timeout_seconds", v.GetInt("http_timeout_seconds"), "Timeout for connecting to Immich, for an upload that stops making progress, and for Immich's response headers after an upload body was sent, in seconds (does not limit total upload or conversion time)")
+	fs.IntVar(&ac.TaskTimeoutSeconds, "task_timeout_seconds", v.GetInt("task_timeout_seconds"), "Maximum processing time per file in seconds (0 = no limit)")
+	fs.IntVar(&ac.ShutdownTimeoutSeconds, "shutdown_timeout_seconds", v.GetInt("shutdown_timeout_seconds"), "How long to let running jobs finish on shutdown before cancelling them, in seconds")
+	fs.IntVar(&ac.InotifyBufferSize, "inotify_buffer_size", v.GetInt("inotify_buffer_size"), "Inotify event read buffer size in bytes")
+	upstream := fs.String("upstream", "", "Deprecated: use -immich_url")
+	listen := fs.String("listen", "", "Deprecated: use -bind_addr")
+	fs.Usage = func() { printUsage(fs) }
 
 	if err := fs.Parse(args); err != nil {
-		return nil, false, err
+		return nil, nil, err
 	}
 
 	if ac.ShowVersion {
-		return ac, true, nil
+		return ac, nil, nil
 	}
 
+	visited := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+
+	deps := legacyEnvUsage(osLookup)
+	applyDeprecatedFlag := func(oldName, newName string, value string, target *string) {
+		if !visited[oldName] {
+			return
+		}
+		d := deprecation{Old: "-" + oldName, New: "-" + newName}
+		if visited[newName] {
+			d.Ignored = true
+			d.Winner = "-" + newName
+		} else {
+			*target = value
+		}
+		deps = append(deps, d)
+	}
+	applyDeprecatedFlag("upstream", "immich_url", *upstream, &ac.ImmichURL)
+	applyDeprecatedFlag("listen", "bind_addr", *listen, &ac.BindAddr)
+
 	if immichAPIKeyFile != "" {
-		source := "IUO_IMMICH_API_KEY_FILE"
-		fs.Visit(func(f *flag.Flag) {
-			if f.Name == "immich_api_key_file" {
-				source = "-immich_api_key_file"
-			}
-		})
+		source := envSource("immich_api_key_file", osLookup)
+		if visited["immich_api_key_file"] || source == "" {
+			source = "-immich_api_key_file"
+		}
 		key, err := readSecretFile(source, immichAPIKeyFile)
 		if err != nil {
-			return nil, false, err
+			return nil, deps, err
 		}
 		ac.ImmichAPIKey = key
 	}
 
 	if err := validateAppConfig(ac); err != nil {
-		return nil, false, err
+		return nil, deps, err
 	}
 
-	return ac, false, nil
+	return ac, deps, nil
+}
+
+// printUsage prints all flags except the hidden deprecated aliases.
+func printUsage(fs *flag.FlagSet) {
+	out := fs.Output()
+	fmt.Fprintf(out, "Usage of %s:\n", fs.Name())
+	fs.VisitAll(func(f *flag.Flag) {
+		if hiddenFlags[f.Name] {
+			return
+		}
+		name, usage := flag.UnquoteUsage(f)
+		line := "  -" + f.Name
+		if name != "" {
+			line += " " + name
+		}
+		line += "\n    \t" + strings.ReplaceAll(usage, "\n", "\n    \t")
+		if f.DefValue != "" && f.DefValue != "0" && f.DefValue != "false" {
+			if name == "string" {
+				line += fmt.Sprintf(" (default %q)", f.DefValue)
+			} else {
+				line += fmt.Sprintf(" (default %v)", f.DefValue)
+			}
+		}
+		fmt.Fprintln(out, line)
+	})
+}
+
+// resolveTasksFile returns the explicit path, or the first existing file of
+// ./tasks.yaml and the image's bundled default. Auto-detected candidates
+// inside watchDir are skipped: in the container the working directory is the
+// watch directory, and a tasks.yaml dropped there is user media to ingest,
+// not configuration.
+func resolveTasksFile(explicit, watchDir string, stat func(string) (os.FileInfo, error)) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	candidates := []string{"tasks.yaml", defaultTasksFile}
+	for _, c := range candidates {
+		if watchDir != "" && isWithin(watchDir, c) {
+			continue
+		}
+		if st, err := stat(c); err == nil && !st.IsDir() {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("no tasks file found: set IO_TASKS_FILE or -tasks_file (looked for %s)", strings.Join(candidates, " and "))
+}
+
+// isWithin reports whether child is parent or inside it.
+func isWithin(parent, child string) bool {
+	p, err1 := filepath.Abs(parent)
+	c, err2 := filepath.Abs(child)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	rel, err := filepath.Rel(p, c)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // readSecretFile reads a secret value from path (Docker secrets style),
@@ -190,6 +279,15 @@ func validateAppConfig(ac *entity.AppConfig) error {
 	if ac.InotifyBufferSize <= 0 {
 		return fmt.Errorf("inotify_buffer_size must be greater than 0")
 	}
+	if ac.TaskTimeoutSeconds < 0 {
+		return fmt.Errorf("task_timeout_seconds must be 0 (no limit) or greater")
+	}
+	if ac.ShutdownTimeoutSeconds < 0 {
+		return fmt.Errorf("shutdown_timeout_seconds must be 0 or greater")
+	}
+	if ac.UndoneDir == "" {
+		return fmt.Errorf("undone_dir must not be empty")
+	}
 
 	parsedURL, urlErr := url.Parse(ac.ImmichURL)
 	if urlErr != nil {
@@ -211,17 +309,26 @@ func validateAppConfig(ac *entity.AppConfig) error {
 			return fmt.Errorf("immich_api_key appears to be too short")
 		}
 
+		if isWithin(ac.WatchDir, ac.UndoneDir) {
+			return fmt.Errorf("undone_dir %q must not be the watch directory or inside it (%q): failed files would be re-ingested", ac.UndoneDir, ac.WatchDir)
+		}
+
 		if mkdirErr := os.MkdirAll(ac.WatchDir, 0750); mkdirErr != nil {
 			return fmt.Errorf("error creating watch directory: %v", mkdirErr)
 		}
-
-		if mkdirErr := os.MkdirAll(ac.UndoneDir, 0750); mkdirErr != nil {
-			return fmt.Errorf("error creating undone directory: %v", mkdirErr)
-		}
 	}
 
-	if ac.ConfigFile == "" {
-		return fmt.Errorf("the -tasks_file flag is required")
+	// The undone directory belongs to the conversion engine: every mode uses it.
+	if err := undone.CheckWritable(ac.UndoneDir); err != nil {
+		return err
+	}
+
+	ac.ConfigFile, err = resolveTasksFile(ac.ConfigFile, ac.WatchDir, os.Stat)
+	if err != nil {
+		return err
+	}
+	if runWatcher && isWithin(ac.WatchDir, ac.ConfigFile) {
+		return fmt.Errorf("tasks file %q must not be inside the watch directory %q: it would be ingested", ac.ConfigFile, ac.WatchDir)
 	}
 
 	ac.Tasks, err = loadTasks(ac.ConfigFile)
@@ -234,14 +341,18 @@ func validateAppConfig(ac *entity.AppConfig) error {
 
 func loadTasks(configFile string) (*entity.Config, error) {
 	var c *entity.Config
-	viper.SetConfigFile(configFile)
+	v := viper.New()
+	v.SetConfigFile(configFile)
 
-	if err := viper.ReadInConfig(); err != nil {
+	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
 
-	if err := viper.Unmarshal(&c); err != nil {
+	if err := v.Unmarshal(&c); err != nil {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
+	}
+	if c == nil {
+		c = &entity.Config{}
 	}
 
 	for i := range c.Tasks {
@@ -279,11 +390,17 @@ func initTask(task *entity.Task) error {
 }
 
 func run(args []string) error {
-	config, isVersion, err := parseConfig(args)
+	config, deps, err := parseConfig(args)
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
+		if len(deps) > 0 {
+			fmt.Fprintln(os.Stderr, "warning: "+formatDeprecations(deps))
+		}
 		return err
 	}
-	if isVersion {
+	if config.ShowVersion {
 		fmt.Println(printVersion())
 		return nil
 	}
@@ -293,24 +410,44 @@ func run(args []string) error {
 
 	baseLogger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
 	logger := customlogger.NewWithLevel(baseLogger, config.LogLevel, "")
+	warnDeprecations(baseLogger, deps)
 	logger.Printf("Starting %s (mode: %s)", printVersion(), config.Mode)
-
-	processorAdapter := processor.NewLocalProcessor(logger, filepath.Dir(config.ConfigFile))
-
-	var watcherAdapter port.FileWatcher
-	var pipelineService *pipeline.Service
-	var proxyServer *proxy.Server
 
 	parsedImmichURL, urlErr := url.Parse(config.ImmichURL)
 	if urlErr != nil {
 		return fmt.Errorf("invalid immich_url: %w", urlErr)
 	}
 
+	undoneStore, err := undone.NewLocalStore(config.UndoneDir, version, logger)
+	if err != nil {
+		return err
+	}
+	logger.Printf("Failed inputs are saved to %s", undoneStore.Root())
+
+	processorAdapter := processor.NewLocalProcessor(logger, filepath.Dir(config.ConfigFile))
+	engine := convert.New(convert.Config{
+		Tasks:         config.Tasks.Tasks,
+		MaxConcurrent: config.MaxConcurrentRequests,
+		TaskTimeout:   time.Duration(config.TaskTimeoutSeconds) * time.Second,
+		SaveUnmatched: config.UndoneUnmatched,
+	}, processorAdapter, undoneStore, logger)
+
+	httpTimeout := time.Duration(config.HTTPTimeoutSeconds) * time.Second
+	httpClient := httpclient.New(httpclient.Options{
+		DialTimeout:           httpTimeout,
+		TLSHandshakeTimeout:   httpclient.DefaultTLSHandshakeTimeout,
+		ResponseHeaderTimeout: httpTimeout,
+		StallTimeout:          httpTimeout,
+	})
+
+	var watcherAdapter port.FileWatcher
+	var pipelineService *pipeline.Service
+	var proxyServer *proxy.Server
+
 	runWatcher, runProxy, _ := parseModes(config.Mode)
 
 	if runWatcher {
-		fsAdapter := filesystem.NewLocalFileSystem(config.WatchDir, config.UndoneDir)
-		immichAdapter := immich.NewClient(config.ImmichURL, config.ImmichAPIKey, config.HTTPTimeoutSeconds, logger)
+		immichAdapter := immich.NewClient(config.ImmichURL, config.ImmichAPIKey, httpClient, logger)
 
 		var err error
 		watcherAdapter, err = watcher.NewInotifyWatcher(config.WatchDir, logger, config.InotifyBufferSize)
@@ -320,12 +457,12 @@ func run(args []string) error {
 
 		pipelineService = pipeline.NewService(
 			watcherAdapter,
-			processorAdapter,
+			engine,
 			immichAdapter,
-			fsAdapter,
+			filesystem.NewLocalFileSystem(),
 			logger,
-			config.Tasks.Tasks,
 			config.MaxConcurrentRequests,
+			config.WatchDir,
 		)
 
 		if err := watcherAdapter.Start(); err != nil {
@@ -335,18 +472,17 @@ func run(args []string) error {
 	}
 
 	if runProxy {
-		proxyServer = proxy.NewServer(
-			parsedImmichURL,
-			config.BindAddr,
-			config.FilterPath,
-			config.FilterFormKey,
-			processorAdapter,
-			config.Tasks.Tasks,
-			logger,
-			config.MaxConcurrentRequests,
-			config.HTTPTimeoutSeconds,
-		)
+		proxyServer = proxy.NewServer(proxy.Config{
+			UpstreamURL:   parsedImmichURL,
+			BindAddr:      config.BindAddr,
+			FilterPath:    config.FilterPath,
+			FilterFormKey: config.FilterFormKey,
+			HTTPClient:    httpClient,
+		}, engine, logger)
 		if err := proxyServer.Start(); err != nil {
+			if watcherAdapter != nil {
+				_ = watcherAdapter.Stop()
+			}
 			return fmt.Errorf("error starting proxy server: %w", err)
 		}
 	}
@@ -354,34 +490,91 @@ func run(args []string) error {
 	// Wait for interrupt
 	<-sigChan
 
-	logger.Printf("Shutting down gracefully...")
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-
-	done := make(chan struct{})
-	go func() {
-		if watcherAdapter != nil {
-			watcherAdapter.Stop()
-		}
-		if pipelineService != nil {
-			pipelineService.Stop()
-		}
-		if proxyServer != nil {
-			_ = proxyServer.Stop(shutdownCtx)
-		}
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		logger.Printf("Shutdown completed successfully")
-	case <-shutdownCtx.Done():
-		logger.Printf("Shutdown timeout exceeded, forcing exit")
-	}
-
+	grace := time.Duration(config.ShutdownTimeoutSeconds) * time.Second
+	logger.Printf("Shutting down gracefully (waiting up to %s for running jobs)...", grace)
+	shutdown(logger, grace, watcherAdapter, pipelineService, proxyServer)
 	return nil
 }
+
+// warnDeprecations prints the deprecation warning straight to the base
+// logger, so it is shown whatever the configured log level: users who run
+// with IO_LOG_LEVEL=error must still learn that their setup will break.
+func warnDeprecations(base *log.Logger, deps []deprecation) {
+	if len(deps) > 0 {
+		base.Printf("[WARN] %s", formatDeprecations(deps))
+	}
+}
+
+// drainer is implemented by sources that can finish running work on shutdown.
+type drainer interface {
+	Drain(ctx context.Context) error
+	Cancel()
+}
+
+// shutdown stops intake, lets running jobs finish within grace, then cancels
+// them (killing task process groups) and waits a little longer.
+func shutdown(logger *customlogger.Logger, grace time.Duration, w port.FileWatcher, p *pipeline.Service, ps *proxy.Server) {
+	if w != nil {
+		_ = w.Stop()
+	}
+	if ps != nil {
+		ps.BeginShutdown()
+	}
+
+	var sources []drainer
+	if p != nil {
+		sources = append(sources, p)
+	}
+	if ps != nil {
+		sources = append(sources, ps)
+	}
+
+	drainAll := func(d time.Duration) bool {
+		ctx, cancel := context.WithTimeout(context.Background(), d)
+		defer cancel()
+		var wg sync.WaitGroup
+		ok := true
+		var mu sync.Mutex
+		for _, s := range sources {
+			wg.Add(1)
+			go func(s drainer) {
+				defer wg.Done()
+				if err := s.Drain(ctx); err != nil {
+					mu.Lock()
+					ok = false
+					mu.Unlock()
+				}
+			}(s)
+		}
+		wg.Wait()
+		return ok
+	}
+
+	if drainAll(grace) {
+		logger.Printf("Shutdown completed successfully")
+	} else {
+		logger.Warnf("Shutdown grace period (%s) expired; cancelling running jobs (they will be retried: watcher files stay in place, proxy clients get 503)", grace)
+		for _, s := range sources {
+			s.Cancel()
+		}
+		if !drainAll(2 * time.Second) {
+			logger.Printf("Shutdown timeout exceeded, forcing exit")
+		}
+	}
+	if ps != nil {
+		// Let handlers write the results of jobs that just finished (or the
+		// 503 of cancelled ones) before connections are force-closed.
+		ctx, cancel := context.WithTimeout(context.Background(), handlerFlushTimeout)
+		defer cancel()
+		if err := ps.FinishShutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Printf("Proxy connections force-closed: %v", err)
+		}
+	}
+}
+
+// handlerFlushTimeout bounds how long shutdown waits for proxy handlers to
+// write finished results after all jobs are done.
+const handlerFlushTimeout = 3 * time.Second
 
 func printVersion() string {
 	return fmt.Sprintf("immich-optimizer %s, commit %s, built at %s", version, commit, date)

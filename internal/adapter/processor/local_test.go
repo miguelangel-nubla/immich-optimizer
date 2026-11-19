@@ -2,9 +2,11 @@ package processor
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
@@ -78,5 +80,74 @@ func TestLocalProcessorEmptyCommandPassesThrough(t *testing.T) {
 	}
 	if result.ProcessedSize != result.OriginalSize {
 		t.Fatalf("expected equal sizes for passthrough, got original=%d processed=%d", result.OriginalSize, result.ProcessedSize)
+	}
+}
+
+func TestLocalProcessorFailingTasksReportAttempts(t *testing.T) {
+	tmpDir := t.TempDir()
+	in := filepath.Join(tmpDir, "sample.txt")
+	if err := os.WriteFile(in, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := NewLocalProcessor(customlogger.NewWithLevel(nil, "error", ""), tmpDir)
+	tasks := []entity.Task{
+		// Emits ~100 KiB then fails with exit 3.
+		{Name: "first", Extensions: []string{"txt"}, Command: "head -c 100000 /dev/zero | tr '\\0' a; echo END-OF-FIRST; exit 3"},
+		{Name: "second", Extensions: []string{"txt"}, Command: "echo second-out >&2; exit 5"},
+	}
+	_, err := p.Process(context.Background(), in, tasks)
+	var pe *entity.ProcessError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *entity.ProcessError, got %T %v", err, err)
+	}
+	if len(pe.Attempts) != 2 {
+		t.Fatalf("expected 2 attempts, got %d", len(pe.Attempts))
+	}
+	if pe.Attempts[0].ExitCode != 3 || pe.Attempts[1].ExitCode != 5 {
+		t.Fatalf("exit codes = %d,%d", pe.Attempts[0].ExitCode, pe.Attempts[1].ExitCode)
+	}
+	if len(pe.Attempts[0].OutputTail) > OutputTailSize {
+		t.Fatalf("tail too long: %d", len(pe.Attempts[0].OutputTail))
+	}
+	if !strings.Contains(pe.Attempts[0].OutputTail, "END-OF-FIRST") {
+		t.Fatalf("tail should keep the end of the output")
+	}
+	if !strings.Contains(pe.Attempts[1].OutputTail, "second-out") {
+		t.Fatalf("stderr not captured: %q", pe.Attempts[1].OutputTail)
+	}
+	if pe.Attempts[0].Command == "" {
+		t.Fatalf("command not recorded")
+	}
+}
+
+func TestLocalProcessorNoTask(t *testing.T) {
+	tmpDir := t.TempDir()
+	in := filepath.Join(tmpDir, "sample.pdf")
+	_ = os.WriteFile(in, []byte("x"), 0o644)
+	p := NewLocalProcessor(nil, tmpDir)
+	_, err := p.Process(context.Background(), in, []entity.Task{{Name: "t", Extensions: []string{"jpg"}}})
+	if !errors.Is(err, entity.ErrNoTask) {
+		t.Fatalf("expected ErrNoTask, got %v", err)
+	}
+}
+
+func TestTailBufferBoundsMemory(t *testing.T) {
+	tb := newTailBuffer(1024)
+	chunk := []byte(strings.Repeat("x", 100))
+	for i := 0; i < 10000; i++ {
+		_, _ = tb.Write(chunk)
+	}
+	_, _ = tb.Write([]byte("THE-END"))
+	if tb.Len() > 2048 {
+		t.Fatalf("buffer grew to %d", tb.Len())
+	}
+	tail := tb.Tail(16)
+	if len(tail) > 16 || !strings.HasSuffix(tail, "THE-END") {
+		t.Fatalf("tail = %q", tail)
+	}
+	big := newTailBuffer(8)
+	_, _ = big.Write([]byte("0123456789abcdef"))
+	if got := big.Tail(100); got != "89abcdef" {
+		t.Fatalf("got %q", got)
 	}
 }

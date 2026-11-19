@@ -8,32 +8,34 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/httpclient"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/utils"
 )
 
 type client struct {
-	BaseURL        string
-	APIKey         string
-	TimeoutSeconds int
-	logger         *logger.Logger
-	httpClient     *http.Client
+	BaseURL    string
+	APIKey     string
+	logger     *logger.Logger
+	httpClient *http.Client
 }
 
-func NewClient(baseURL, apiKey string, timeoutSeconds int, log *logger.Logger) port.AssetUploader {
+// NewClient returns an uploader. httpClient should come from
+// httpclient.New (transport-level timeouts, no whole-request timeout);
+// nil uses httpclient defaults.
+func NewClient(baseURL, apiKey string, httpClient *http.Client, log *logger.Logger) port.AssetUploader {
+	if httpClient == nil {
+		httpClient = httpclient.New(httpclient.Options{})
+	}
 	return &client{
-		BaseURL:        strings.TrimRight(baseURL, "/"),
-		APIKey:         apiKey,
-		TimeoutSeconds: timeoutSeconds,
-		logger:         log,
-		httpClient: &http.Client{
-			Timeout: time.Duration(timeoutSeconds) * time.Second,
-		},
+		BaseURL:    strings.TrimRight(baseURL, "/"),
+		APIKey:     apiKey,
+		logger:     log,
+		httpClient: httpClient,
 	}
 }
 
@@ -44,10 +46,6 @@ type statusError struct {
 
 func (e *statusError) Error() string {
 	return fmt.Sprintf("upload failed with status %d: %s", e.statusCode, e.body)
-}
-
-func (c *client) UploadAsset(ctx context.Context, filePath string) error {
-	return c.UploadAssetWithFilename(ctx, filePath, filepath.Base(filePath))
 }
 
 func (c *client) UploadAssetWithFilename(ctx context.Context, filePath, filename string) error {

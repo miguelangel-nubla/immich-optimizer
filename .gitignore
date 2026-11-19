@@ -28,9 +28,9 @@ go.work.sum
 dist/
 
 # watch directory (for local testing)
-watch/
+/watch/
 
-undone/
+/undone/
 
 /immich-optimizer
 /optimizer

@@ -11,20 +11,22 @@ type Config struct {
 }
 
 type AppConfig struct {
-	ShowVersion           bool
-	Mode                  string
-	BindAddr              string
-	FilterPath            string
-	FilterFormKey         string
-	ImmichURL             string
-	ImmichAPIKey          string
-	WatchDir              string
-	UndoneDir             string
-	ConfigFile            string
-	MaxConcurrentRequests int
-	HTTPTimeoutSeconds    int
-	InotifyBufferSize     int
-	LogLevel              string
-	Tasks                 *Config
+	ShowVersion            bool
+	Mode                   string
+	BindAddr               string
+	FilterPath             string
+	FilterFormKey          string
+	ImmichURL              string
+	ImmichAPIKey           string
+	WatchDir               string
+	UndoneDir              string
+	UndoneUnmatched        bool
+	ConfigFile             string
+	MaxConcurrentRequests  int
+	HTTPTimeoutSeconds     int
+	TaskTimeoutSeconds     int
+	ShutdownTimeoutSeconds int
+	InotifyBufferSize      int
+	LogLevel               string
+	Tasks                  *Config
 }
-

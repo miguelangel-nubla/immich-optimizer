@@ -3,8 +3,8 @@ package pipeline
 import (
 	"context"
 	"errors"
-	"log"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -21,305 +21,366 @@ func (m *mockWatcher) Events() <-chan entity.FileEvent { return m.events }
 func (m *mockWatcher) Start() error                    { return nil }
 func (m *mockWatcher) Stop() error                     { return nil }
 
-type mockProcessor struct {
-	processFunc func(filePath string) (*entity.ProcessResult, error)
+type fakeConverter struct {
+	mu       sync.Mutex
+	convert  func(ctx context.Context, in entity.ConvertInput) (*entity.ConvertResult, error)
+	saveErr  error
+	inputs   []entity.ConvertInput
+	saved    []entity.Failure
+	released int
 }
 
-func (m *mockProcessor) Process(ctx context.Context, filePath string, tasks []entity.Task) (*entity.ProcessResult, error) {
-	if m.processFunc != nil {
-		return m.processFunc(filePath)
+func (f *fakeConverter) Convert(ctx context.Context, in entity.ConvertInput) (*entity.ConvertResult, error) {
+	f.mu.Lock()
+	f.inputs = append(f.inputs, in)
+	fn := f.convert
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, in)
 	}
-	return &entity.ProcessResult{
-		ProcessedFilePath: "/tmp/processed.jpg",
-		ProcessedFilename: "processed.jpg",
-		OriginalSize:      1000,
-		ProcessedSize:     500,
+	return &entity.ConvertResult{
+		Outcome:      entity.OutcomeOptimized,
+		DeliverPath:  "/tmp/processed.jxl",
+		DeliverName:  "processed.jxl",
+		OriginalSize: 1000,
+		OutputSize:   500,
+		Release: func() {
+			f.mu.Lock()
+			f.released++
+			f.mu.Unlock()
+		},
 	}, nil
 }
 
-type mockUploader struct {
-	uploadedOriginal  []string
-	uploadedProcessed []string
-	sync.Mutex
+func (f *fakeConverter) SaveUndone(in entity.ConvertInput, fl entity.Failure) (*entity.UndoneRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.saved = append(f.saved, fl)
+	if f.saveErr != nil {
+		return nil, f.saveErr
+	}
+	return &entity.UndoneRecord{Path: "/undone/" + in.Filename, Occurrences: 1}, nil
 }
 
-func (m *mockUploader) UploadAsset(ctx context.Context, filePath string) error {
-	m.Lock()
-	defer m.Unlock()
-	m.uploadedOriginal = append(m.uploadedOriginal, filePath)
-	return nil
+type mockUploader struct {
+	mu       sync.Mutex
+	failMap  map[string]error
+	uploaded []string
+	calls    int
 }
 
 func (m *mockUploader) UploadAssetWithFilename(ctx context.Context, filePath, filename string) error {
-	m.Lock()
-	defer m.Unlock()
-	m.uploadedProcessed = append(m.uploadedProcessed, filename)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	if err, found := m.failMap[filename]; found {
+		return err
+	}
+	m.uploaded = append(m.uploaded, filename)
 	return nil
 }
 
 type mockFileSystem struct {
+	mu      sync.Mutex
 	removed []string
-	undone  []string
-	sync.Mutex
 }
 
-func (m *mockFileSystem) MoveToUndone(filePath string) error {
-	m.Lock()
-	defer m.Unlock()
-	m.undone = append(m.undone, filePath)
-	return nil
-}
 func (m *mockFileSystem) RemoveFile(filePath string) error {
-	m.Lock()
-	defer m.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.removed = append(m.removed, filePath)
 	return nil
 }
 
-func TestPipelineService(t *testing.T) {
+func (m *mockFileSystem) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.removed)
+}
+
+func quiet() *customlogger.Logger { return customlogger.NewWithLevel(nil, "error", "") }
+
+func touch(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// runEvents feeds paths through a service and drains it.
+func runEvents(t *testing.T, svc *Service, events chan entity.FileEvent, paths ...string) {
+	t.Helper()
+	svc.Start()
+	for _, p := range paths {
+		events <- entity.FileEvent{Path: p, Timestamp: time.Now()}
+	}
+	// Wait until every event has been picked up before draining (Drain stops
+	// intake; buffered events would otherwise be left for the next start).
+	deadline := time.Now().Add(5 * time.Second)
+	for len(events) > 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	waitIdle(t, svc)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := svc.Drain(ctx); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+}
+
+// waitIdle waits until no file is being processed.
+func waitIdle(t *testing.T, svc *Service) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		busy := false
+		svc.processing.Range(func(any, any) bool { busy = true; return false })
+		if !busy {
+			// Give just-dispatched goroutines a chance to register.
+			time.Sleep(10 * time.Millisecond)
+			svc.processing.Range(func(any, any) bool { busy = true; return false })
+			if !busy {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("service did not become idle")
+}
+
+func newSvc(conv *fakeConverter, up *mockUploader, fs *mockFileSystem, watchDir string, max int) (*Service, chan entity.FileEvent) {
 	events := make(chan entity.FileEvent, 10)
-	watcher := &mockWatcher{events: events}
-	processor := &mockProcessor{}
-	uploader := &mockUploader{}
+	return NewService(&mockWatcher{events: events}, conv, up, fs, quiet(), max, watchDir), events
+}
+
+func TestPipelineSuccessUploadsAndRemoves(t *testing.T) {
+	dir := t.TempDir()
+	f := touch(t, dir, "a.jpg")
+	conv, up, fs := &fakeConverter{}, &mockUploader{}, &mockFileSystem{}
+	svc, events := newSvc(conv, up, fs, dir, 1)
+	runEvents(t, svc, events, f)
+
+	if len(up.uploaded) != 1 || up.uploaded[0] != "processed.jxl" {
+		t.Fatalf("uploads = %v", up.uploaded)
+	}
+	if fs.count() != 1 || conv.released != 1 {
+		t.Fatalf("removed=%d released=%d", fs.count(), conv.released)
+	}
+	in := conv.inputs[0]
+	if in.Source != entity.SourceWatcher || in.Filename != "a.jpg" || in.OriginalDir != "" || in.ModTime.IsZero() {
+		t.Fatalf("unexpected input %+v", in)
+	}
+}
+
+func TestPipelineOriginalDirForNestedFiles(t *testing.T) {
+	dir := t.TempDir()
+	f := touch(t, dir, "sub/deeper/a.jpg")
+	conv := &fakeConverter{}
+	svc, events := newSvc(conv, &mockUploader{}, &mockFileSystem{}, dir, 1)
+	runEvents(t, svc, events, f)
+	if conv.inputs[0].OriginalDir != filepath.Join("sub", "deeper") {
+		t.Fatalf("OriginalDir = %q", conv.inputs[0].OriginalDir)
+	}
+}
+
+func TestPipelineConversionFailureSavedRemovesSource(t *testing.T) {
+	dir := t.TempDir()
+	f := touch(t, dir, "a.pdf")
+	conv := &fakeConverter{convert: func(_ context.Context, in entity.ConvertInput) (*entity.ConvertResult, error) {
+		return nil, &entity.ConversionError{Filename: in.Filename, Failure: entity.Failure{Stage: entity.StageNoTask, Err: entity.ErrNoTask},
+			Undone: &entity.UndoneRecord{Path: "/undone/a.pdf"}}
+	}}
+	up, fs := &mockUploader{}, &mockFileSystem{}
+	svc, events := newSvc(conv, up, fs, dir, 1)
+	runEvents(t, svc, events, f)
+	if up.calls != 0 {
+		t.Fatalf("must not upload on conversion failure")
+	}
+	if fs.count() != 1 {
+		t.Fatalf("source should be removed once saved to undone")
+	}
+}
+
+func TestPipelineConversionFailureNotSavedKeepsSource(t *testing.T) {
+	dir := t.TempDir()
+	f := touch(t, dir, "a.jpg")
+	conv := &fakeConverter{convert: func(_ context.Context, in entity.ConvertInput) (*entity.ConvertResult, error) {
+		return nil, &entity.ConversionError{Filename: in.Filename, Failure: entity.Failure{Stage: entity.StageConvert, Err: errors.New("x")},
+			UndoneErr: errors.New("disk full")}
+	}}
+	up, fs := &mockUploader{}, &mockFileSystem{}
+	svc, events := newSvc(conv, up, fs, dir, 1)
+	runEvents(t, svc, events, f)
+	if up.calls != 0 || fs.count() != 0 {
+		t.Fatalf("source must be kept when it could not be saved (uploads=%d removed=%d)", up.calls, fs.count())
+	}
+}
+
+func TestPipelineUploadFailureSavesAndRemoves(t *testing.T) {
+	dir := t.TempDir()
+	f := touch(t, dir, "a.jpg")
+	conv := &fakeConverter{}
+	up := &mockUploader{failMap: map[string]error{"processed.jxl": errors.New("status 400 quota")}}
 	fs := &mockFileSystem{}
-	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
-
-	tasks := []entity.Task{
-		{
-			Name:       "TestTask",
-			Extensions: []string{"jpg"},
-		},
+	svc, events := newSvc(conv, up, fs, dir, 1)
+	runEvents(t, svc, events, f)
+	if len(conv.saved) != 1 || conv.saved[0].Stage != entity.StageUpload {
+		t.Fatalf("expected one upload-stage save, got %+v", conv.saved)
 	}
-
-	service := NewService(watcher, processor, uploader, fs, logger, tasks, 1)
-
-	// We create a dummy test file so validateFile succeeds
-	f, _ := os.CreateTemp("", "test_event*.jpg")
-	f.Close()
-	defer os.Remove(f.Name())
-
-	service.Start()
-
-	events <- entity.FileEvent{
-		Path:      f.Name(),
-		Timestamp: time.Now(),
-	}
-
-	time.Sleep(100 * time.Millisecond) // Give the pipeline time to process
-
-	service.Stop()
-
-	uploader.Lock()
-	defer uploader.Unlock()
-
-	if len(uploader.uploadedProcessed) != 1 {
-		t.Errorf("Expected 1 processed upload, got %d", len(uploader.uploadedProcessed))
-	}
-	if uploader.uploadedProcessed[0] != "processed.jpg" {
-		t.Errorf("Expected uploaded filename to be 'processed.jpg', got %s", uploader.uploadedProcessed[0])
-	}
-
-	fs.Lock()
-	defer fs.Unlock()
-	if len(fs.removed) != 1 {
-		t.Errorf("Expected 1 file removal (cleanup), got %d", len(fs.removed))
+	if fs.count() != 1 {
+		t.Fatalf("source should be removed after saving")
 	}
 }
 
-func TestPipelineServiceBlocksUnmatchedExtension(t *testing.T) {
-	events := make(chan entity.FileEvent, 10)
-	watcher := &mockWatcher{events: events}
-	processor := &mockProcessor{
-		processFunc: func(filePath string) (*entity.ProcessResult, error) {
-			t.Fatalf("processor should not be called for unmatched extension")
-			return nil, nil
-		},
-	}
-	uploader := &mockUploader{}
+func TestPipelineUploadFailureSaveFailsKeepsSource(t *testing.T) {
+	dir := t.TempDir()
+	f := touch(t, dir, "a.jpg")
+	conv := &fakeConverter{saveErr: errors.New("read-only")}
+	up := &mockUploader{failMap: map[string]error{"processed.jxl": errors.New("boom")}}
 	fs := &mockFileSystem{}
-	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
-
-	tasks := []entity.Task{
-		{
-			Name:       "TestTask",
-			Extensions: []string{"jpg"},
-		},
-	}
-
-	service := NewService(watcher, processor, uploader, fs, logger, tasks, 1)
-
-	f, _ := os.CreateTemp("", "test_event*.pdf")
-	f.Close()
-	defer os.Remove(f.Name())
-
-	service.Start()
-
-	events <- entity.FileEvent{
-		Path:      f.Name(),
-		Timestamp: time.Now(),
-	}
-
-	time.Sleep(100 * time.Millisecond)
-
-	service.Stop()
-
-	uploader.Lock()
-	if len(uploader.uploadedOriginal) != 0 || len(uploader.uploadedProcessed) != 0 {
-		t.Fatalf("expected no uploads for unmatched extension, got original=%d processed=%d", len(uploader.uploadedOriginal), len(uploader.uploadedProcessed))
-	}
-	uploader.Unlock()
-
-	fs.Lock()
-	defer fs.Unlock()
-	if len(fs.undone) != 1 {
-		t.Fatalf("expected unmatched file to be moved to undone, got %d", len(fs.undone))
+	svc, events := newSvc(conv, up, fs, dir, 1)
+	runEvents(t, svc, events, f)
+	if fs.count() != 0 {
+		t.Fatalf("source must be kept when the undone save failed")
 	}
 }
 
-func TestShouldOptimizeFileExtensionNormalization(t *testing.T) {
-	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
-	tasks := []entity.Task{
-		{
-			Name:       "TestTask",
-			Extensions: []string{".JPG", "png"},
-		},
-	}
-
-	service := NewService(nil, nil, nil, nil, logger, tasks, 1)
-
-	if !service.shouldOptimizeFile("/path/to/image.jpg") {
-		t.Errorf("expected shouldOptimizeFile to return true for /path/to/image.jpg")
-	}
-	if !service.shouldOptimizeFile("/path/to/image.PNG") {
-		t.Errorf("expected shouldOptimizeFile to return true for /path/to/image.PNG")
-	}
-	if service.shouldOptimizeFile("/path/to/image.gif") {
-		t.Errorf("expected shouldOptimizeFile to return false for /path/to/image.gif")
+func TestPipelineCanceledDoesNothing(t *testing.T) {
+	dir := t.TempDir()
+	f := touch(t, dir, "a.jpg")
+	conv := &fakeConverter{convert: func(context.Context, entity.ConvertInput) (*entity.ConvertResult, error) {
+		return nil, entity.ErrCanceled
+	}}
+	up, fs := &mockUploader{}, &mockFileSystem{}
+	svc, events := newSvc(conv, up, fs, dir, 1)
+	runEvents(t, svc, events, f)
+	if up.calls != 0 || fs.count() != 0 || len(conv.saved) != 0 {
+		t.Fatalf("canceled must leave the file alone")
 	}
 }
 
-func TestContextCanceledDoesNotMoveToUndone(t *testing.T) {
-	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
+func TestPipelineIgnoresUndoneArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	note := touch(t, dir, "a.jpg.error.json")
+	tmp := touch(t, dir, ".io-undone-abc.tmp")
+	conv := &fakeConverter{}
+	svc, events := newSvc(conv, &mockUploader{}, &mockFileSystem{}, dir, 1)
+	runEvents(t, svc, events, note, tmp)
+	if len(conv.inputs) != 0 {
+		t.Fatalf("undone artifacts must be ignored, got %d conversions", len(conv.inputs))
+	}
+}
+
+func TestPipelineUploadQuotaExceededContinuesProcessing(t *testing.T) {
+	dir := t.TempDir()
+	f1, f2, f3 := touch(t, dir, "1.jpg"), touch(t, dir, "2.jpg"), touch(t, dir, "3.jpg")
+	conv := &fakeConverter{convert: func(_ context.Context, in entity.ConvertInput) (*entity.ConvertResult, error) {
+		return &entity.ConvertResult{DeliverPath: in.Path, DeliverName: in.Filename, Release: func() {}}, nil
+	}}
+	up := &mockUploader{failMap: map[string]error{
+		"1.jpg": errors.New(`upload failed with status 400: {"message":"Quota has been exceeded!"}`),
+	}}
 	fs := &mockFileSystem{}
-	service := NewService(nil, nil, nil, fs, logger, nil, 1)
+	svc, events := newSvc(conv, up, fs, dir, 2)
+	runEvents(t, svc, events, f1, f2, f3)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // pre-cancel context
-
-	service.handleProcessingError(ctx, "/path/to/canceled_file.jpg", ctx.Err())
-
-	fs.Lock()
-	defer fs.Unlock()
-	if len(fs.undone) != 0 {
-		t.Errorf("Expected 0 files moved to undone on context cancel, got %d", len(fs.undone))
+	if len(conv.saved) != 1 {
+		t.Errorf("expected file 1 saved to undone, got %d", len(conv.saved))
+	}
+	if len(up.uploaded) != 2 {
+		t.Errorf("expected files 2 and 3 uploaded, got %d", len(up.uploaded))
+	}
+	if fs.count() != 3 {
+		t.Errorf("expected all 3 sources removed (1 saved, 2 uploaded), got %d", fs.count())
 	}
 }
 
-func TestShouldUploadProcessedFileNil(t *testing.T) {
-	service := NewService(nil, nil, nil, nil, nil, nil, 1)
-	if service.shouldUploadProcessedFile(nil) {
-		t.Errorf("Expected shouldUploadProcessedFile(nil) to return false, got true")
-	}
-}
-
-type errorUploader struct {
-	failMap map[string]error
-	uploaded []string
-	sync.Mutex
-}
-
-func (e *errorUploader) UploadAsset(ctx context.Context, filePath string) error {
-	e.Lock()
-	defer e.Unlock()
-	if err, found := e.failMap[filePath]; found {
-		return err
-	}
-	e.uploaded = append(e.uploaded, filePath)
-	return nil
-}
-
-func (e *errorUploader) UploadAssetWithFilename(ctx context.Context, filePath, filename string) error {
-	e.Lock()
-	defer e.Unlock()
-	if err, found := e.failMap[filename]; found {
-		return err
-	}
-	e.uploaded = append(e.uploaded, filename)
-	return nil
-}
-
-func TestPipelineServiceUploadQuotaExceededContinuesProcessing(t *testing.T) {
-	events := make(chan entity.FileEvent, 10)
-	watcher := &mockWatcher{events: events}
-	processor := &mockProcessor{}
+func TestPipelineDrainThenCancel(t *testing.T) {
+	dir := t.TempDir()
+	f := touch(t, dir, "a.jpg")
+	started := make(chan struct{})
+	conv := &fakeConverter{convert: func(ctx context.Context, _ entity.ConvertInput) (*entity.ConvertResult, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, entity.ErrCanceled
+	}}
 	fs := &mockFileSystem{}
-	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
+	svc, events := newSvc(conv, &mockUploader{}, fs, dir, 1)
+	svc.Start()
+	events <- entity.FileEvent{Path: f}
+	<-started
 
-	f1, _ := os.CreateTemp("", "test_file1_*.jpg")
-	f1.Close()
-	defer os.Remove(f1.Name())
-
-	f2, _ := os.CreateTemp("", "test_file2_*.jpg")
-	f2.Close()
-	defer os.Remove(f2.Name())
-
-	f3, _ := os.CreateTemp("", "test_file3_*.jpg")
-	f3.Close()
-	defer os.Remove(f3.Name())
-
-	// f1 will fail with 400 Quota Exceeded error on upload ("processed.jpg" returned by mockProcessor)
-	uploader := &errorUploader{
-		failMap: map[string]error{
-			"processed.jpg": errors.New(`upload failed with status 400: {"message":"Quota has been exceeded!","error":"Bad Request","statusCode":400}`),
-		},
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := svc.Drain(ctx); err == nil {
+		t.Fatalf("drain should time out while a job runs")
 	}
-
-	tasks := []entity.Task{
-		{
-			Name:       "TestTask",
-			Extensions: []string{"jpg"},
-		},
+	svc.Cancel()
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	if err := svc.Drain(ctx2); err != nil {
+		t.Fatalf("drain after cancel: %v", err)
 	}
-
-	service := NewService(watcher, processor, uploader, fs, logger, tasks, 2)
-	service.Start()
-
-	// Send file 1 (which fails upload due to quota exceeded)
-	events <- entity.FileEvent{Path: f1.Name(), Timestamp: time.Now()}
-
-	time.Sleep(50 * time.Millisecond)
-
-	// Send file 2 and file 3
-	// Now remove the failMap error so file 2 and file 3 succeed
-	uploader.Lock()
-	delete(uploader.failMap, "processed.jpg")
-	uploader.Unlock()
-
-	events <- entity.FileEvent{Path: f2.Name(), Timestamp: time.Now()}
-	events <- entity.FileEvent{Path: f3.Name(), Timestamp: time.Now()}
-
-	time.Sleep(200 * time.Millisecond)
-	service.Stop()
-
-	fs.Lock()
-	undoneCount := len(fs.undone)
-	removedCount := len(fs.removed)
-	fs.Unlock()
-
-	uploader.Lock()
-	uploadedCount := len(uploader.uploaded)
-	uploader.Unlock()
-
-	if undoneCount != 1 {
-		t.Errorf("Expected 1 file (file 1) to be moved to undone directory, got %d", undoneCount)
-	}
-
-	if uploadedCount != 2 {
-		t.Errorf("Expected 2 files (file 2 and 3) to be uploaded successfully after quota error, got %d", uploadedCount)
-	}
-
-	if removedCount != 2 {
-		t.Errorf("Expected 2 files (file 2 and 3) to be removed after successful upload, got %d", removedCount)
+	if fs.count() != 0 {
+		t.Fatalf("canceled file must stay in place")
 	}
 }
 
+func TestPipelineDrainDoesNotStartQueuedFiles(t *testing.T) {
+	dir := t.TempDir()
+	a := touch(t, dir, "a.jpg")
+	b := touch(t, dir, "b.jpg")
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	conv := &fakeConverter{}
+	conv.convert = func(_ context.Context, in entity.ConvertInput) (*entity.ConvertResult, error) {
+		started <- struct{}{}
+		<-release
+		return &entity.ConvertResult{Outcome: entity.OutcomeOptimized, DeliverPath: in.Path, DeliverName: in.Filename, Release: func() {}}, nil
+	}
+	fs := &mockFileSystem{}
+	svc, events := newSvc(conv, &mockUploader{}, fs, dir, 1)
+	svc.Start()
+	events <- entity.FileEvent{Path: a}
+	<-started
+	events <- entity.FileEvent{Path: b}
+	// Wait until b is queued on the concurrency slot.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		n := 0
+		svc.processing.Range(func(any, any) bool { n++; return true })
+		if n == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("b was never queued")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	expired, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	_ = svc.Drain(expired) // stops intake
+	close(release)
+	ctx, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	if err := svc.Drain(ctx); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	conv.mu.Lock()
+	n := len(conv.inputs)
+	conv.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("queued file was started during shutdown: %d conversions", n)
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.removed) != 1 || fs.removed[0] != a {
+		t.Fatalf("only a should be removed, got %v", fs.removed)
+	}
+}
