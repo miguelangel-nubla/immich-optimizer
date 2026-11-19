@@ -1,0 +1,129 @@
+name: Dev
+
+# Unstable builds of the "dev" branch: pushes ghcr.io/<owner>/immich-optimizer
+# :dev and :dev-<shortsha> (amd64 + arm64) and uploads the binaries as a
+# workflow artifact. It never creates a GitHub Release and never touches
+# :latest or the semver tags (see .goreleaser.dev.yaml).
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Runs for dev are serialised instead of cancelled, so a publish is never cut
+# off between pushing images and moving :dev; GitHub keeps only the newest
+# pending run, so :dev still ends on the latest commit.
+concurrency:
+  group: dev-publish
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Quality checks
+        run: |
+          go mod verify
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test -race ./...
+
+  publish:
+    needs: test
+    # A manual run from another branch must not move :dev.
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image owner (GHCR needs lowercase)
+        run: echo "IMAGE_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      # --snapshot: GoReleaser builds binaries, archives and per-arch images
+      # locally and publishes nothing. No GITHUB_TOKEN is passed on purpose.
+      - name: Build dev snapshot
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --config .goreleaser.dev.yaml
+
+      - name: Push images and dev manifests
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version dist/metadata.json)"
+          case "$version" in
+            dev-*) ;;
+            *) echo "::error::unexpected snapshot version '$version'"; exit 1 ;;
+          esac
+          repo="ghcr.io/${IMAGE_OWNER}/immich-optimizer"
+          mapfile -t images < <(jq -r '.[] | select(.type == "Docker Image") | .name' dist/artifacts.json)
+          if [ "${#images[@]}" -ne 2 ]; then
+            echo "::error::expected 2 per-arch images, got: ${images[*]:-none}"
+            exit 1
+          fi
+          for img in "${images[@]}"; do
+            case "$img" in
+              "$repo:$version"-*) docker push "$img" ;;
+              *) echo "::error::refusing to push unexpected image $img"; exit 1 ;;
+            esac
+          done
+          docker buildx imagetools create \
+            --tag "$repo:$version" \
+            --tag "$repo:dev" \
+            "${images[@]}"
+          {
+            echo "### Dev images"
+            echo
+            echo "- \`$repo:dev\`"
+            echo "- \`$repo:$version\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: immich-optimizer-${{ github.sha }}
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          if-no-files-found: error
+          retention-days: 30

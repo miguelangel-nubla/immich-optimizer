@@ -1,0 +1,83 @@
+# Dev builds (pushes to the "dev" branch), used only by .github/workflows/dev.yaml.
+#
+# Always run with --snapshot: GoReleaser then publishes nothing (no GitHub
+# Release, no tags, no registry push). The workflow pushes the per-arch images
+# built here and assembles the :dev and :dev-<shortsha> manifests itself, so
+# :latest and the semver tags of .goreleaser.yaml can never be touched.
+#
+# Keep "builds" in sync with .goreleaser.yaml.
+version: 2
+project_name: immich-optimizer
+
+builds:
+- main: ./cmd/optimizer
+  env:
+  - CGO_ENABLED=0
+  goos:
+  - linux
+  goarch:
+  - amd64
+  - arm64
+
+# -version reports e.g. "immich-optimizer dev-1a2b3c4, commit ..., built at ...".
+snapshot:
+  version_template: "dev-{{ .ShortCommit }}"
+
+dockers:
+- goos: linux
+  goarch: amd64
+  image_templates:
+  - "ghcr.io/{{ .Env.IMAGE_OWNER }}/{{ .ProjectName }}:dev-{{ .ShortCommit }}-amd64"
+  dockerfile: 'Dockerfile.goreleaser'
+  use: buildx
+  build_flag_templates:
+  - "--pull"
+  - "--platform=linux/amd64"
+  - "--label=org.opencontainers.image.created={{.Date}}"
+  - "--label=org.opencontainers.image.title={{.ProjectName}}"
+  - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+  - "--label=org.opencontainers.image.version={{.Version}}"
+  - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+  - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+  extra_files:
+  - config
+  - LICENSE
+
+- goos: linux
+  goarch: arm64
+  image_templates:
+  - "ghcr.io/{{ .Env.IMAGE_OWNER }}/{{ .ProjectName }}:dev-{{ .ShortCommit }}-arm64v8"
+  dockerfile: 'Dockerfile.goreleaser'
+  use: buildx
+  build_flag_templates:
+  - "--pull"
+  - "--platform=linux/arm64/v8"
+  - "--label=org.opencontainers.image.created={{.Date}}"
+  - "--label=org.opencontainers.image.title={{.ProjectName}}"
+  - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+  - "--label=org.opencontainers.image.version={{.Version}}"
+  - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+  - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+  extra_files:
+  - config
+  - LICENSE
+
+archives:
+- files:
+  - LICENSE*
+  - README*
+  formats: tar.gz
+  name_template: >-
+    {{ .ProjectName }}_ {{- title .Os }}_ {{- if eq .Arch "amd64" }}x86_64 {{- else }}{{ .Arch }}{{ end }}
+
+checksum:
+  name_template: 'checksums.txt'
+
+# Belt and braces: even without --snapshot this config never creates a
+# GitHub Release or a changelog.
+release:
+  disable: true
+changelog:
+  disable: true
+
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
