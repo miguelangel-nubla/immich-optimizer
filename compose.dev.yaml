@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile.goreleaser
     env_file:
       - .env
+    ports:
+      - "2283:2283"
     volumes:
       - ./watch:/watch
       - ./undone:/undone

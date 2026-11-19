@@ -9,9 +9,10 @@ A file optimization service that automatically processes and uploads media files
 
 ## ✨ Features
 
-- **📁 File Watching**: Automatically monitors directories for new media files (`IUO_MODE=watcher`)
-- **🌐 HTTP Reverse Proxy Mode**: Intercepts upload requests on-the-fly to optimize media uploads (`IUO_MODE=proxy`)
-- **⚡ Concurrent Modes**: Combine modes by comma-separating them (e.g., `IUO_MODE=watcher,proxy`)
+- **📁 File Watching**: Automatically monitors directories for new media files (`IO_MODE=watcher`)
+- **🌐 HTTP Reverse Proxy Mode**: Intercepts upload requests on-the-fly to optimize media uploads (`IO_MODE=proxy`)
+- **⚡ Concurrent Modes**: Combine modes by comma-separating them (e.g., `IO_MODE=watcher,proxy`)
+- **🛟 Never uploads the original on failure**: Files that fail conversion are kept in the [undone folder](#-failed-files-undone-folder) with a `metadata.json` explaining why, whatever the source
 - **🔄 Configurable Processing**: Support for multiple optimization profiles
 - **📸 Image Optimization**:
   - Lossless JPEG-XL conversion
@@ -25,14 +26,14 @@ A file optimization service that automatically processes and uploads media files
 - **🐳 Docker Ready**: Production-ready container images
 
 > 💡 **Note on `immich-upload-optimizer` Deprecation**:
-> `immich-optimizer` now incorporates all functionality from `immich-upload-optimizer`. Set `IUO_MODE=proxy` to run as an HTTP reverse proxy in front of Immich. See the [Migration Guide](#-migrating-from-immich-upload-optimizer) below.
+> `immich-optimizer` now incorporates all functionality from `immich-upload-optimizer`. Set `IO_MODE=proxy` to run as an HTTP reverse proxy in front of Immich. See the [Migration Guide](#-migrating-from-immich-upload-optimizer) below.
 
 ## 🔄 Migrating from `immich-upload-optimizer`
 
 If you are migrating from `immich-upload-optimizer` to `immich-optimizer`, update your configuration as follows:
 
 1. **Set Proxy Mode**:
-   Set `IUO_MODE=proxy` (or CLI flag `-mode proxy`).
+   Set `IO_MODE=proxy` (or CLI flag `-mode proxy`). The proxy listens on `:2283` by default, the same port as Immich and `immich-upload-optimizer`, so an existing `2283:2283` port mapping keeps working. It runs in its own container, so there is no clash with Immich; set `IO_PROXY_BIND_ADDR` only if you share a network namespace with Immich.
 
 2. **Update Custom `tasks.yaml` Templates**:
    In `immich-optimizer`, input files and output files are cleanly isolated into separate directories:
@@ -49,10 +50,24 @@ If you are migrating from `immich-upload-optimizer` to `immich-optimizer`, updat
    command: cjxl --lossless_jpeg=1 {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.name}}.jxl
    ```
 
-3. **Environment Variable Changes**:
-   - `IUO_UPSTREAM` / `-upstream` $\rightarrow$ `IUO_IMMICH_URL` / `-immich_url`
-   - `IUO_LISTEN` / `-listen` $\rightarrow$ `IUO_BIND_ADDR` / `-bind_addr`
-   - `IUO_FILTER_PATH` (`-filter_path`) and `IUO_FILTER_FORM_KEY` (`-filter_form_key`) remain fully supported.
+3. **Environment Variable Changes**: see [Migrating: environment variable rename](#-migrating-environment-variable-rename). In short, `IUO_UPSTREAM` / `-upstream` becomes `IO_IMMICH_URL` / `-immich_url`, and `IUO_LISTEN` / `-listen` becomes `IO_PROXY_BIND_ADDR` / `-bind_addr`. The old names keep working for now, with a startup warning.
+
+4. **Failed uploads are kept**: when a conversion fails (or no task matches), the client still gets an error and nothing is uploaded, but the original is now also saved to the undone folder. Mount `/undone` in proxy mode too.
+
+## 🔁 Migrating: environment variable rename
+
+The environment prefix is now `IO_` (Immich Optimizer). The old `IUO_*` names are still accepted as a deprecated fallback for one transition period: the optimizer logs a single warning at startup listing which old names were used and their replacements. If both the `IO_*` and the `IUO_*` variable are set, `IO_*` wins (the warning says the old one was ignored).
+
+| Old (deprecated) | New |
+|---|---|
+| `IUO_<NAME>` (every variable that existed before; new settings have no `IUO_` name) | `IO_<NAME>` |
+| `IUO_UPSTREAM`, `-upstream` | `IO_IMMICH_URL`, `-immich_url` |
+| `IUO_LISTEN`, `IUO_BIND_ADDR`, `-listen` | `IO_PROXY_BIND_ADDR`, `-bind_addr` |
+| `IUO_FILTER_PATH`, `IUO_FILTER_FORM_KEY` | `IO_PROXY_FILTER_PATH`, `IO_PROXY_FILTER_FORM_KEY` |
+| `IUO_WATCH_DIR`, `IUO_INOTIFY_BUFFER_SIZE` | `IO_WATCHER_WATCH_DIR`, `IO_WATCHER_INOTIFY_BUFFER_SIZE` |
+| `IUO_WATCHER_UNDONE_DIR`, `IUO_UNDONE_DIR` | `IO_UNDONE_DIR` (now used by every mode) |
+
+The Docker image no longer sets any configuration environment variables; its built-in defaults already point at `/watch`, `/undone` and `/etc/immich-optimizer/config/tasks.yaml`.
 
 
 ## 📦 Installation
@@ -80,8 +95,8 @@ docker run -d \
   --name immich-optimizer \
   -v /path/to/watch:/watch \
   -v /path/to/undone:/undone \
-  -e IUO_IMMICH_URL=http://your-immich-instance:2283 \
-  -e IUO_IMMICH_API_KEY=your-api-key \
+  -e IO_IMMICH_URL=http://your-immich-instance:2283 \
+  -e IO_IMMICH_API_KEY=your-api-key \
   ghcr.io/miguelangel-nubla/immich-optimizer:latest
 ```
 
@@ -93,15 +108,32 @@ services:
     image: ghcr.io/miguelangel-nubla/immich-optimizer:latest
     container_name: immich-optimizer
     environment:
-      - IUO_IMMICH_URL=http://immich-server:2283
-      - IUO_IMMICH_API_KEY=your-api-key
-      - IUO_WATCH_DIR=/watch
-      - IUO_TASKS_FILE=/etc/immich-optimizer/config/tasks.yaml
+      - IO_IMMICH_URL=http://immich-server:2283
+      - IO_IMMICH_API_KEY=your-api-key
     volumes:
       - /path/to/watch:/watch
       - /path/to/undone:/undone
       # Optional: Custom configuration
       - ./custom-config:/etc/immich-optimizer/config
+    restart: unless-stopped
+```
+
+Proxy mode (point your Immich apps at this container instead of Immich):
+
+```yaml
+services:
+  immich-optimizer:
+    image: ghcr.io/miguelangel-nubla/immich-optimizer:latest
+    container_name: immich-optimizer
+    environment:
+      - IO_MODE=proxy
+      - IO_IMMICH_URL=http://immich-server:2283
+    ports:
+      - "2283:2283"
+    volumes:
+      - /path/to/undone:/undone
+    # Let running conversions finish on restart (see "Long jobs & restarts").
+    stop_grace_period: 2m
     restart: unless-stopped
 ```
 
@@ -137,30 +169,35 @@ RUN set -eux; \
 
 | Variable | Mode | Description | Default |
 |----------|------|-------------|---------|
-| `IUO_MODE` | All | Operating mode: `watcher`, `proxy` (comma-separated for multiple) | `watcher` |
-| `IUO_IMMICH_URL` | All | Immich server URL (required) | - |
-| `IUO_TASKS_FILE` | All | Path to tasks configuration file | `tasks.yaml` |
-| `IUO_LOG_LEVEL` | All | Log level filtering (`debug`, `info`, `warn`, `error`) | `info` |
-| `IUO_MAX_CONCURRENT_REQUESTS` | All | Maximum number of files/uploads to process concurrently | `10` |
-| `IUO_HTTP_TIMEOUT_SECONDS` | All | HTTP client timeout for Immich/proxy requests, in seconds | `120` |
-| `IUO_PROXY_BIND_ADDR` | `proxy` | Address for reverse proxy server to listen on | `:8080` |
-| `IUO_PROXY_FILTER_PATH` | `proxy` | Path pattern to intercept for proxy uploads | `/api/assets` |
-| `IUO_PROXY_FILTER_FORM_KEY` | `proxy` | Form key for upload files | `assetData` |
-| `IUO_WATCHER_WATCH_DIR` | `watcher` | Directory to watch for files | `/watch` |
-| `IUO_WATCHER_UNDONE_DIR` | `watcher` | Directory for files that failed processing/upload | `/undone` |
-| `IUO_WATCHER_INOTIFY_BUFFER_SIZE` | `watcher` | Inotify event read buffer size, in bytes | `8192` |
-| `IUO_IMMICH_API_KEY` | `watcher` | Immich API key (required in `watcher` mode) | - |
-| `IUO_IMMICH_API_KEY_FILE` | `watcher` | Path to a file containing the Immich API key (e.g. a Docker secret); takes precedence over `IUO_IMMICH_API_KEY` | - |
+| `IO_MODE` | All | Operating mode: `watcher`, `proxy` (comma-separated for multiple) | `watcher` |
+| `IO_IMMICH_URL` | All | Immich server URL (required) | - |
+| `IO_TASKS_FILE` | All | Path to tasks configuration file | `./tasks.yaml` if it exists (and is not inside the watch directory), else `/etc/immich-optimizer/config/tasks.yaml` |
+| `IO_LOG_LEVEL` | All | Log level filtering (`debug`, `info`, `warn`, `error`) | `info` |
+| `IO_MAX_CONCURRENT_REQUESTS` | All | Maximum number of concurrent conversions. One limit shared by all modes (`watcher,proxy` does not double it) | `10` |
+| `IO_HTTP_TIMEOUT_SECONDS` | All | Timeout for connecting to Immich, for an upload that makes no progress at all (Immich stopped reading it), and for Immich's response headers after an upload body has been sent. It does **not** limit how long an upload or a conversion takes | `120` |
+| `IO_TASK_TIMEOUT_SECONDS` | All | Maximum processing time per file; on expiry the task's whole process tree is killed and the file goes to undone. `0` = no limit | `0` |
+| `IO_SHUTDOWN_TIMEOUT_SECONDS` | All | On stop, how long running jobs may finish before they are cancelled (see [Long jobs & restarts](#-long-jobs--restarts)) | `8` |
+| `IO_UNDONE_DIR` | All | Directory where inputs that failed conversion are saved as `<sha256>/original.file` + `metadata.json` | `/undone` |
+| `IO_UNDONE_UNMATCHED` | All | Also save files that have no matching task to undone (they are always refused) | `true` |
+| `IO_PROXY_BIND_ADDR` | `proxy` | Address for reverse proxy server to listen on | `:2283` |
+| `IO_PROXY_FILTER_PATH` | `proxy` | Path pattern to intercept for proxy uploads | `/api/assets` |
+| `IO_PROXY_FILTER_FORM_KEY` | `proxy` | Form key for upload files | `assetData` |
+| `IO_WATCHER_WATCH_DIR` | `watcher` | Directory to watch for files (the undone dir must not be inside it) | `/watch` |
+| `IO_WATCHER_INOTIFY_BUFFER_SIZE` | `watcher` | Inotify event read buffer size, in bytes | `8192` |
+| `IO_IMMICH_API_KEY` | `watcher` | Immich API key (required in `watcher` mode) | - |
+| `IO_IMMICH_API_KEY_FILE` | `watcher` | Path to a file containing the Immich API key (e.g. a Docker secret); takes precedence over `IO_IMMICH_API_KEY` | - |
+
+The old `IUO_*` names still work for now; see [Migrating: environment variable rename](#-migrating-environment-variable-rename).
 
 #### Reading secrets from files
 
-Secret settings can be read from a file instead of passing the value directly, Docker secrets style. Set `IUO_IMMICH_API_KEY_FILE` (or `-immich_api_key_file`) to the path of a file holding the API key. One trailing newline is stripped. When a key file is set it takes precedence over `IUO_IMMICH_API_KEY` / `-immich_api_key`. An unreadable or empty file is a startup error.
+Secret settings can be read from a file instead of passing the value directly, Docker secrets style. Set `IO_IMMICH_API_KEY_FILE` (or `-immich_api_key_file`) to the path of a file holding the API key. One trailing newline is stripped. When a key file is set it takes precedence over `IO_IMMICH_API_KEY` / `-immich_api_key`. An unreadable or empty file is a startup error.
 
 ```yaml
 services:
   immich-optimizer:
     environment:
-      - IUO_IMMICH_API_KEY_FILE=/run/secrets/immich_api_key
+      - IO_IMMICH_API_KEY_FILE=/run/secrets/immich_api_key
     secrets:
       - immich_api_key
 secrets:
@@ -176,16 +213,22 @@ immich-optimizer [options]
 General Options:
   -mode string           Operating mode: watcher or proxy (comma-separated for multiple) (default "watcher")
   -immich_url string     Immich server URL (required)
-  -tasks_file string     Tasks configuration file (default "tasks.yaml")
+  -tasks_file string     Tasks configuration file (default ./tasks.yaml, else /etc/immich-optimizer/config/tasks.yaml)
   -log_level string      Log level: debug, info, warn, error (default "info")
+  -undone_dir string     Directory where inputs that failed conversion are saved (default "/undone")
+  -undone_unmatched      Also save files with no matching task to undone (default true)
   -max_concurrent_requests int
-                         Maximum number of files/uploads to process concurrently (default 10)
+                         Maximum number of concurrent conversions, shared by all modes (default 10)
   -http_timeout_seconds int
-                         HTTP client timeout for Immich/proxy requests, in seconds (default 120)
+                         Connect, upload-stall and response-header timeout for Immich, in seconds (default 120)
+  -task_timeout_seconds int
+                         Maximum processing time per file in seconds, 0 = no limit (default 0)
+  -shutdown_timeout_seconds int
+                         How long running jobs may finish on shutdown, in seconds (default 8)
   -version               Show version information
 
 Proxy Mode Options:
-  -bind_addr string      Address for reverse proxy server to listen on (default ":8080")
+  -bind_addr string      Address for reverse proxy server to listen on (default ":2283")
   -filter_path string    Path pattern to intercept for proxy uploads (default "/api/assets")
   -filter_form_key string Form key for upload files (default "assetData")
 
@@ -194,10 +237,40 @@ Watcher Mode Options:
   -immich_api_key_file string
                          Path to a file containing the Immich API key (takes precedence over -immich_api_key)
   -watch_dir string      Directory to watch (default "/watch")
-  -undone_dir string     Directory for failed files (default "/undone")
   -inotify_buffer_size int
                          Inotify event read buffer size, in bytes (default 8192)
 ```
+
+The deprecated `-upstream` and `-listen` flags are still accepted (hidden from `-help`) and map to `-immich_url` and `-bind_addr`.
+
+## 🛟 Failed files (undone folder)
+
+The undone folder belongs to the conversion engine, so it works the same for every source (watcher, proxy, and future ones). **The original is never uploaded when conversion fails.** Instead it is saved to `IO_UNDONE_DIR` together with a `metadata.json` explaining why.
+
+- **When a file is saved:** every task for its extension failed, a task produced an empty output, the task timeout expired, or no task matches its extension (unless `IO_UNDONE_UNMATCHED=false`). In watcher mode, a file whose upload to Immich fails (for example quota exceeded) is also saved.
+- **Layout:** flat and content-addressed, one folder per distinct file content, named after its SHA-256:
+
+  ```
+  undone/
+    3f8a…c1/                 SHA-256 (hex) of the file content
+      original.file          the original, byte for byte, with its original modification time
+      metadata.json          names, sources, folders and failures
+  ```
+
+  `original.file` is literally named that (no extension), so unusual or very long client filenames can never cause problems. There are no per-source subfolders and the watch directory's tree is not mirrored: the source and the original filename and folder are recorded in `metadata.json`. A folder only appears once it is complete (it is assembled under a temporary name and renamed into place); temporary `.io-undone-*` entries left by a crash are removed at startup (leftover copies once they are over an hour old). The undone directory may be shared by several optimizer processes, for example a watcher and a proxy container mounting the same folder: they coordinate through an advisory lock file, `.io-undone.lock`, at its root (leave it in place).
+- **metadata.json** (pretty-printed JSON, `"version": 2`, written atomically) contains `sha256`, `size`, `original_mtime`, `first_failed_at`, `last_failed_at`, `occurrences`, `original_filenames` (the distinct names this content arrived under, up to 100) and `failures`: the 20 most recent failures, each with `source` (`watcher` / `proxy`), `original_filename`, `original_dir` (the watcher's path relative to the watch directory, or the folder part of the proxy client's filename if it sent one), `failed_at`, `stage` (`no_task`, `convert` or `upload`), `error`, and every task attempted (command, exit code, duration, timeout flag, last 4 KiB of output). It contains no credentials or headers.
+- **No duplicates:** if the identical content is already there (for example a phone retrying the same upload, or the same photo arriving from both the watcher and the proxy), it is not copied again (it does not even need temporary space); `occurrences` goes up and the failure is appended to its `metadata.json`. A *different* file with the same name always gets its own folder, so nothing is ever overwritten.
+- **Watcher:** the source file is removed from the watch directory only once it has been uploaded or saved to undone. If saving fails (for example the disk is full), the file stays in the watch directory.
+- **Proxy:** the client still gets an error (`415` for an unmatched extension, `502` for a conversion failure) and keeps its original, so it can retry. Upload failures to Immich (network errors, Immich `5xx`) are **not** saved in proxy mode: the client keeps the original and retries, so saving would only pile up copies.
+- **Retrying a file:** fix the cause (for example the task), then copy `original.file` into the watch directory under its original name from `metadata.json` (`original_filenames`, or `original_filename` of a failure; the extension selects the task), for example `cp undone/3f8a…c1/original.file /watch/IMG_1234.HEIC`. Once it is uploaded you can delete the hash folder. In proxy mode you can instead just retry the upload from the client.
+- **Permissions:** files are created by the container user (`appuser`, uid 1001) with the default umask. The directory must be writable by that user; this is checked at startup.
+
+## ⏳ Long jobs & restarts
+
+- **Jobs survive client disconnects (proxy):** once the upload has been received, converting the file and uploading it to Immich no longer depend on the client connection. If the phone disconnects or its request times out, the job continues and the asset still reaches Immich.
+- **No double uploads:** if the same user uploads the identical file again while it is being processed, or within 30 minutes afterwards, the retry gets the same result instead of converting and uploading it a second time. Transient answers (`5xx`, `408`, `413`, `425`, `429`) and failures whose original could not be saved to undone are not replayed, so a retry reaches Immich again. Browser uploads are kept alive with periodic redirects, and a reload of the wait page shows the result for 30 minutes.
+- **Timeouts:** only `IO_TASK_TIMEOUT_SECONDS` (off by default) or shutdown stops a running job. `IO_HTTP_TIMEOUT_SECONDS` only bounds connecting to Immich, an upload that makes no progress at all, and waiting for its response after the upload has been sent, so large but progressing uploads are not cut off.
+- **Shutdown:** on `SIGTERM` the optimizer stops accepting new work and lets running jobs finish for `IO_SHUTDOWN_TIMEOUT_SECONDS`. After that, running tasks (including child processes such as HandBrake or ffmpeg) are killed. Proxy clients then get `503` with `Retry-After`, watcher files stay in the watch directory and are processed at the next start, and nothing is saved to undone. The default of 8s fits Docker's default 10s stop timeout. If you convert videos, raise both, for example `stop_grace_period: 15m` with `IO_SHUTDOWN_TIMEOUT_SECONDS=880`.
 
 ## 📋 Optimization Profiles
 
@@ -291,15 +364,15 @@ docker exec immich-optimizer which caesiumclt
 
 ### Logs & Monitoring
 
-The optimizer prints timestamped logs to stdout. You can filter log levels (`debug`, `info`, `warn`, `error`) using `IUO_LOG_LEVEL` or the `-log_level` flag:
+The optimizer prints timestamped logs to stdout. You can filter log levels (`debug`, `info`, `warn`, `error`) using `IO_LOG_LEVEL` or the `-log_level` flag:
 
 ```bash
 # Set log level for binary
-export IUO_LOG_LEVEL=debug
+export IO_LOG_LEVEL=debug
 immich-optimizer -immich_url http://... -immich_api_key ...
 
 # Set log level for Docker container
-docker run -e IUO_LOG_LEVEL=debug ghcr.io/miguelangel-nubla/immich-optimizer:latest
+docker run -e IO_LOG_LEVEL=debug ghcr.io/miguelangel-nubla/immich-optimizer:latest
 ```
 
 ### Contributing

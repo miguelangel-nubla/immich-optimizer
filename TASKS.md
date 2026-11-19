@@ -5,9 +5,9 @@ The YAML configuration file defines a list of tasks executed sequentially based 
 ## Usage
 
 1. **Task Execution**: Tasks run in order when the file extension matches.
-2. **Upload Refusal**: If no matching extension is found, the upload is rejected.
+2. **Upload Refusal**: If no matching extension is found, the upload is refused and the file is saved to the undone folder (unless `IO_UNDONE_UNMATCHED=false`).
 3. **Preserving Extensions**: To leave matching files unchanged, set the command to an empty string.
-4. **Fallback Execution**: When multiple tasks match an extension, they execute in sequence. The process stops when a task completes successfully. If all tasks fail, the upload is blocked.
+4. **Fallback Execution**: When multiple tasks match an extension, they execute in sequence. The process stops when a task completes successfully. If all tasks fail, the upload is blocked and the original is saved to the undone folder as `undone/<sha256>/original.file` with a `metadata.json` describing the failure. The original is never uploaded in its place.
 
 ## Configuration Structure
 
@@ -53,7 +53,7 @@ To ensure proper file handling, use these placeholders in your commands:
 
 ## Process Overview
 
-When a file is uploaded, IUO:
+When a file is uploaded, the optimizer:
 
 1. Creates temporary source and output folders, e.g., `/tmp/processing-3398346076/src` and `/tmp/processing-3398346076/dst`.
 2. Saves the file with a unique name, e.g., `/tmp/processing-3398346076/src/file-2612480203.jpg`.
@@ -69,7 +69,7 @@ When a file is uploaded, IUO:
    cjxl --lossless_jpeg=1 /tmp/processing-3398346076/src/file-2612480203.jpg /tmp/processing-3398346076/dst/file-2612480203.jxl
    ```
 
-4. If successful, IUO replaces the original file with the processed one and uploads it to Immich.
+4. If successful and the output is smaller, the optimizer uploads the processed file to Immich under the original name with the new extension. If the output is not smaller, the original is uploaded unchanged. An empty output counts as a failure.
 
 ## Docker Setup
 
@@ -80,8 +80,8 @@ services:
   immich-optimizer:
     image: ghcr.io/miguelangel-nubla/immich-optimizer:latest
     environment:
-      - IUO_IMMICH_URL=http://immich-server:2283
-      - IUO_IMMICH_API_KEY=your-api-key
+      - IO_IMMICH_URL=http://immich-server:2283
+      - IO_IMMICH_API_KEY=your-api-key
     volumes:
       - /path/to/watch:/watch
       - /path/to/undone:/undone
@@ -94,4 +94,6 @@ services:
 
 - Ensure file extensions and commands are correctly specified.
 - Tasks execute in the order they appear in the configuration file.
-- Long-running tasks (e.g., video transcoding) may exceed HTTP timeouts. IUO attempts to mitigate this by sending periodic HTTP redirects, but tasks will continue in the background even if the client disconnects. The processed file will still be uploaded to Immich regardless of client disconnection.
+- Jobs are not tied to the client connection: if the client disconnects or times out, conversion and upload to Immich continue, and a retry of the same file while it is running or within 30 minutes gets the same result instead of uploading twice. Only shutdown (after `IO_SHUTDOWN_TIMEOUT_SECONDS`) or `IO_TASK_TIMEOUT_SECONDS` stops a job. Browser uploads are kept alive with periodic redirects.
+- `IO_TASK_TIMEOUT_SECONDS` (default `0`, no limit) bounds the processing of one file. When it expires, the task's whole process tree is killed (including tools such as HandBrakeCLI or ffmpeg started by the command) and the file is saved to undone with `"timed_out": true` on the attempt in its `metadata.json`.
+- Commands run through `sh -c` in the directory of the tasks file. Their combined output is kept in memory only up to 64 KiB, and the last 4 KiB of each failed attempt is written to the undone `metadata.json`.

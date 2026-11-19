@@ -63,8 +63,9 @@ COPY --from=builder /usr/local/bin/caesiumclt /usr/local/bin/caesiumclt
 # Create directories with proper permissions
 RUN mkdir -p /etc/immich-optimizer/config \
     /etc/immich-optimizer/bundled-configs \
-    /watch && \
-    chown -R appuser:appuser /etc/immich-optimizer /watch
+    /watch \
+    /undone && \
+    chown -R appuser:appuser /etc/immich-optimizer /watch /undone
 
 # Copy configuration files
 COPY --chown=appuser:appuser config/lossless /etc/immich-optimizer/config
@@ -82,9 +83,14 @@ LABEL \
     org.opencontainers.image.licenses="MIT" \
     org.opencontainers.image.documentation="https://github.com/miguelangel-nubla/immich-optimizer"
 
-# Set environment variables
-ENV IUO_TASKS_FILE=/etc/immich-optimizer/config/tasks.yaml \
-    IUO_WATCH_DIR=/watch
+# No config ENV here on purpose: the defaults already point at /watch, /undone
+# and /etc/immich-optimizer/config/tasks.yaml. Baking IO_* (or IUO_*) values
+# into the image would silently override, or always warn about, the legacy
+# IUO_* variables users still set in compose during the transition.
+
+# Reverse proxy (IO_MODE=proxy) listens here; same port as Immich, so an
+# existing "2283:2283" mapping from immich-upload-optimizer keeps working.
+EXPOSE 2283
 
 # Add health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
