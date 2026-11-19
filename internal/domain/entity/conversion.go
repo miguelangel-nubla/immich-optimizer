@@ -30,8 +30,9 @@ type ConvertInput struct {
 	OriginalDir string
 	// ModTime is optional; when set it is applied to the undone copy.
 	ModTime time.Time
-	// SHA256 is an optional precomputed lowercase hex digest of the content.
-	SHA256 string
+	// SHA1 is an optional precomputed lowercase hex SHA-1 of the content,
+	// the same digest Immich stores as the asset checksum.
+	SHA1 string
 	// Details are diagnostic key/values recorded in each failure of the undone
 	// metadata.json.
 	// They must NEVER contain secrets or authentication headers.
@@ -99,11 +100,11 @@ type Failure struct {
 
 // UndoneRecord describes where a failed input was saved.
 type UndoneRecord struct {
-	Dir          string // absolute undone/<sha256> folder
+	Dir          string // absolute undone/<sha1> folder
 	Path         string // Dir/original.file
 	MetadataPath string // Dir/metadata.json
-	SHA256       string
-	Duplicate    bool // identical content was already saved
+	SHA1         string // lowercase hex SHA-1 of the content (folder name)
+	Duplicate    bool   // identical content was already saved
 	Occurrences  int
 }
 

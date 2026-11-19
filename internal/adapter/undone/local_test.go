@@ -1,7 +1,9 @@
 package undone
 
 import (
+	"crypto/sha1"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -74,6 +76,16 @@ func noTemps(t *testing.T, root string) {
 }
 
 func sha(content string) string {
+	sum := sha1.Sum([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
+func sha1B64(content string) string {
+	sum := sha1.Sum([]byte(content))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func legacySHA256(content string) string {
 	sum := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(sum[:])
 }
@@ -108,7 +120,7 @@ func TestSaveBasic(t *testing.T) {
 	}
 	dir := filepath.Join(root, sha("image-bytes"))
 	if rec.Dir != dir || rec.Path != filepath.Join(dir, OriginalFile) || rec.MetadataPath != filepath.Join(dir, MetadataFile) ||
-		rec.SHA256 != sha("image-bytes") || rec.Duplicate || rec.Occurrences != 1 {
+		rec.SHA1 != sha("image-bytes") || rec.Duplicate || rec.Occurrences != 1 {
 		t.Fatalf("unexpected record %+v", rec)
 	}
 	if got := dirEntries(t, root); len(got) != 1 || got[0] != sha("image-bytes") {
@@ -131,16 +143,16 @@ func TestSaveBasic(t *testing.T) {
 		t.Fatalf("mode = %v, want %v", st.Mode().Perm(), os.FileMode(0o666&^umask))
 	}
 	raw, _ := os.ReadFile(rec.MetadataPath)
-	if !strings.Contains(string(raw), "\n  \"version\": 2,") {
-		t.Fatalf("metadata must be pretty-printed with version 2: %s", raw)
+	if !strings.Contains(string(raw), "\n  \"version\": 3,") {
+		t.Fatalf("metadata must be pretty-printed with version 3: %s", raw)
 	}
 	n := readNoteT(t, rec.MetadataPath)
-	for _, k := range []string{"version", "sha256", "size", "original_mtime", "first_failed_at", "last_failed_at", "occurrences", "original_filenames", "failures", "optimizer_version"} {
+	for _, k := range []string{"version", "sha1", "sha1_base64", "size", "original_mtime", "first_failed_at", "last_failed_at", "occurrences", "original_filenames", "failures", "optimizer_version"} {
 		if _, ok := n[k]; !ok {
 			t.Errorf("metadata missing %q", k)
 		}
 	}
-	if n["original_mtime"] != "2020-05-06T07:08:09Z" || n["sha256"] != sha("image-bytes") || n["size"].(float64) != 11 {
+	if n["original_mtime"] != "2020-05-06T07:08:09Z" || n["sha1"] != sha("image-bytes") || n["sha1_base64"] != sha1B64("image-bytes") || n["size"].(float64) != 11 {
 		t.Fatalf("metadata fields wrong: %v", n)
 	}
 	if names := n["original_filenames"].([]any); len(names) != 1 || names[0] != "IMG_1234.HEIC" {
@@ -492,7 +504,7 @@ func TestSaveDuplicateDoesNotCopy(t *testing.T) {
 		s, root := newStore(t)
 		in := entity.ConvertInput{Path: writeSrc(t, "big"), Filename: "a.mp4", Source: entity.SourceProxy}
 		if withHash {
-			in.SHA256 = strings.ToUpper(sha("big"))
+			in.SHA1 = strings.ToUpper(sha("big"))
 		}
 		if _, err := s.Save(in, failure()); err != nil {
 			t.Fatal(err)
@@ -538,4 +550,64 @@ func TestSaveTwoStoresSameDir(t *testing.T) {
 		t.Fatalf("occurrences = %v failures = %d", n["occurrences"], len(n["failures"].([]any)))
 	}
 	noTemps(t, root)
+}
+
+// The folder name and metadata use the digest Immich stores as the asset
+// checksum: SHA-1, hex for the folder, base64 as the Immich API shows it.
+func TestSaveUsesImmichChecksum(t *testing.T) {
+	s, root := newStore(t)
+	rec, err := s.Save(entity.ConvertInput{Path: writeSrc(t, "abc"), Filename: "a.jpg", Source: entity.SourceWatcher}, failure())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const hexSum, b64Sum = "a9993e364706816aba3e25717850c26c9cd0d89d", "qZk+NkcGgWq6PiVxeFDCbJzQ2J0="
+	if rec.SHA1 != hexSum || rec.Dir != filepath.Join(root, hexSum) {
+		t.Fatalf("record = %+v", rec)
+	}
+	n := readNoteT(t, rec.MetadataPath)
+	if n["sha1"] != hexSum || n["sha1_base64"] != b64Sum || n["version"].(float64) != MetadataVersion {
+		t.Fatalf("metadata = %v", n)
+	}
+	if _, ok := n["sha256"]; ok {
+		t.Fatalf("metadata must not carry sha256 any more: %v", n)
+	}
+}
+
+// A version 2 folder (named after the SHA-256) is a different identity: it is
+// never matched, updated, swept or removed. The same content failing again
+// gets its own SHA-1 folder.
+func TestLegacySHA256FolderLeftAlone(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, legacySHA256("same-bytes"))
+	if err := os.Mkdir(legacy, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	legacyMeta := `{"version": 2, "sha256": "` + legacySHA256("same-bytes") + `", "occurrences": 1}` + "\n"
+	files := map[string]string{
+		OriginalFile:                     "same-bytes",
+		MetadataFile:                     legacyMeta,
+		utils.UndoneTempPrefix + "x.tmp": "leftover",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(legacy, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := NewLocalStore(root, "vtest", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := s.Save(entity.ConvertInput{Path: writeSrc(t, "same-bytes"), Filename: "a.jpg", Source: entity.SourceWatcher}, failure())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Duplicate || rec.Dir != filepath.Join(root, sha("same-bytes")) {
+		t.Fatalf("legacy folder must not be reused: %+v", rec)
+	}
+	for name, body := range files {
+		b, err := os.ReadFile(filepath.Join(legacy, name))
+		if err != nil || string(b) != body {
+			t.Fatalf("legacy %s changed: %v %q", name, err, b)
+		}
+	}
 }

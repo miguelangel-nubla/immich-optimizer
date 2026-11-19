@@ -7,7 +7,7 @@ The YAML configuration file defines a list of tasks executed sequentially based 
 1. **Task Execution**: Tasks run in order when the file extension matches.
 2. **Upload Refusal**: If no matching extension is found, the upload is refused and the file is saved to the undone folder (unless `IO_UNDONE_UNMATCHED=false`).
 3. **Preserving Extensions**: To leave matching files unchanged, set the command to an empty string.
-4. **Fallback Execution**: When multiple tasks match an extension, they execute in sequence. The process stops when a task completes successfully. If all tasks fail, the upload is blocked and the original is saved to the undone folder as `undone/<sha256>/original.file` with a `metadata.json` describing the failure. The original is never uploaded in its place.
+4. **Fallback Execution**: When multiple tasks match an extension, they execute in sequence. The process stops when a task completes successfully. If all tasks fail, the upload is blocked and the original is saved to the undone folder as `undone/<sha1>/original.file` (SHA-1 of the content, the same checksum Immich stores) with a `metadata.json` describing the failure. The original is never uploaded in its place.
 
 ## Configuration Structure
 

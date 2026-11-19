@@ -3,7 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
+	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -174,7 +174,7 @@ func TestProxyUploadOptimization(t *testing.T) {
 	if !(strings.Index(body, "deviceAssetId") < strings.Index(body, "assetData") && strings.Index(body, "assetData") < strings.Index(body, "deviceId")) {
 		t.Fatalf("part order changed: %s", body)
 	}
-	if seen.Source != entity.SourceProxy || seen.Filename != "original.jpg" || seen.SHA256 == "" ||
+	if seen.Source != entity.SourceProxy || seen.Filename != "original.jpg" || seen.SHA1 != sha1Hex(strings.Repeat("A", 100)) ||
 		seen.Details["device_id"] != "phone-1" || seen.ModTime.IsZero() {
 		t.Fatalf("unexpected ConvertInput %+v", seen)
 	}
@@ -672,7 +672,7 @@ func TestProxyFailureSavesUndone(t *testing.T) {
 	if up.count() != 0 {
 		t.Fatalf("upstream must never be called on failure")
 	}
-	dir := filepath.Join(root, sha256Hex("jpeg-bytes"))
+	dir := filepath.Join(root, sha1Hex("jpeg-bytes"))
 	if b, err := os.ReadFile(filepath.Join(dir, undone.OriginalFile)); err != nil || string(b) != "jpeg-bytes" {
 		t.Fatalf("original not saved to undone: %v %q", err, b)
 	}
@@ -693,8 +693,8 @@ func TestProxyFailureSavesUndone(t *testing.T) {
 	}
 }
 
-func sha256Hex(s string) string {
-	sum := sha256.Sum256([]byte(s))
+func sha1Hex(s string) string {
+	sum := sha1.Sum([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -712,7 +712,7 @@ func TestProxyUndoneRecordsClientFilename(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", rec.Code)
 	}
-	b, err := os.ReadFile(filepath.Join(root, sha256Hex("client-bytes"), undone.MetadataFile))
+	b, err := os.ReadFile(filepath.Join(root, sha1Hex("client-bytes"), undone.MetadataFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -750,7 +750,7 @@ func TestProxyNoTaskSavesUndone(t *testing.T) {
 		if rec.Code != http.StatusUnsupportedMediaType {
 			t.Fatalf("expected 415, got %d", rec.Code)
 		}
-		_, err := os.Stat(filepath.Join(root, sha256Hex("pdf"), undone.OriginalFile))
+		_, err := os.Stat(filepath.Join(root, sha1Hex("pdf"), undone.OriginalFile))
 		if save && err != nil {
 			t.Fatalf("unmatched file should be saved: %v", err)
 		}

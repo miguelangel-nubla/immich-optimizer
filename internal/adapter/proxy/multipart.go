@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/sha1" // #nosec G505 -- content identity matching Immich's checksum, not security
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -49,7 +50,7 @@ type targetPart struct {
 	fileDir     string // directory part of the client's filename, if it sent one
 	contentType string
 	srcPath     string
-	sha256      string
+	sha1        string // lowercase hex SHA-1 of the content, as Immich computes it
 	res         *entity.ConvertResult
 }
 
@@ -90,7 +91,7 @@ func (s *Server) runJob(ctx context.Context, j *job, spec jobSpec) jobResult {
 	// livePhotoVideoId, visibility), the request path and query and the
 	// caller's identity, so only true retries share a result.
 	if len(targets) == 1 {
-		key := coalesceKey(targets[0].sha256, formHash, spec)
+		key := coalesceKey(targets[0].sha1, formHash, spec)
 		if existing, dup := s.jobs.attach(key, j); dup {
 			s.logger.Printf("Proxy job %s: identical upload of %s already handled by job %s, reusing its result",
 				j.id, targets[0].fileName, existing.id)
@@ -117,7 +118,7 @@ func (s *Server) runJob(ctx context.Context, j *job, spec jobSpec) jobResult {
 			OriginalDir: t.fileDir,
 			Source:      entity.SourceProxy,
 			ModTime:     modTime,
-			SHA256:      t.sha256,
+			SHA1:        t.sha1,
 			Details: map[string]string{
 				"remote_addr": spec.remoteAddr,
 				"user_agent":  spec.userAgent,
@@ -257,7 +258,7 @@ func extractPart(part *multipart.Part, idx int) (*targetPart, error) {
 		contentType: part.Header.Get("Content-Type"),
 		srcPath:     src.Name(),
 	}
-	h := sha256.New()
+	h := sha1.New() // #nosec G401 -- content identity, see targetPart.sha1
 	_, err = io.Copy(io.MultiWriter(src, h), part)
 	if cerr := src.Close(); err == nil {
 		err = cerr
@@ -265,7 +266,7 @@ func extractPart(part *multipart.Part, idx int) (*targetPart, error) {
 	if err != nil {
 		return t, fmt.Errorf("%w: copying file part %s: %w", errBadRequest, t.fileName, err)
 	}
-	t.sha256 = hex.EncodeToString(h.Sum(nil))
+	t.sha1 = hex.EncodeToString(h.Sum(nil))
 	return t, nil
 }
 
@@ -431,8 +432,10 @@ func cacheableStatus(code int) bool {
 // coalesceKey identifies an upload for in-flight and recent-result
 // deduplication: file content, all other form fields, method, path, query
 // and the caller's credentials. Credentials are only ever hashed.
-func coalesceKey(fileSHA, formHash string, spec jobSpec) string {
-	return "v2|" + fileSHA + "|" + formHash + "|" + authFingerprint(spec)
+// fileSHA1 is the content's SHA-1 (as Immich computes it); formHash and the
+// auth fingerprint are internal SHA-256 digests.
+func coalesceKey(fileSHA1, formHash string, spec jobSpec) string {
+	return "v3|" + fileSHA1 + "|" + formHash + "|" + authFingerprint(spec)
 }
 
 // authFingerprint identifies the caller and the request target so coalesced

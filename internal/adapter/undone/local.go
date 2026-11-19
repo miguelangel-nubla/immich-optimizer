@@ -3,9 +3,19 @@
 //
 // Layout (flat, content addressed):
 //
-//	<root>/<sha256-hex>/original.file   the input, byte for byte, original mtime
-//	<root>/<sha256-hex>/metadata.json   names, sources, failures (see metadata)
+//	<root>/<sha1-hex>/original.file   the input, byte for byte, original mtime
+//	<root>/<sha1-hex>/metadata.json   names, sources, failures (see metadata)
 //
+// The folder name is the lowercase hex SHA-1 of the content: the same digest
+// Immich stores as an asset's checksum (Immich shows it base64 encoded, which
+// metadata.json also records as sha1_base64), so an undone file can be looked
+// up in Immich and vice versa. SHA-1 is used for identity only, never for
+// security.
+//
+// Folders written by earlier versions (metadata version 2) are named after the
+// SHA-256 of the content (64 hex characters). They are a different identity:
+// this store never matches, updates, sweeps or removes them, so the same
+// content failing again gets a new SHA-1 folder next to the legacy one.
 // The same content always lands in the same folder: it is copied once and
 // later failures only update metadata.json. Filenames and source directories
 // are never used to build paths; they are recorded in metadata.json.
@@ -13,7 +23,8 @@ package undone
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
+	"crypto/sha1" // #nosec G505 -- content identity matching Immich's checksum, not security
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -52,8 +63,9 @@ const (
 	// mistaken for a leftover.
 	staleTempAge = time.Hour
 
-	// MetadataVersion is the metadata.json schema version.
-	MetadataVersion = 2
+	// MetadataVersion is the metadata.json schema version. Version 3 switched
+	// the content identity from SHA-256 to SHA-1 (folder name and "sha1").
+	MetadataVersion = 3
 
 	maxFailures    = 20  // failures kept in metadata.json (most recent)
 	maxFilenames   = 100 // distinct original filenames kept
@@ -127,9 +139,10 @@ func (s *LocalStore) Root() string { return s.root }
 
 func isTemp(name string) bool { return strings.HasPrefix(name, utils.UndoneTempPrefix) }
 
-// isHashDir reports whether name looks like a content folder.
+// isHashDir reports whether name looks like a content folder of this
+// version (lowercase hex SHA-1). Legacy SHA-256 folders do not match.
 func isHashDir(name string) bool {
-	if len(name) != sha256.Size*2 {
+	if len(name) != sha1.Size*2 {
 		return false
 	}
 	_, err := hex.DecodeString(name)
@@ -203,7 +216,7 @@ func (s *LocalStore) record(sum string) *entity.UndoneRecord {
 		Dir:          dir,
 		Path:         filepath.Join(dir, OriginalFile),
 		MetadataPath: filepath.Join(dir, MetadataFile),
-		SHA256:       sum,
+		SHA1:         sum,
 	}
 }
 
@@ -217,10 +230,10 @@ func (s *LocalStore) Save(in entity.ConvertInput, f entity.Failure) (*entity.Und
 
 	// Find the content's hash before copying anything, so a duplicate never
 	// needs temp space (a large file failing again on a nearly full disk).
-	known := strings.ToLower(in.SHA256)
+	known := strings.ToLower(in.SHA1)
 	if !isHashDir(known) {
-		if in.SHA256 != "" {
-			s.warnf("Undone: ignoring malformed SHA-256 for %s", in.Filename)
+		if in.SHA1 != "" {
+			s.warnf("Undone: ignoring malformed SHA-1 for %s", in.Filename)
 		}
 		var err error
 		if known, err = hashFile(in.Path); err != nil {
@@ -238,7 +251,7 @@ func (s *LocalStore) Save(in entity.ConvertInput, f entity.Failure) (*entity.Und
 	defer func() { _ = os.Remove(tmpPath) }() // no-op once renamed into place
 
 	if sum != known {
-		s.warnf("Undone: provided SHA-256 for %s does not match its content; using the computed one", in.Filename)
+		s.warnf("Undone: provided SHA-1 for %s does not match its content; using the computed one", in.Filename)
 	}
 
 	rec := s.record(sum)
@@ -304,7 +317,8 @@ func (s *LocalStore) recordDuplicate(rec *entity.UndoneRecord, in entity.Convert
 		// The content predates (or lost) its metadata: count that earlier,
 		// unknown occurrence without inventing a failure entry for it.
 		m = &metadata{
-			SHA256:        rec.SHA256,
+			SHA1:          rec.SHA1,
+			SHA1Base64:    hexToBase64(rec.SHA1),
 			Size:          size,
 			OriginalMTime: formatTime(in.ModTime),
 			Occurrences:   1,
@@ -319,14 +333,14 @@ func (s *LocalStore) recordDuplicate(rec *entity.UndoneRecord, in entity.Convert
 	rec.Occurrences = m.Occurrences
 }
 
-// hashFile returns the lowercase hex SHA-256 of the file at p.
+// hashFile returns the lowercase hex SHA-1 of the file at p.
 func hashFile(p string) (string, error) {
 	src, err := os.Open(p) // #nosec G304 -- the input being saved
 	if err != nil {
 		return "", fmt.Errorf("undone: unable to open input %s: %w", p, err)
 	}
 	defer src.Close()
-	h := sha256.New()
+	h := sha1.New() // #nosec G401 -- content identity, see package doc
 	if _, err := io.Copy(h, src); err != nil {
 		return "", fmt.Errorf("undone: unable to read input %s: %w", p, err)
 	}
@@ -390,7 +404,7 @@ func (s *LocalStore) copyToTemp(in entity.ConvertInput) (tmpPath string, size in
 		return "", 0, "", wrapIOErr("copy to undone", tmpPath, e)
 	}
 
-	h := sha256.New()
+	h := sha1.New() // #nosec G401 -- content identity, see package doc
 	size, err = s.copy(io.MultiWriter(tmp, h), src)
 	if err != nil {
 		return fail(err)
@@ -483,8 +497,12 @@ type metadataFailure struct {
 
 // metadata is the schema of metadata.json. It never contains secrets.
 type metadata struct {
+	// Version is MetadataVersion. SHA1 is the lowercase hex SHA-1 of
+	// original.file (the folder name); SHA1Base64 is the same digest base64
+	// encoded, the form the Immich API shows as an asset's "checksum".
 	Version           int      `json:"version"`
-	SHA256            string   `json:"sha256"`
+	SHA1              string   `json:"sha1"`
+	SHA1Base64        string   `json:"sha1_base64"`
 	Size              int64    `json:"size"`
 	OriginalMTime     string   `json:"original_mtime,omitempty"`
 	FirstFailedAt     string   `json:"first_failed_at"`
@@ -506,7 +524,8 @@ func formatTime(t time.Time) string {
 
 func (s *LocalStore) newMetadata(in entity.ConvertInput, f entity.Failure, sum string, size int64) *metadata {
 	m := &metadata{
-		SHA256:        sum,
+		SHA1:          sum,
+		SHA1Base64:    hexToBase64(sum),
 		Size:          size,
 		OriginalMTime: formatTime(in.ModTime),
 		Occurrences:   1,
@@ -573,6 +592,15 @@ func (s *LocalStore) addFailure(m *metadata, in entity.ConvertInput, f entity.Fa
 	if n := len(m.Failures); n > maxFailures {
 		m.Failures = append([]metadataFailure(nil), m.Failures[n-maxFailures:]...)
 	}
+}
+
+// hexToBase64 converts a hex digest to standard base64 (Immich's form).
+func hexToBase64(h string) string {
+	b, err := hex.DecodeString(h)
+	if err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(b)
 }
 
 func contains(list []string, v string) bool {
