@@ -215,24 +215,23 @@ func TestLibraryLeavesOtherAssetsAlone(t *testing.T) {
 	}
 }
 
-func TestLibraryVerifyFailureChangesNothing(t *testing.T) {
+func TestLibraryRejectsInvalidOutputAndAcceptsLossy(t *testing.T) {
 	u := newUser(t)
 	a := u.add(t, "photo.jpg", nil)
 
-	// A profile whose verify command always fails.
+	// A task that "succeeds" but produces a single flat colour.
 	cfg := sharedDir(t)
-	tasks := `tasks:
-  - name: jpeg-xl
-    command: cjxl --lossless_jpeg=1 -d 0 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
-    verify: 'echo "pretend the rebuilt file differs" && false'
-    extensions: [jpg]
-`
-	if err := os.WriteFile(filepath.Join(cfg, "tasks.yaml"), []byte(tasks), 0o644); err != nil {
-		t.Fatal(err)
+	write := func(command string) {
+		// A block scalar, so the command needs no YAML quoting.
+		tasks := "tasks:\n  - name: custom\n    command: >-\n      " + command + "\n    extensions: [jpg]\n"
+		if err := os.WriteFile(filepath.Join(cfg, "tasks.yaml"), []byte(tasks), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
+	write(`magick -size 640x480 xc:gray "{{.dst_folder}}/{{.name}}.png"`)
 	logDir := sharedDir(t)
-	code, out, log := runLibrary(t, u, logDir,
-		map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_TASKS_FILE": "/custom/tasks.yaml"}, cfg+":/custom:ro")
+	env := map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_TASKS_FILE": "/custom/tasks.yaml"}
+	code, out, log := runLibrary(t, u, logDir, env, cfg+":/custom:ro")
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
 	}
@@ -240,25 +239,42 @@ func TestLibraryVerifyFailureChangesNothing(t *testing.T) {
 	if !contains(ev, "failed") || contains(ev, "uploaded") || contains(ev, "replaced") {
 		t.Errorf("events = %v", ev)
 	}
+	if !strings.Contains(out, "single flat colour") {
+		t.Errorf("the reason is not in the output:\n%s", out)
+	}
 	now := u.asset(t, a.ID)
 	if now.IsTrashed || now.Checksum != a.Checksum || len(u.live(t)) != 1 || u.marker(t, a.ID) != nil {
-		t.Error("a failed verify changed the library")
+		t.Error("an invalid conversion changed the library")
 	}
 
-	// A task without any verify command is not even attempted.
-	if err := os.WriteFile(filepath.Join(cfg, "tasks.yaml"), []byte(strings.Replace(tasks, "    verify: 'echo \"pretend the rebuilt file differs\" && false'\n", "", 1)), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	code, out, log2 := runLibrary(t, u, logDir,
-		map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_TASKS_FILE": "/custom/tasks.yaml"}, cfg+":/custom:ro")
+	// A task that writes garbage is rejected too.
+	write(`head -c 2000 /dev/urandom > "{{.dst_folder}}/{{.name}}.jxl"`)
+	code, out, log2 := runLibrary(t, u, logDir, env, cfg+":/custom:ro")
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
 	}
-	if ev := events(log2[len(log):], a.ID); len(ev) != 0 {
-		t.Errorf("task without verify was used: %v", ev)
+	if ev := events(log2[len(log):], a.ID); !contains(ev, "failed") || contains(ev, "uploaded") {
+		t.Errorf("events = %v", ev)
 	}
 	if u.asset(t, a.ID).IsTrashed {
-		t.Error("original trashed without a verify command")
+		t.Error("garbage output replaced the original")
+	}
+
+	// A lossy task that also shrinks the picture is a valid conversion.
+	write(`magick "{{.src_folder}}/{{.name}}.{{.extension}}" -resize 50% ppm:- | cjxl - "{{.dst_folder}}/{{.name}}.jxl" -q 75 && exiftool -q -m -overwrite_original -tagsfromfile "{{.src_folder}}/{{.name}}.{{.extension}}" -all:all "{{.dst_folder}}/{{.name}}.jxl"`)
+	code, out, log3 := runLibrary(t, u, logDir, env, cfg+":/custom:ro")
+	if code != 0 {
+		t.Fatalf("library run exited %d:\n%s", code, out)
+	}
+	if ev := events(log3[len(log2):], a.ID); !contains(ev, "replaced") {
+		t.Fatalf("lossy resize was not accepted: %v\n%s", ev, out)
+	}
+	if !u.asset(t, a.ID).IsTrashed {
+		t.Error("original not trashed after a valid lossy conversion")
+	}
+	live := u.live(t)
+	if len(live) != 1 || live[0].ExifInfo.Width == nil || *live[0].ExifInfo.Width != 320 {
+		t.Errorf("live assets = %+v", live)
 	}
 }
 

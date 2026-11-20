@@ -8,11 +8,6 @@ type Task struct {
 	// photo. Empty in the tasks file means "use the top-level default";
 	// after loading it always holds one of the MotionPhotos* values.
 	MotionPhotos string `mapstructure:"motion_photos"`
-	// Verify is an optional command that proves the task's output is a
-	// faithful conversion of its input (exit status 0). Library mode only
-	// replaces an existing asset when the task that converted it has one and
-	// it succeeds.
-	Verify string `mapstructure:"verify"`
 }
 
 // Values of "motion_photos" in the tasks file: what a task command receives

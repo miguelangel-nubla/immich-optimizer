@@ -9,7 +9,7 @@ A file optimization service that automatically processes and uploads media files
 
 ## ✨ Features
 
-- **📚 Library Mode**: Converts the assets already in Immich, verified and with the original kept in the trash (`IO_MODE=library`)
+- **📚 Library Mode**: Converts the assets already in Immich, checked and with the original kept in the trash (`IO_MODE=library`)
 - **📁 File Watching**: Automatically monitors directories for new media files (`IO_MODE=watcher`)
 - **🌐 HTTP Reverse Proxy Mode**: Intercepts upload requests on-the-fly to optimize media uploads (`IO_MODE=proxy`)
 - **⚡ Concurrent Modes**: Combine modes by comma-separating them (e.g., `IO_MODE=watcher,proxy`)
@@ -136,7 +136,7 @@ services:
 Immich has no "replace this file", so the optimizer does it in a fixed order that never leaves you without your photo:
 
 1. Download the original and check it against Immich's checksum.
-2. Convert it, then run the task's **`verify`** command, which must prove the result (for the lossless JPEG task: rebuild the JPEG from the JXL and compare it byte for byte).
+2. Convert it with your tasks, then check that the result **looks like a valid photo or video**: the file is not empty, it decodes completely, and it is not a single flat colour (unless the original was). For a video: it has a picture track, a length, and a frame from the middle decodes.
 3. Upload the converted file as a new asset.
 4. Carry everything over: albums, shared links, stack position, favorite, archive state, description, rating, date and location edits, tags, people (named faces) and the mobile app's own metadata.
 5. Compare the new asset with the original, field by field.
@@ -169,7 +169,13 @@ The converted copy is a new asset in Immich. This is everything the original had
 | ❌ | Membership in a memory | not carried over |
 | ❌ | Being an album's cover or a person's featured photo | Immich picks another one |
 
-Every ✅ row is checked in step 5: if the copy differs from the original in any of them, it is deleted and the original stays. The file name is compared without its extension, and the copy may belong to more people than the original, never fewer.
+Every ✅ row is checked in step 5: if the copy differs from the original in any of them, it is deleted and the original stays. A few allowances are made on purpose:
+
+- The file name is compared without its extension.
+- The copy may belong to more people than the original, never fewer.
+- **Dimensions and orientation are not compared**, because a task may resize, crop or rotate. A video's length may differ by half a second or 2%.
+
+The validity check in step 2 does **not** compare the picture with the original either: a task is free to crop, resize, watermark or compress lossily. It only rejects results that are broken. Library mode therefore converts with whatever your tasks file says, **including lossy tasks**: with a lossy profile, the only way back to the original quality is Immich's trash, for as long as it keeps the file.
 
 ### What is skipped
 
@@ -177,7 +183,6 @@ These assets are left exactly as they are. The reason for each is written to the
 
 | Asset | Why |
 |---|---|
-| Its task has no `verify` command | nothing could prove the conversion. In the bundled profiles only `lossless` has verify commands, for JPEG and PNG |
 | Its task is a passthrough, or no task handles its type | there is nothing to convert |
 | It does not get smaller 📝 | the original is kept and marked, so later runs do not download it again |
 | Live photos and motion photos | a photo paired with a video is not handled yet |
@@ -662,7 +667,7 @@ docker run -e IO_LOG_LEVEL=debug ghcr.io/miguelangel-nubla/immich-optimizer:late
 
 ### End-to-end tests
 
-`scripts/e2e-test.sh [image]` starts a throwaway Immich with Docker Compose and runs the optimizer against it in library, proxy and watcher mode: a full library replacement with everything carried over, the dry run, verify failures, interrupted runs, the date filter, proxy uploads with the marker and the undone folder, and watcher uploads. It builds the optimizer from this checkout and mounts it over the image's binary. CI runs it on every push.
+`scripts/e2e-test.sh [image]` starts a throwaway Immich with Docker Compose and runs the optimizer against it in library, proxy and watcher mode: a full library replacement with everything carried over, the dry run, a conversion that produces a flat image, a lossy task, interrupted runs, the date filter, proxy uploads with the marker and the undone folder, and watcher uploads. It builds the optimizer from this checkout and mounts it over the image's binary. CI runs it on every push.
 
 `E2E_ML=1 scripts/e2e-test.sh` also starts Immich's machine learning and runs the test that needs real face detection: three photos of the same face are recognised by Immich, the person is named, library mode converts them, and each copy must end up with that person exactly once after Immich has processed the new files. It downloads the machine-learning image and a model, so it takes a few minutes longer. CI runs it this way.
 

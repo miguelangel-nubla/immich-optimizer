@@ -38,6 +38,8 @@ type Config struct {
 	// Audit, when set, records every input the engine refused or failed to
 	// convert (library mode records its own, richer entries).
 	Audit *audit.Log
+	// Checker validates converted files for library mode.
+	Checker port.OutputChecker
 }
 
 type Engine struct {
@@ -49,7 +51,7 @@ type Engine struct {
 	now    func() time.Time
 }
 
-var _ port.VerifyingConverter = (*Engine)(nil)
+var _ port.CheckingConverter = (*Engine)(nil)
 
 func New(cfg Config, proc port.MediaProcessor, undone port.UndoneStore, log *logger.Logger) *Engine {
 	if cfg.MaxConcurrent <= 0 {
@@ -224,48 +226,34 @@ func originalSHA1(in entity.ConvertInput) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// Verifiable reports whether filename's first matching task converts the file
-// and can prove its result. Later matching tasks are fallbacks; if one of
-// them produces the output instead, Verify decides at that point.
-func (e *Engine) Verifiable(filename string) (bool, string) {
+// Converts reports whether filename's first matching task converts the file
+// (rather than passing it through).
+func (e *Engine) Converts(filename string) (bool, string) {
 	ext := utils.NormalizeExtension(filepath.Ext(filename))
 	for _, t := range e.cfg.Tasks {
-		match := false
 		for _, te := range t.Extensions {
-			if utils.NormalizeExtension(te) == ext {
-				match = true
-				break
+			if utils.NormalizeExtension(te) != ext {
+				continue
 			}
+			if strings.TrimSpace(t.Command) == "" {
+				return false, "its task (" + t.Name + ") passes files through unchanged"
+			}
+			return true, ""
 		}
-		if !match {
-			continue
-		}
-		if strings.TrimSpace(t.Command) == "" {
-			return false, "its task (" + t.Name + ") passes files through unchanged"
-		}
-		if strings.TrimSpace(t.Verify) == "" {
-			return false, "its task (" + t.Name + ") has no verify command"
-		}
-		return true, ""
 	}
 	return false, "no task handles this file type"
 }
 
-// Verify runs the verify command of the task that produced res.
-func (e *Engine) Verify(ctx context.Context, in entity.ConvertInput, res *entity.ConvertResult) error {
-	if res == nil || res.Marker == nil {
-		return fmt.Errorf("%w: nothing was converted", entity.ErrNoVerify)
+// CheckOutput reports an error when the converted file does not look like a
+// valid photo or video.
+func (e *Engine) CheckOutput(ctx context.Context, in entity.ConvertInput, res *entity.ConvertResult) error {
+	if res == nil || res.Outcome != entity.OutcomeOptimized {
+		return errors.New("nothing was converted")
 	}
-	for _, t := range e.cfg.Tasks {
-		if t.Name != res.Marker.Task {
-			continue
-		}
-		if strings.TrimSpace(t.Verify) == "" {
-			return fmt.Errorf("%w: %s", entity.ErrNoVerify, t.Name)
-		}
-		return e.proc.Verify(ctx, t, in.Path, res.DeliverPath)
+	if e.cfg.Checker == nil {
+		return errors.New("no output checker configured")
 	}
-	return fmt.Errorf("%w: task %q not found", entity.ErrNoVerify, res.Marker.Task)
+	return e.cfg.Checker.Check(ctx, in.Path, res.DeliverPath)
 }
 
 // SaveUndone records a failure that happened after conversion.

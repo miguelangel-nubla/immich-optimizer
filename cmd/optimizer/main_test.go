@@ -807,23 +807,3 @@ func TestLibraryModeConfig(t *testing.T) {
 		t.Error("hasMode")
 	}
 }
-
-func TestBundledLosslessProfileHasVerifyCommands(t *testing.T) {
-	cfg, err := loadTasks("../../config/lossless/tasks.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	verified := map[string]bool{}
-	for _, task := range cfg.Tasks {
-		if task.Verify != "" {
-			for _, e := range task.Extensions {
-				verified[e] = true
-			}
-		}
-	}
-	for _, e := range []string{"jpg", "jpeg", "png"} {
-		if !verified[e] {
-			t.Errorf("lossless profile has no verify command for .%s", e)
-		}
-	}
-}

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/mediacheck"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/processor"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 )
@@ -350,5 +351,68 @@ func TestIntegrationPassthroughProfileChangesNothing(t *testing.T) {
 		if !sameBytes(t, res.ProcessedFilePath, filepath.Join(mediaDir(), sample)) {
 			t.Errorf("passthrough-all changed %s", sample)
 		}
+	}
+}
+
+// The validity check library mode applies to converted files, run with the
+// image's real tools.
+func TestIntegrationOutputCheck(t *testing.T) {
+	ctx := context.Background()
+	c := mediacheck.New()
+	media := func(name string) string { return filepath.Join(mediaDir(), name) }
+
+	// Real conversions pass, lossy ones included.
+	for _, p := range convertingProfiles {
+		for _, sample := range []string{"photo.jpg", "photo.png", "photo.heic"} {
+			res := runProfile(t, p, sample, "")
+			if err := c.Check(ctx, media(sample), res.ProcessedFilePath); err != nil {
+				t.Errorf("%s on %s: %v", p, sample, err)
+			}
+		}
+	}
+	res := runProfile(t, "profile1", "clip.mp4", "")
+	if err := c.Check(ctx, media("clip.mp4"), res.ProcessedFilePath); err != nil {
+		t.Errorf("profile1 video: %v", err)
+	}
+
+	// A different picture is fine: tasks may crop or watermark.
+	if err := c.Check(ctx, media("photo.jpg"), media("faces/face1.jpg")); err != nil {
+		t.Errorf("a different valid photo was rejected: %v", err)
+	}
+
+	dir := t.TempDir()
+	bad := func(name string, make func(path string)) {
+		path := filepath.Join(dir, name)
+		make(path)
+		if err := c.Check(ctx, media("photo.jpg"), path); err == nil {
+			t.Errorf("%s was accepted", name)
+		} else {
+			t.Logf("%s: %v", name, err)
+		}
+	}
+	bad("flat.png", func(p string) { runTool(t, "magick", "-size", "640x480", "xc:gray", p) })
+	bad("black.jxl", func(p string) {
+		ppm := filepath.Join(dir, "black.ppm")
+		runTool(t, "magick", "-size", "640x480", "xc:black", ppm)
+		runTool(t, "cjxl", ppm, p, "-d", "0", "--quiet")
+	})
+	bad("garbage.jxl", func(p string) { os.WriteFile(p, bytes.Repeat([]byte("not an image "), 200), 0o600) })
+	bad("truncated.jpg", func(p string) {
+		data, _ := os.ReadFile(media("photo.jpg"))
+		os.WriteFile(p, data[:len(data)/20], 0o600)
+	})
+	bad("empty.jxl", func(p string) { os.WriteFile(p, nil, 0o600) })
+	bad("audio-only.mp4", func(p string) {
+		runTool(t, "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=duration=1", "-c:a", "aac", p)
+	})
+	bad("black.mp4", func(p string) {
+		runTool(t, "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=black:size=320x240:rate=10:duration=1", "-pix_fmt", "yuv420p", p)
+	})
+
+	// A flat original may stay flat.
+	flat := filepath.Join(dir, "flat-original.png")
+	runTool(t, "magick", "-size", "64x64", "xc:white", flat)
+	if err := c.Check(ctx, flat, flat); err != nil {
+		t.Errorf("a flat copy of a flat original was rejected: %v", err)
 	}
 }

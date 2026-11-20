@@ -27,8 +27,6 @@ func (f *fakeProc) Process(ctx context.Context, path string, _ []entity.Task) (*
 	return f.fn(ctx, path)
 }
 
-func (f *fakeProc) Verify(context.Context, entity.Task, string, string) error { return nil }
-
 type fakeStore struct {
 	mu    sync.Mutex
 	saves []entity.Failure
@@ -282,50 +280,43 @@ func TestSaveUndoneDelegates(t *testing.T) {
 	}
 }
 
-type verifyProc struct {
-	fakeProc
+type fakeChecker struct {
 	got []string
 	err error
 }
 
-func (v *verifyProc) Verify(_ context.Context, task entity.Task, original, output string) error {
-	v.got = []string{task.Name, original, output}
-	return v.err
+func (c *fakeChecker) Check(_ context.Context, original, output string) error {
+	c.got = []string{original, output}
+	return c.err
 }
 
-func TestVerifiableAndVerify(t *testing.T) {
+func TestConvertsAndCheckOutput(t *testing.T) {
 	tasks := []entity.Task{
-		{Name: "jxl", Extensions: []string{"jpg"}, Command: "cjxl", Verify: "cmp"},
-		{Name: "fallback", Extensions: []string{"jpg"}, Command: "other"},
-		{Name: "plain", Extensions: []string{"png"}, Command: "cjxl"},
+		{Name: "jxl", Extensions: []string{"jpg"}, Command: "cjxl"},
 		{Name: "pass", Extensions: []string{"heic"}, Command: ""},
 	}
-	proc := &verifyProc{}
-	e := New(Config{Tasks: tasks}, proc, &fakeStore{}, quiet())
-
-	for name, want := range map[string]bool{"a.JPG": true, "a.png": false, "a.heic": false, "a.xyz": false} {
-		ok, reason := e.Verifiable(name)
+	chk := &fakeChecker{}
+	e := New(Config{Tasks: tasks, Checker: chk}, &fakeProc{}, &fakeStore{}, quiet())
+	for name, want := range map[string]bool{"a.JPG": true, "a.heic": false, "a.xyz": false} {
+		ok, reason := e.Converts(name)
 		if ok != want || (!ok && reason == "") {
-			t.Errorf("Verifiable(%s) = %v %q, want %v", name, ok, reason, want)
+			t.Errorf("Converts(%s) = %v %q, want %v", name, ok, reason, want)
 		}
 	}
-
 	in := entity.ConvertInput{Path: "/in/a.jpg", Filename: "a.jpg"}
-	res := &entity.ConvertResult{DeliverPath: "/out/a.jxl", Marker: &entity.Marker{Task: "jxl"}}
-	if err := e.Verify(context.Background(), in, res); err != nil || len(proc.got) != 3 || proc.got[0] != "jxl" || proc.got[1] != "/in/a.jpg" || proc.got[2] != "/out/a.jxl" {
-		t.Errorf("Verify: %v %v", err, proc.got)
+	res := &entity.ConvertResult{Outcome: entity.OutcomeOptimized, DeliverPath: "/out/a.jxl"}
+	if err := e.CheckOutput(context.Background(), in, res); err != nil || len(chk.got) != 2 || chk.got[0] != "/in/a.jpg" || chk.got[1] != "/out/a.jxl" {
+		t.Errorf("CheckOutput: %v %v", err, chk.got)
 	}
-	proc.err = errors.New("differs")
-	if err := e.Verify(context.Background(), in, res); err == nil {
-		t.Error("a failing verify command must be an error")
+	chk.err = errors.New("flat")
+	if err := e.CheckOutput(context.Background(), in, res); err == nil {
+		t.Error("a failed check must be an error")
 	}
-	// The fallback task produced the output: it has no verify command.
-	res.Marker.Task = "fallback"
-	if err := e.Verify(context.Background(), in, res); !errors.Is(err, entity.ErrNoVerify) {
-		t.Errorf("err = %v, want ErrNoVerify", err)
+	if err := e.CheckOutput(context.Background(), in, &entity.ConvertResult{Outcome: entity.OutcomeUnchanged}); err == nil {
+		t.Error("an unconverted result must not pass")
 	}
-	if err := e.Verify(context.Background(), in, &entity.ConvertResult{}); !errors.Is(err, entity.ErrNoVerify) {
-		t.Errorf("err = %v, want ErrNoVerify", err)
+	if err := New(Config{Tasks: tasks}, &fakeProc{}, &fakeStore{}, quiet()).CheckOutput(context.Background(), in, res); err == nil {
+		t.Error("no checker configured must not pass")
 	}
 }
 

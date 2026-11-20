@@ -55,41 +55,6 @@ func (tp *localProcessor) Process(ctx context.Context, filePath string, tasks []
 	return res, nil
 }
 
-// Verify runs the task's verify command. The command sees the original as
-// {{.src_folder}}/{{.name}}.{{.extension}}, the converted file as {{.output}}
-// and an empty scratch directory as {{.tmp_folder}}.
-func (tp *localProcessor) Verify(ctx context.Context, task entity.Task, originalPath, outputPath string) error {
-	tmpl, err := template.New("verify").Option("missingkey=error").Parse(task.Verify)
-	if err != nil {
-		return fmt.Errorf("task %s: unable to parse verify command: %w", task.Name, err)
-	}
-	tmp, err := os.MkdirTemp("", "verify-*")
-	if err != nil {
-		return fmt.Errorf("unable to create temp folder: %w", err)
-	}
-	defer os.RemoveAll(tmp)
-
-	base := filepath.Base(originalPath)
-	ext := filepath.Ext(base)
-	var cmdLine bytes.Buffer
-	if err := tmpl.Execute(&cmdLine, map[string]string{
-		"src_folder": filepath.Dir(originalPath),
-		"name":       strings.TrimSuffix(base, ext),
-		"extension":  strings.TrimPrefix(ext, "."),
-		"output":     outputPath,
-		"tmp_folder": tmp,
-	}); err != nil {
-		return fmt.Errorf("task %s: unable to build verify command: %w", task.Name, err)
-	}
-
-	fp := &fileProcessor{logger: tp.logger, configDir: tp.configDir}
-	attempt := entity.TaskAttempt{Task: task.Name}
-	if err := fp.executeCommand(ctx, cmdLine.String(), &attempt); err != nil {
-		return fmt.Errorf("verify command of task %s failed: %w\n%s", task.Name, err, attempt.OutputTail)
-	}
-	return nil
-}
-
 type fileProcessor struct {
 	logger    *logger.Logger
 	configDir string

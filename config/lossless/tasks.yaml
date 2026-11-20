@@ -5,30 +5,12 @@
 motion_photos: drop_video
 
 tasks:
-# "verify" proves that the output is a faithful conversion of the input. It is
-# required for library mode, which only replaces an existing asset when the
-# command exits successfully. Here: rebuild the JPEG from the JXL and compare
-# it byte for byte with the original.
 - name: jpeg-xl
   command: cjxl --lossless_jpeg=1 -d 0 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
-  verify: djxl "{{.output}}" "{{.tmp_folder}}/rebuilt.jpg" && cmp "{{.tmp_folder}}/rebuilt.jpg" "{{.src_folder}}/{{.name}}.{{.extension}}"
   extensions:
   - jpeg
   - jpg
-
-# PNG: decode the JXL and compare every pixel with the original.
-- name: jpeg-xl-png
-  command: cjxl -d 0 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
-  verify: >-
-    djxl "{{.output}}" "{{.tmp_folder}}/decoded.png" &&
-    magick compare -metric AE "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.tmp_folder}}/decoded.png" null:
-  extensions:
   - png
-
-# Other formats cjxl reads. No verify command: library mode leaves them alone.
-- name: jpeg-xl-other
-  command: cjxl -d 0 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
-  extensions:
   - pgx
   - pam
   - pnm

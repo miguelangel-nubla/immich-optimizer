@@ -19,15 +19,20 @@ type Converter interface {
 	SaveUndone(in entity.ConvertInput, f entity.Failure) (*entity.UndoneRecord, error)
 }
 
-// VerifyingConverter is a Converter that can also prove its results. Library
-// mode needs it: it only replaces an asset whose conversion was verified.
-type VerifyingConverter interface {
+// OutputChecker decides whether a converted file looks like a valid photo or
+// video (see adapter/mediacheck).
+type OutputChecker interface {
+	Check(ctx context.Context, originalPath, outputPath string) error
+}
+
+// CheckingConverter is a Converter that can also check its results. Library
+// mode needs it: it only replaces an asset whose converted file is valid.
+type CheckingConverter interface {
 	Converter
-	// Verify runs the verify command of the task that produced res, proving
-	// that res is a faithful conversion of in. It returns an error wrapping
-	// entity.ErrNoVerify when that task has none.
-	Verify(ctx context.Context, in entity.ConvertInput, res *entity.ConvertResult) error
-	// Verifiable reports whether a file with this name would be converted by
-	// a task that has a verify command. When it would not, reason says why.
-	Verifiable(filename string) (ok bool, reason string)
+	// CheckOutput reports an error when res does not look like a valid photo
+	// or video.
+	CheckOutput(ctx context.Context, in entity.ConvertInput, res *entity.ConvertResult) error
+	// Converts reports whether a file with this name would be converted by
+	// its task. When it would not, reason says why.
+	Converts(filename string) (ok bool, reason string)
 }

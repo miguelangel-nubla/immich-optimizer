@@ -3,7 +3,7 @@
 // in a fixed order that never leaves the user without their photo:
 //
 //  1. download the original and check it against Immich's checksum
-//  2. convert it, and prove the result with the task's verify command
+//  2. convert it, and check that the result looks like a valid photo or video
 //  3. upload the converted file as a new asset (marked "pending")
 //  4. carry everything over from the original to the new asset
 //  5. verify that the new asset matches the original in every compared way
@@ -24,8 +24,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,12 +74,12 @@ type Summary struct {
 type Service struct {
 	cfg     Config
 	api     port.LibraryAPI
-	conv    port.VerifyingConverter
+	conv    port.CheckingConverter
 	log     *logger.Logger
 	journal *audit.Log
 }
 
-func New(cfg Config, api port.LibraryAPI, conv port.VerifyingConverter, journal *audit.Log, log *logger.Logger) *Service {
+func New(cfg Config, api port.LibraryAPI, conv port.CheckingConverter, journal *audit.Log, log *logger.Logger) *Service {
 	if cfg.ReadyTimeout <= 0 {
 		cfg.ReadyTimeout = 10 * time.Minute
 	}
@@ -242,7 +244,7 @@ func (s *Service) process(ctx context.Context, me string, listed entity.LibraryA
 	case listed.IsEdited:
 		return skip("it has edits, which library mode does not handle yet")
 	}
-	if ok, reason := s.conv.Verifiable(listed.OriginalFileName); !ok {
+	if ok, reason := s.conv.Converts(listed.OriginalFileName); !ok {
 		return skip("%s", reason)
 	}
 
@@ -322,8 +324,8 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 	if res.Marker.MotionPhotos != "" {
 		return s.keep(ctx, old, oldItems, sum, "motion photo, which library mode does not handle yet")
 	}
-	if err := s.conv.Verify(ctx, in, res); err != nil {
-		return fmt.Errorf("the converted file did not pass its task's verify command: %w", err)
+	if err := s.conv.CheckOutput(ctx, in, res); err != nil {
+		return fmt.Errorf("the converted file does not look valid: %w", err)
 	}
 	convertedSHA1, err := fileSHA1(res.DeliverPath)
 	if err != nil {
@@ -702,14 +704,17 @@ func assetDiffs(a, b *entity.LibraryAsset, replacement bool) []string {
 	check("owner", a.OwnerID, b.OwnerID)
 	check("type", a.Type, b.Type)
 	check("visibility", a.Visibility, b.Visibility)
-	check("duration", a.Duration, b.Duration)
+	if !replacement {
+		check("duration", a.Duration, b.Duration)
+	} else if !similarDuration(a.Duration, b.Duration) {
+		add("duration", a.Duration, b.Duration)
+	}
 	check("date taken", a.DateTimeOriginal, b.DateTimeOriginal)
 	check("time zone", a.TimeZone, b.TimeZone)
 	check("description", a.Description, b.Description)
 	check("camera make", a.Make, b.Make)
 	check("camera model", a.Model, b.Model)
 	check("lens", a.LensModel, b.LensModel)
-	check("orientation", a.Orientation, b.Orientation)
 	check("projection", a.ProjectionType, b.ProjectionType)
 	if !a.FileCreatedAt.Equal(b.FileCreatedAt) {
 		add("file created", a.FileCreatedAt, b.FileCreatedAt)
@@ -723,8 +728,13 @@ func assetDiffs(a, b *entity.LibraryAsset, replacement bool) []string {
 	if a.IsFavorite != b.IsFavorite {
 		add("favorite", a.IsFavorite, b.IsFavorite)
 	}
-	if a.Width != b.Width || a.Height != b.Height {
-		add("dimensions", fmt.Sprintf("%dx%d", a.Width, a.Height), fmt.Sprintf("%dx%d", b.Width, b.Height))
+	// A task may crop, resize or bake the rotation in, so the picture's
+	// shape is only compared between two readings of the same asset.
+	if !replacement {
+		check("orientation", a.Orientation, b.Orientation)
+		if a.Width != b.Width || a.Height != b.Height {
+			add("dimensions", fmt.Sprintf("%dx%d", a.Width, a.Height), fmt.Sprintf("%dx%d", b.Width, b.Height))
+		}
 	}
 	if !sameFloat(a.Latitude, b.Latitude) || !sameFloat(a.Longitude, b.Longitude) {
 		add("location", fmtPos(a), fmtPos(b))
@@ -753,6 +763,21 @@ func assetDiffs(a, b *entity.LibraryAsset, replacement bool) []string {
 		}
 	}
 	return d
+}
+
+// similarDuration accepts the small length change a re-encode causes: half a
+// second or 2%, whichever is larger, when both are plain numbers.
+func similarDuration(a, b string) bool {
+	if a == b {
+		return true
+	}
+	x, errX := strconv.ParseFloat(a, 64)
+	y, errY := strconv.ParseFloat(b, 64)
+	if errX != nil || errY != nil {
+		return false
+	}
+	tol := math.Max(500, 0.02*math.Max(x, y)) // milliseconds
+	return math.Abs(x-y) <= tol
 }
 
 func fmtFloat(f *float64) string {

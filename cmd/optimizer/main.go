@@ -24,6 +24,7 @@ import (
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/filesystem"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/httpclient"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/immich"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/mediacheck"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/processor"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/proxy"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/undone"
@@ -448,19 +449,6 @@ func initTask(task *entity.Task) error {
 	if err != nil {
 		return fmt.Errorf("task %s unable to parse command: %v", task.Name, err)
 	}
-	if task.Verify != "" {
-		vt, err := template.New("verify").Option("missingkey=error").Parse(task.Verify)
-		if err != nil {
-			return fmt.Errorf("task %s unable to parse verify command: %v", task.Name, err)
-		}
-		verifyValues := map[string]string{"output": "/out", "tmp_folder": "/tmp_folder"}
-		for k, v := range values {
-			verifyValues[k] = v
-		}
-		if err := vt.Execute(io.Discard, verifyValues); err != nil {
-			return fmt.Errorf("task %s unable to execute template for verify command: %v", task.Name, err)
-		}
-	}
 	if strings.Contains(task.Command, ".folder}}") && !strings.Contains(task.Command, "_folder}}") {
 		return fmt.Errorf("task %s uses {{.folder}}, which immich-upload-optimizer provided: use {{.src_folder}} for the input and {{.dst_folder}} for the output", task.Name)
 	}
@@ -528,6 +516,7 @@ func run(args []string) error {
 		SaveUnmatched: config.UndoneUnmatched,
 		Version:       version,
 		Audit:         auditLog,
+		Checker:       mediacheck.New(),
 	}, processorAdapter, undoneStore, logger)
 
 	httpTimeout := time.Duration(config.HTTPTimeoutSeconds) * time.Second

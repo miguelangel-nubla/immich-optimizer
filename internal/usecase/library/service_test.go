@@ -395,12 +395,12 @@ func (c *fakeConv) SaveUndone(entity.ConvertInput, entity.Failure) (*entity.Undo
 	return nil, errors.New("not used")
 }
 
-func (c *fakeConv) Verify(context.Context, entity.ConvertInput, *entity.ConvertResult) error {
+func (c *fakeConv) CheckOutput(context.Context, entity.ConvertInput, *entity.ConvertResult) error {
 	c.verified++
 	return c.verifyErr
 }
 
-func (c *fakeConv) Verifiable(filename string) (bool, string) {
+func (c *fakeConv) Converts(filename string) (bool, string) {
 	if strings.HasSuffix(strings.ToLower(filename), ".jpg") {
 		return true, ""
 	}
@@ -531,7 +531,7 @@ func TestReplaceCarriesEverythingOverThenTrashes(t *testing.T) {
 		t.Errorf("final marker = %+v", m)
 	}
 	if h.conv.verified != 1 {
-		t.Errorf("verify command ran %d times, want 1", h.conv.verified)
+		t.Errorf("output check ran %d times, want 1", h.conv.verified)
 	}
 
 	// Order: upload, copy, then trash, and only then the final marker.
@@ -579,7 +579,7 @@ func TestDryRunChangesNothing(t *testing.T) {
 func TestMismatchRollsBack(t *testing.T) {
 	cases := map[string]func(h *harness){
 		"metadata read from file differs": func(h *harness) {
-			h.im.onUpload = func(n *fakeAsset) { n.Width = 320 }
+			h.im.onUpload = func(n *fakeAsset) { n.Model = "Other" }
 		},
 		"face cannot be recreated": func(h *harness) {
 			h.im.failCall["CreateFace"] = errors.New("boom")
@@ -647,7 +647,7 @@ func TestMismatchRollsBack(t *testing.T) {
 func TestFailuresBeforeUploadChangeNothing(t *testing.T) {
 	cases := map[string]func(h *harness){
 		"conversion fails":        func(h *harness) { h.conv.convertErr = errors.New("encoder crashed") },
-		"verify command fails":    func(h *harness) { h.conv.verifyErr = errors.New("rebuilt file differs") },
+		"output is not valid":     func(h *harness) { h.conv.verifyErr = errors.New("single flat colour") },
 		"download does not match": func(h *harness) { h.im.assets["asset-1"].Checksum = sha([]byte("something else")) },
 		"upload fails":            func(h *harness) { h.im.failCall["Upload"] = errors.New("quota") },
 	}
@@ -886,5 +886,21 @@ func TestListingErrorStopsTheRun(t *testing.T) {
 	}
 	if len(h.im.calls) != 0 {
 		t.Errorf("changes made: %v", h.im.calls)
+	}
+}
+
+// A task may crop, resize or rotate: a different picture shape is not a
+// mismatch, and a re-encoded video may be slightly shorter.
+func TestReplacementMayChangeShape(t *testing.T) {
+	h := newHarness(t)
+	old := richAsset(h)
+	old.Orientation, old.Duration = "6", "2000"
+	prev := h.im.onUpload
+	h.im.onUpload = func(n *fakeAsset) { prev(n); n.Width, n.Height, n.Orientation, n.Duration = 320, 200, "1", "1980" }
+	if sum, err := h.run(); err != nil || sum.Replaced != 1 {
+		t.Fatalf("summary = %+v, err %v", sum, err)
+	}
+	if !similarDuration("2000", "2400") || similarDuration("2000", "9000") || !similarDuration("", "") || similarDuration("0:00:02", "0:00:03") {
+		t.Error("similarDuration")
 	}
 }

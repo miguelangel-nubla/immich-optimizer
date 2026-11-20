@@ -123,7 +123,6 @@ var (
 	ErrShuttingDown = errors.New("shutting down")
 	ErrEmptyOutput  = errors.New("task produced empty output")
 	ErrEmptyInput   = errors.New("input file is empty")
-	ErrNoVerify     = errors.New("task has no verify command")
 )
 
 // ConversionError is returned by the engine for no-task and conversion
