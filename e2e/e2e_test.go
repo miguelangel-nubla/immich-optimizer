@@ -116,6 +116,9 @@ type user struct {
 	id   string
 	key  [2]string // API key header
 	keyS string
+	// session is a login session header, as the mobile app uses.
+	session [2]string
+	email   string
 }
 
 func login(t *testing.T, email string) string {
@@ -157,7 +160,7 @@ func newUser(t *testing.T) *user {
 		Secret string `json:"secret"`
 	}
 	must(t, token, http.MethodPost, "/api-keys", map[string]any{"name": "e2e", "permissions": []string{"all"}}, &key)
-	return &user{id: created.ID, key: [2]string{"x-api-key", key.Secret}, keyS: key.Secret}
+	return &user{id: created.ID, key: [2]string{"x-api-key", key.Secret}, keyS: key.Secret, session: token, email: email}
 }
 
 type asset struct {

@@ -47,6 +47,9 @@ type Config struct {
 	BindAddr      string
 	FilterPath    string
 	FilterFormKey string
+	// AppSync turns on the experimental hidden entries that make the Immich
+	// mobile app see converted assets as backed up (see appsync.go).
+	AppSync bool
 	// Audit, when set, records every upload that reached Immich.
 	Audit *audit.Log
 	// HTTPClient is used for the upstream upload. It should have
@@ -70,6 +73,9 @@ type Server struct {
 	server   *http.Server
 	client   *http.Client
 	jobs     *jobManager
+	// streamClient has no timeouts: a sync stream can take as long as it takes.
+	streamClient *http.Client
+	users        userCache
 
 	baseCtx    context.Context
 	cancelBase context.CancelCauseFunc
@@ -108,14 +114,15 @@ func NewServer(cfg Config, conv port.Converter, log *logger.Logger) *Server {
 	revProxy := httputil.NewSingleHostReverseProxy(cfg.UpstreamURL)
 
 	s := &Server{
-		cfg:        cfg,
-		conv:       conv,
-		logger:     log,
-		revProxy:   revProxy,
-		client:     client,
-		jobs:       newJobManager(cfg.ResultTTL, cfg.MaxKeptJobs),
-		baseCtx:    baseCtx,
-		cancelBase: cancel,
+		cfg:          cfg,
+		conv:         conv,
+		logger:       log,
+		revProxy:     revProxy,
+		client:       client,
+		streamClient: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		jobs:         newJobManager(cfg.ResultTTL, cfg.MaxKeptJobs),
+		baseCtx:      baseCtx,
+		cancelBase:   cancel,
 	}
 	s.server = &http.Server{
 		Addr:              cfg.BindAddr,
@@ -219,6 +226,10 @@ func (s *Server) Close() error {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == WaitPath {
 		s.continueJob(w, r)
+		return
+	}
+
+	if s.serveAppSync(w, r) {
 		return
 	}
 

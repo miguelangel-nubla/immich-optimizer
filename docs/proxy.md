@@ -48,3 +48,21 @@ What works well today:
 - **Watcher mode for phones**: sync the phone's camera folder to the watch folder with a one-way sync tool (Syncthing send-only, FolderSync upload-only), and deselect every album in the app's backup settings. The app is then a viewer only.
 
 Every converted asset carries a [provenance marker](marker.md) with the checksum of its original, so a later fix can recognise assets that are already uploaded.
+
+## Experimental: making the mobile app see converted photos as backed up
+
+`IO_PROXY_EXPERIMENTAL_APP_SYNC=true` is an attempt to remove the limitation above. It is off by default and has **not been confirmed on a real phone yet**.
+
+**How it works.** The app keeps its own list of what is on the server, filled from Immich's sync, and treats a photo as backed up when that list has an entry with the photo's checksum. Every converted asset carries a [marker](marker.md) with the checksum of its original, and the marker is part of the same sync. When a marker passes through the proxy, the proxy adds one hidden entry with the original's checksum to the answer. The app finds its match and stops uploading the photo.
+
+- Nothing is stored: the hidden entry is built from the marker as it goes by.
+- The real asset's entry is not changed.
+- The hidden entry is never shown, and it disappears from the phone when the converted asset is deleted.
+- Requests the app makes about a hidden entry are answered with the real asset.
+
+**What to know before trying it**
+
+- **The app must sync through the proxy.** A phone only gets a hidden entry when the marker reaches it through the proxy. Assets it had already synced before the setting was turned on do not get one until the app does a full resync (log out and in again).
+- **"Free up space" will trust it.** The app will consider those photos safely backed up and offer to delete them from the phone, although the server holds the converted file, not the original.
+- It depends on the format of Immich's sync, which can change with any Immich release. If the proxy does not recognise a line it passes it through unchanged, so the worst case is that the app goes back to uploading again.
+- Turning it off again does not remove hidden entries already on a phone; a full resync does.

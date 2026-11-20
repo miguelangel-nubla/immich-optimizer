@@ -53,6 +53,7 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 | `IO_PROXY_BIND_ADDR` | `-proxy_bind_addr` | `:2283` | Address and port the proxy listens on |
 | `IO_PROXY_FILTER_PATH` | `-proxy_filter_path` | `/api/assets` | Request path whose uploads are converted |
 | `IO_PROXY_FILTER_FORM_KEY` | `-proxy_filter_form_key` | `assetData` | Name of the form field that carries the file |
+| `IO_PROXY_EXPERIMENTAL_APP_SYNC` | `-proxy_experimental_app_sync` | `false` | Experimental: make the Immich mobile app see converted assets as backed up, so it stops uploading them again. See the proxy documentation before turning it on |
 
 ### Watcher mode
 

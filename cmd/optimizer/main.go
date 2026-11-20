@@ -523,9 +523,13 @@ func run(args []string) error {
 			BindAddr:      config.BindAddr,
 			FilterPath:    config.FilterPath,
 			FilterFormKey: config.FilterFormKey,
+			AppSync:       config.ProxyAppSync,
 			HTTPClient:    httpClient,
 			Audit:         auditLog,
 		}, engine, logger)
+		if config.ProxyAppSync {
+			logger.Warnf("Experimental app sync is on: the proxy adds hidden entries to the mobile app's sync so converted photos count as backed up")
+		}
 		if err := proxyServer.Start(); err != nil {
 			if watcherAdapter != nil {
 				_ = watcherAdapter.Stop()

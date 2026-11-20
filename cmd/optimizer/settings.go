@@ -119,6 +119,9 @@ var settings = []setting{
 		LegacyEnv: []string{"IUO_PROXY_FILTER_FORM_KEY", "IUO_FILTER_FORM_KEY"}, LegacyFlags: []string{"filter_form_key"},
 		target: func(ac *entity.AppConfig) any { return &ac.FilterFormKey }},
 
+	{Name: "proxy_experimental_app_sync", Group: groupProxy, Default: false,
+		Help:   "Experimental: make the Immich mobile app see converted assets as backed up, so it stops uploading them again. See the proxy documentation before turning it on",
+		target: func(ac *entity.AppConfig) any { return &ac.ProxyAppSync }},
 	{Name: "watcher_dir", Group: groupWatcher, Default: "/watch",
 		Help:      "Folder to watch for new files",
 		LegacyEnv: []string{"IUO_WATCHER_WATCH_DIR", "IUO_WATCH_DIR"}, LegacyFlags: []string{"watch_dir"},

@@ -41,6 +41,7 @@ type AppConfig struct {
 	BindAddr         string
 	FilterPath       string
 	FilterFormKey    string
+	ProxyAppSync     bool
 	ImmichURL        string
 	ImmichAPIKey     string
 	ImmichAPIKeyFile string
