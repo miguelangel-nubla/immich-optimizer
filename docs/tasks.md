@@ -4,6 +4,8 @@ The tasks file tells the optimizer which command converts which file type. It is
 
 ```yaml
 motion_photos: drop_video          # optional, see "Motion photos"
+library_filter:                    # optional, library mode only: which assets to convert
+  takenAt: {lt: 2024-01-01T00:00:00Z}
 
 tasks:
   - name: jpeg-xl
@@ -14,6 +16,8 @@ tasks:
     command: ""                    # an empty command uploads the file unchanged
     extensions: [heic, mp4, mov]
 ```
+
+`library_filter` is only read by [library mode](library.md#choosing-what-to-convert), where it limits which existing assets are converted. Proxy and watcher mode ignore it.
 
 ## How a file is handled
 

@@ -686,3 +686,75 @@ func TestLibrarySecondCopiesAndSchedule(t *testing.T) {
 		return n >= 3
 	})
 }
+
+// library_filter in the tasks file is a filter of Immich's own search: Immich
+// decides what matches, and a filter it refuses stops the run.
+func TestLibraryFilter(t *testing.T) {
+	u := newUser(t)
+	// plain.jpg has no date inside, so Immich uses the given file date;
+	// photo.jpg says 2021 in its metadata.
+	oldJPG := u.add(t, "plain.jpg", map[string]string{"fileCreatedAt": "2015-01-01T10:00:00.000Z"})
+	newJPG := u.add(t, "photo.jpg", nil)
+	png := u.add(t, "photo.png", map[string]string{"fileCreatedAt": "2015-06-01T10:00:00.000Z"})
+
+	base, err := os.ReadFile(filepath.Join(configDir, "lossless", "tasks.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := sharedDir(t)
+	n := 0
+	run := func(filter string, dry bool) (int, string, []map[string]any) {
+		t.Helper()
+		n++
+		name := fmt.Sprintf("tasks-%d.yaml", n)
+		if err := os.WriteFile(filepath.Join(cfg, name), []byte(filter+string(base)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		env := map[string]string{"IO_TASKS_FILE": "/custom/" + name, "IO_LIBRARY_DRY_RUN_SAMPLE": "0"}
+		if !dry {
+			env["IO_LIBRARY_DRY_RUN"] = "false"
+		}
+		return runLibrary(t, u, sharedDir(t), env, cfg+":/custom:ro")
+	}
+	trashed := func() string {
+		s := ""
+		for _, a := range []asset{oldJPG, newJPG, png} {
+			if u.asset(t, a.ID).IsTrashed {
+				s += a.OriginalFileName + " "
+			}
+		}
+		return strings.TrimSpace(s)
+	}
+
+	// Something Immich does not know: refused, and nothing is touched.
+	code, out, _ := run("library_filter:\n  shoeSize: {gt: 40}\n", false)
+	if code == 0 || !strings.Contains(out, "library_filter") || trashed() != "" {
+		t.Fatalf("a filter Immich refuses was accepted (exit %d, trashed %q):\n%s", code, trashed(), out)
+	}
+
+	// A dry run reports what the filter selects.
+	old := "library_filter:\n  takenAt:\n    lt: 2020-01-01T00:00:00Z\n"
+	code, out, log := run(old, true)
+	if code != 0 || trashed() != "" {
+		t.Fatalf("dry run (exit %d) trashed %q:\n%s", code, trashed(), out)
+	}
+	if !contains(events(log, oldJPG.ID), "would_convert") || !contains(events(log, png.ID), "would_convert") || contains(events(log, newJPG.ID), "would_convert") {
+		t.Errorf("the dry run did not follow the filter: old %v, png %v, new %v", events(log, oldJPG.ID), events(log, png.ID), events(log, newJPG.ID))
+	}
+
+	// Two conditions together, with Immich's own names and operators.
+	code, out, _ = run(old+"  originalFileName:\n    endsWith: .png\n", false)
+	if code != 0 || trashed() != "photo.png" {
+		t.Fatalf("date and name filter (exit %d) converted %q, want only photo.png:\n%s", code, trashed(), out)
+	}
+	// The date alone takes the other old one, and leaves the new one.
+	code, out, _ = run(old, false)
+	if code != 0 || trashed() != "plain.jpg photo.png" {
+		t.Fatalf("date filter (exit %d) converted %q, want plain.jpg and photo.png:\n%s", code, trashed(), out)
+	}
+	// No filter: everything that is left.
+	code, out, _ = run("", false)
+	if code != 0 || trashed() != "plain.jpg photo.jpg photo.png" {
+		t.Fatalf("without a filter (exit %d) converted %q:\n%s", code, trashed(), out)
+	}
+}

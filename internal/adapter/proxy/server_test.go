@@ -112,7 +112,7 @@ func quiet() *customlogger.Logger { return customlogger.NewWithLevel(nil, "error
 func newTestServer(t *testing.T, upstreamURL string, c port.Converter, mod ...func(*Config)) *Server {
 	t.Helper()
 	u, _ := url.Parse(upstreamURL)
-	cfg := Config{UpstreamURL: u, BindAddr: "127.0.0.1:0", FilterPath: "/api/assets", FilterFormKey: "assetData"}
+	cfg := Config{UpstreamURL: u, BindAddr: "127.0.0.1:0"}
 	for _, m := range mod {
 		m(&cfg)
 	}

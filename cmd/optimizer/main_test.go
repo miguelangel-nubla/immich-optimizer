@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"os"
@@ -304,8 +305,6 @@ func TestEnvIOPrefix(t *testing.T) {
 		"IO_UNDONE_DIR":                  undoneDir,
 		"IO_UNDONE_UNMATCHED":            "false",
 		"IO_PROXY_BIND_ADDR":             ":9999",
-		"IO_PROXY_FILTER_PATH":           "/x",
-		"IO_PROXY_FILTER_FORM_KEY":       "file",
 		"IO_WATCHER_DIR":                 watchDir,
 		"IO_WATCHER_INOTIFY_BUFFER_SIZE": "1024",
 	}
@@ -335,8 +334,6 @@ func TestEnvIOPrefix(t *testing.T) {
 		{"undone", cfg.UndoneDir, undoneDir},
 		{"undone unmatched", cfg.UndoneUnmatched, false},
 		{"bind", cfg.BindAddr, ":9999"},
-		{"filter path", cfg.FilterPath, "/x"},
-		{"form key", cfg.FilterFormKey, "file"},
 		{"watch", cfg.WatchDir, watchDir},
 		{"inotify", cfg.InotifyBufferSize, 1024},
 	}
@@ -1036,5 +1033,57 @@ func TestLibraryIntervalSetting(t *testing.T) {
 		if _, _, err := parseConfig(append(append([]string(nil), base...), bad...)); err == nil {
 			t.Errorf("%v was accepted", bad)
 		}
+	}
+}
+
+func TestLoadTasksLibraryFilter(t *testing.T) {
+	load := func(content string) (*entity.Config, error) {
+		t.Helper()
+		f := filepath.Join(t.TempDir(), "tasks.yaml")
+		if err := os.WriteFile(f, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return loadTasks(f)
+	}
+	const tasks = "tasks:\n- name: t\n  command: \"\"\n  extensions: [jpg]\n"
+
+	c, err := load(tasks)
+	if err != nil || c.LibraryFilter != nil {
+		t.Fatalf("no filter: %s, %v", c.LibraryFilter, err)
+	}
+	if c, err = load("library_filter:\n" + tasks); err != nil || c.LibraryFilter != nil {
+		t.Fatalf("empty filter: %s, %v", c.LibraryFilter, err)
+	}
+
+	// Immich's names keep their case, and a date may be written without quotes.
+	c, err = load(`library_filter:
+  takenAt:
+    lt: 2024-01-01T00:00:00Z
+  fileSizeInBytes: {gt: 2000000}
+  isFavorite: {eq: false}
+  albumIds:
+    none: [3fa85f64-5717-4562-b3fc-2c963f66afa6]
+  or:
+    - originalFileName: {endsWith: .png}
+    - make: {eq: null}
+` + tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(c.LibraryFilter, &got); err != nil {
+		t.Fatalf("not JSON: %s", c.LibraryFilter)
+	}
+	want := `{"albumIds":{"none":["3fa85f64-5717-4562-b3fc-2c963f66afa6"]},"fileSizeInBytes":{"gt":2000000},"isFavorite":{"eq":false},` +
+		`"or":[{"originalFileName":{"endsWith":".png"}},{"make":{"eq":null}}],"takenAt":{"lt":"2024-01-01T00:00:00Z"}}`
+	if string(c.LibraryFilter) != want {
+		t.Errorf("filter =\n%s\nwant\n%s", c.LibraryFilter, want)
+	}
+	if len(c.Tasks) != 1 {
+		t.Errorf("the tasks next to the filter were not loaded: %+v", c.Tasks)
+	}
+
+	if _, err := load("library_filter: everything\n" + tasks); err == nil || !strings.Contains(err.Error(), "library_filter") {
+		t.Errorf("a filter that is not a mapping was accepted: %v", err)
 	}
 }

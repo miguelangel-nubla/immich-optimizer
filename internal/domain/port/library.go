@@ -2,6 +2,7 @@ package port
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 )
@@ -14,6 +15,9 @@ type LibraryAPI interface {
 	// ListAssets returns one page of the owner's assets (oldest first) and
 	// the next page number, 0 when there is none.
 	ListAssets(ctx context.Context, page int) ([]entity.LibraryAsset, int, error)
+	// MatchingAssetIDs returns the ids of the assets that match a filter of
+	// Immich's asset search, given as JSON.
+	MatchingAssetIDs(ctx context.Context, filter json.RawMessage) ([]string, error)
 	GetAsset(ctx context.Context, id string) (*entity.LibraryAsset, error)
 	// GetMetadata returns all asset metadata items.
 	GetMetadata(ctx context.Context, id string) ([]entity.MetadataItem, error)

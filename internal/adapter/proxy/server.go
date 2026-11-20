@@ -19,7 +19,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"path"
 	"strings"
 	"sync"
 	"syscall"
@@ -43,10 +42,8 @@ const (
 )
 
 type Config struct {
-	UpstreamURL   *url.URL
-	BindAddr      string
-	FilterPath    string
-	FilterFormKey string
+	UpstreamURL *url.URL
+	BindAddr    string
 	// AppSync turns on the experimental hidden entries that make the Immich
 	// mobile app see converted assets as backed up (see appsync.go).
 	AppSync bool
@@ -90,9 +87,6 @@ type Server struct {
 }
 
 func NewServer(cfg Config, conv port.Converter, log *logger.Logger) *Server {
-	if cfg.FilterPath == "" {
-		cfg.FilterPath = "/api/assets"
-	}
 	if cfg.ResultTTL <= 0 {
 		cfg.ResultTTL = defaultResultTTL
 	}
@@ -356,13 +350,7 @@ func (s *Server) isUploadRequest(r *http.Request) bool {
 		return false
 	}
 
-	pathStr := r.URL.Path
-	matched, err := path.Match(s.cfg.FilterPath, pathStr)
-	if err == nil && matched {
-		return true
-	}
-
-	pathLower := strings.ToLower(pathStr)
+	pathLower := strings.ToLower(r.URL.Path)
 	return strings.HasSuffix(pathLower, "/api/assets") ||
 		strings.HasSuffix(pathLower, "/api/assets/") ||
 		strings.HasSuffix(pathLower, "/api/asset/upload") ||

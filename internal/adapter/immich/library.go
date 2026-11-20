@@ -250,6 +250,38 @@ func (c *LibraryClient) ListAssets(ctx context.Context, page int) ([]entity.Libr
 	return assets, next, nil
 }
 
+// MatchingAssetIDs runs Immich's asset search with the given filter and
+// returns the ids of everything it finds.
+func (c *LibraryClient) MatchingAssetIDs(ctx context.Context, filter json.RawMessage) ([]string, error) {
+	var ids []string
+	cursor := ""
+	for {
+		var out struct {
+			Assets struct {
+				Items []struct {
+					ID string `json:"id"`
+				} `json:"items"`
+				NextCursor *string `json:"nextCursor"`
+			} `json:"assets"`
+		}
+		body := map[string]any{"filter": filter, "size": c.PageSize,
+			"orderBy": map[string]string{"field": "fileCreatedAt", "direction": "asc"}}
+		if cursor != "" {
+			body["cursor"] = cursor
+		}
+		if err := c.call(ctx, http.MethodPost, "/search/metadata", body, &out); err != nil {
+			return nil, err
+		}
+		for _, it := range out.Assets.Items {
+			ids = append(ids, it.ID)
+		}
+		if out.Assets.NextCursor == nil || *out.Assets.NextCursor == "" || len(out.Assets.Items) == 0 {
+			return ids, nil
+		}
+		cursor = *out.Assets.NextCursor
+	}
+}
+
 func (c *LibraryClient) GetAsset(ctx context.Context, id string) (*entity.LibraryAsset, error) {
 	var d assetDTO
 	if err := c.call(ctx, http.MethodGet, "/assets/"+url.PathEscape(id), nil, &d); err != nil {

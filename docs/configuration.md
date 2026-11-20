@@ -51,8 +51,6 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 | Environment variable | Flag | Default | Description |
 |---|---|---|---|
 | `IO_PROXY_BIND_ADDR` | `-proxy_bind_addr` | `:2283` | Address and port the proxy listens on |
-| `IO_PROXY_FILTER_PATH` | `-proxy_filter_path` | `/api/assets` | Request path whose uploads are converted |
-| `IO_PROXY_FILTER_FORM_KEY` | `-proxy_filter_form_key` | `assetData` | Name of the form field that carries the file |
 | `IO_PROXY_EXPERIMENTAL_APP_SYNC` | `-proxy_experimental_app_sync` | `false` | Experimental: make the Immich mobile app see converted assets as backed up, so it stops uploading them again. See the proxy documentation before turning it on |
 
 ### Watcher mode
@@ -97,8 +95,6 @@ These names from earlier versions and from `immich-upload-optimizer` still work.
 | `IUO_MAX_CONCURRENT_REQUESTS`, `-max_concurrent_requests` | `IO_TASKS_CONCURRENCY`, `-tasks_concurrency` |
 | `IUO_WATCHER_UNDONE_DIR`, `IUO_UNDONE_DIR` | `IO_UNDONE_DIR`, `-undone_dir` |
 | `IUO_PROXY_BIND_ADDR`, `IUO_BIND_ADDR`, `IUO_LISTEN`, `-bind_addr`, `-listen` | `IO_PROXY_BIND_ADDR`, `-proxy_bind_addr` |
-| `IUO_PROXY_FILTER_PATH`, `IUO_FILTER_PATH`, `-filter_path` | `IO_PROXY_FILTER_PATH`, `-proxy_filter_path` |
-| `IUO_PROXY_FILTER_FORM_KEY`, `IUO_FILTER_FORM_KEY`, `-filter_form_key` | `IO_PROXY_FILTER_FORM_KEY`, `-proxy_filter_form_key` |
 | `IUO_WATCHER_WATCH_DIR`, `IUO_WATCH_DIR`, `-watch_dir` | `IO_WATCHER_DIR`, `-watcher_dir` |
 | `IUO_WATCHER_INOTIFY_BUFFER_SIZE`, `IUO_INOTIFY_BUFFER_SIZE`, `-inotify_buffer_size` | `IO_WATCHER_INOTIFY_BUFFER_SIZE`, `-watcher_inotify_buffer_size` |
 

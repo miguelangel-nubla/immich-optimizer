@@ -27,7 +27,7 @@ Point your clients at the optimizer instead of Immich. If Immich sits behind you
 
 ## How it behaves
 
-- **What is converted:** multipart uploads to [`IO_PROXY_FILTER_PATH`](configuration.md#proxy-mode). The file is handled as described in [Tasks](tasks.md#how-a-file-is-handled).
+- **What is converted:** multipart uploads to Immich's upload endpoint (`/api/assets`). The file is handled as described in [Tasks](tasks.md#how-a-file-is-handled).
 - **Errors:** a file type no task handles answers `415`; a failed conversion answers `502`. Nothing is uploaded in either case and the original is kept in the [undone folder](undone.md). If Immich itself cannot be reached or refuses the upload, the client gets the error and nothing is kept: it still has the file and retries.
 - **Jobs survive client disconnects.** Once the upload has been received, converting it and sending it to Immich no longer depend on the client connection. If the phone disconnects or gives up waiting, the job continues and the asset still reaches Immich.
 - **No double uploads.** If the same user uploads the identical file again while it is being processed, or within 30 minutes afterwards, the retry gets the same result instead of a second conversion. Transient answers (`5xx`, `408`, `413`, `425`, `429`) are not replayed.

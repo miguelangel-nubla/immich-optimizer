@@ -46,6 +46,8 @@ type fakeImmich struct {
 	order  []string
 	nextID int
 	calls  []string
+	// filters are the filters library mode asked Immich to apply.
+	filters []string
 
 	// knobs
 	copyDropsTags bool                // copy does not bring tags over, as when no sidecar exists
@@ -120,6 +122,32 @@ func (f *fakeImmich) ListAssets(_ context.Context, page int) ([]entity.LibraryAs
 		}
 	}
 	return live[start:end], next, nil
+}
+
+// MatchingAssetIDs understands one filter, enough to tell that library mode
+// asks and obeys: {"originalFileName":{"startsWith":"..."}}.
+func (f *fakeImmich) MatchingAssetIDs(_ context.Context, filter json.RawMessage) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail("MatchingAssetIDs"); err != nil {
+		return nil, err
+	}
+	var q struct {
+		Name struct {
+			StartsWith string `json:"startsWith"`
+		} `json:"originalFileName"`
+	}
+	if err := json.Unmarshal(filter, &q); err != nil {
+		return nil, err
+	}
+	f.filters = append(f.filters, string(filter))
+	var ids []string
+	for _, id := range f.order {
+		if a := f.assets[id]; !a.deleted && strings.HasPrefix(a.OriginalFileName, q.Name.StartsWith) {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 func (f *fakeImmich) GetAsset(_ context.Context, id string) (*entity.LibraryAsset, error) {
@@ -1348,6 +1376,52 @@ func TestSecondCopyInTheSameAlbumGoesToTheTrash(t *testing.T) {
 	conv.albums, conv.IsFavorite = []string{"album-1", "album-2"}, true
 	again := h.im.add("IMG_1.jpg", data)
 	again.albums, again.IsFavorite = []string{"album-1"}, true
+	if sum, err := h.run(); err != nil || sum.SecondCopies != 1 || !again.IsTrashed {
+		t.Fatalf("%+v, %v", sum, err)
+	}
+}
+
+func TestFilterLimitsWhatIsConverted(t *testing.T) {
+	h := newHarness(t)
+	in := h.im.add("holiday-1.jpg", photo(1))
+	out := h.im.add("work-1.jpg", photo(2))
+	h.cfg.Filter = json.RawMessage(`{"originalFileName":{"startsWith":"holiday"}}`)
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 1 || sum.Skipped != 1 || !in.IsTrashed || out.IsTrashed {
+		t.Fatalf("%+v, %v", sum, err)
+	}
+	// Immich got the filter exactly as it was written.
+	if len(h.im.filters) != 1 || h.im.filters[0] != string(h.cfg.Filter) {
+		t.Errorf("filters sent to Immich: %q", h.im.filters)
+	}
+	// Without one, Immich is not asked and everything is a candidate.
+	h.cfg.Filter = nil
+	if sum, err = h.run(); err != nil || sum.Replaced != 1 || len(h.im.filters) != 1 {
+		t.Fatalf("without a filter: %+v, %v", sum, err)
+	}
+}
+
+// A filter Immich refuses stops the run before anything is changed.
+func TestRefusedFilterStopsTheRun(t *testing.T) {
+	h := newHarness(t)
+	a := h.im.add("a.jpg", photo(1))
+	h.cfg.Filter = json.RawMessage(`{"nonsense":true}`)
+	h.im.failCall["MatchingAssetIDs"] = errors.New(`immich POST /search/metadata: status 400: Unrecognized key: "nonsense"`)
+	_, err := h.run()
+	if err == nil || !strings.Contains(err.Error(), "library_filter") || !strings.Contains(err.Error(), "nonsense") || a.IsTrashed || len(h.im.calls) != 0 {
+		t.Fatalf("err = %v, calls %v", err, h.im.calls)
+	}
+}
+
+// The filter says what to convert. What earlier runs left to settle is
+// settled whatever it says.
+func TestFilterDoesNotHoldBackSecondCopies(t *testing.T) {
+	h := newHarness(t)
+	data := photo(1)
+	old, _ := convertOne(t, h, data)
+	old.deleted = true
+	again := h.im.add("IMG_1.jpg", data)
+	h.cfg.Filter = json.RawMessage(`{"originalFileName":{"startsWith":"nothing-matches"}}`)
 	if sum, err := h.run(); err != nil || sum.SecondCopies != 1 || !again.IsTrashed {
 		t.Fatalf("%+v, %v", sum, err)
 	}

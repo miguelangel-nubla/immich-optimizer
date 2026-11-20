@@ -61,8 +61,11 @@ type targetPart struct {
 // smallFields are non-file form fields read for diagnostics and mtime.
 var smallFields = map[string]bool{"fileModifiedAt": true, "fileCreatedAt": true, "deviceId": true}
 
+// uploadFormKey is the form field Immich's upload carries the file in.
+const uploadFormKey = "assetData"
+
 func (s *Server) isTarget(part *multipart.Part) bool {
-	return part.FileName() != "" && (s.cfg.FilterFormKey == "" || part.FormName() == s.cfg.FilterFormKey)
+	return part.FileName() != "" && part.FormName() == uploadFormKey
 }
 
 // runJob processes one spooled upload on the detached server context.

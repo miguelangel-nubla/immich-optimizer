@@ -42,6 +42,9 @@ import (
 type Config struct {
 	// DryRun reports what would be converted without changing anything.
 	DryRun bool
+	// Filter, when set, is a filter of Immich's asset search (JSON). Only
+	// assets it matches are converted.
+	Filter json.RawMessage
 	// ReadyTimeout is how long to wait for Immich to finish reading a newly
 	// uploaded asset before giving up on it.
 	ReadyTimeout time.Duration
@@ -221,6 +224,22 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	}
 	s.infof("Library: %d asset(s) listed%s", len(assets), map[bool]string{true: " (dry run: nothing will be changed)"}[s.cfg.DryRun])
 
+	// The filter is Immich's own: Immich says which assets match. It only
+	// limits what is converted. Unfinished replacements and second copies
+	// are settled whatever it says.
+	var matches map[string]bool
+	if len(s.cfg.Filter) > 0 {
+		ids, err := s.api.MatchingAssetIDs(ctx, s.cfg.Filter)
+		if err != nil {
+			return sum, fmt.Errorf("applying library_filter: %w", err)
+		}
+		matches = make(map[string]bool, len(ids))
+		for _, id := range ids {
+			matches[id] = true
+		}
+		s.infof("Library: library_filter matches %d asset(s)", len(matches))
+	}
+
 	// outcome folds one asset's result into the summary. It returns a fatal
 	// error when the run must stop.
 	var mu sync.Mutex
@@ -338,6 +357,10 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 		if second && c.asset.Checksum != "" {
 			t := &tally{}
 			outcome(c.asset, t, s.secondCopy(ctx, c.asset, convertedID, t))
+			continue
+		}
+		if matches != nil && !matches[c.asset.ID] {
+			outcome(c.asset, &tally{}, skip("it does not match library_filter"))
 			continue
 		}
 		rest = append(rest, c)

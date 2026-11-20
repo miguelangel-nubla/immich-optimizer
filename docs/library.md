@@ -101,9 +101,36 @@ These assets are left exactly as they are. The reason for each is written to the
 | In the trash, hidden, or offline | not part of the visible library |
 | Belongs to another user or a partner | each user runs library mode with their own key |
 | Already converted, or already looked at | recognised by its [marker](marker.md) |
+| Does not match your `library_filter` | see [Choosing what to convert](#choosing-what-to-convert) |
 | A second copy of a converted original that has something of its own 📝 | see [Second copies](#second-copies-of-converted-originals) |
 | Immich has not finished reading it yet | it is picked up by a later run |
 | It changed while it was being replaced | you edited it, or Immich was still analysing it. The copy is removed and a later run converts it |
+
+## Choosing what to convert
+
+By default library mode converts everything your tasks can handle. To limit it, add a `library_filter` block to your [tasks file](tasks.md). It is a filter of **Immich's own asset search**: the optimizer passes it to Immich unchanged, and Immich says which assets match.
+
+```yaml
+library_filter:
+  takenAt:
+    lt: 2024-01-01T00:00:00Z        # taken before 2024
+  fileSizeInBytes:
+    gt: 2000000                     # larger than 2 MB
+  albumIds:
+    none:                           # not in this album
+      - 3fa85f64-5717-4562-b3fc-2c963f66afa6
+
+tasks:
+  # ...
+```
+
+- **Several conditions must all match.** For "either of these", list them under `or:`.
+- **The fields and operators are Immich's**, and their names are case sensitive. Among them: `takenAt`, `createdAt`, `fileSizeInBytes`, `type`, `originalFileName`, `make`, `model`, `city`, `country`, `isFavorite`, `rating`, `albumIds`, `personIds`, `tagIds`, `hasAlbums`. The operators depend on the field: `eq`/`ne`, `lt`/`lte`/`gt`/`gte`, `in`/`notIn`, `like`/`startsWith`/`endsWith`, and `any`/`all`/`none` for lists of ids. The full list is in [Immich's API reference](https://api.immich.app/), under the `filter` field of the asset search (`POST /search/metadata`).
+- **A filter Immich does not accept stops the run** before anything is changed, with Immich's own message.
+- **Check it with a dry run.** The [report](#the-report) lists what would be converted; everything else shows as skipped with "it does not match library_filter".
+- **To try library mode on a few photos first**, put them in an album and filter on `albumIds`.
+- It needs Immich v3.2 or newer. Dates are absolute; there is no "older than 90 days".
+- The filter only says what to convert. [Second copies](#second-copies-of-converted-originals) and replacements an earlier run left unfinished are settled whatever it says.
 
 ## Second copies of converted originals
 
