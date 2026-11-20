@@ -17,7 +17,10 @@ tasks:
       --effort=7
       && exiftool -overwrite_original
       -tagsfromfile "{{.src_folder}}/{{.name}}.{{.extension}}"
-      -all:all -m -Orientation=1 "{{.dst_folder}}/{{.name}}-new.jxl"
+      -all:all -m -Orientation=1
+      -XMP-GCamera:MotionPhoto= -XMP-GCamera:MotionPhotoVersion=
+      -XMP-GCamera:MotionPhotoPresentationTimestampUs=
+      "{{.dst_folder}}/{{.name}}-new.jxl"
     extensions:
       - avif
       - bmp

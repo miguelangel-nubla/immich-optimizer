@@ -530,6 +530,12 @@ immich-optimizer -immich_url http://... -immich_api_key ...
 docker run -e IO_LOG_LEVEL=debug ghcr.io/miguelangel-nubla/immich-optimizer:latest
 ```
 
+### Testing the bundled profiles
+
+`scripts/integration-test.sh [image]` runs every bundled profile's real commands on the sample files in `cmd/optimizer/testdata/media` inside the Docker image (default: the published `:dev` image) and checks the results: outputs decode, dates, GPS and Apple Live Photo identifiers survive, motion photos lose their video and their motion flag, a portrait video stays portrait, and the lossless profile is really lossless. It uses this checkout's `config/`, so a profile change can be tested without rebuilding the image. CI runs it on every push against an image built from the commit.
+
+The samples are synthetic, and the GPU video task only runs where `/dev/dri/renderD128` exists.
+
 ### Contributing
 
 1. Fork the repository

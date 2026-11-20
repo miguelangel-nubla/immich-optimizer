@@ -33,7 +33,10 @@ if [[ $(exiftool -b -MotionPhoto "$ORIGINAL_FILE") -gt 0 ]]; then
   esac
 fi
 
-# vips converts only the still image, and only the EXIF block is copied, so the
-# motion-photo tags and the embedded video do not reach the output.
+# vips converts only the still image, so the embedded video does not reach the
+# output. It does carry the XMP over, so the motion-photo flags are removed:
+# the output must not claim a video it no longer has.
 vips copy "${ORIGINAL_FILE}" "${TARGET_FILE}[Q=75]"
-exiftool -m -overwrite_original -tagsfromfile "${ORIGINAL_FILE}" -exif "${TARGET_FILE}"
+exiftool -m -overwrite_original -tagsfromfile "${ORIGINAL_FILE}" -exif \
+  -XMP-GCamera:MotionPhoto= -XMP-GCamera:MotionPhotoVersion= \
+  -XMP-GCamera:MotionPhotoPresentationTimestampUs= "${TARGET_FILE}"

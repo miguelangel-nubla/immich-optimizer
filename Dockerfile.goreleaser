@@ -37,6 +37,8 @@ RUN groupadd -r appuser && \
     useradd -r -g appuser -u 1001 appuser
 
 # Install runtime dependencies with security updates
+# libio-compress-brotli-perl lets exiftool read the Brotli-compressed metadata
+# that cjxl and vips write into JPEG XL files (Immich's exiftool reads it too).
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -49,6 +51,7 @@ RUN apt-get update && \
     libc6 \
     libjxl-tools \
     libgif7 \
+    libio-compress-brotli-perl \
     libtcmalloc-minimal4 \
     libvips-tools \
     tzdata \
