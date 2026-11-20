@@ -97,7 +97,7 @@ func TestDownloadsAreConvertedOnlyWhereATaskSaysSo(t *testing.T) {
 	// not the download of an original.
 	calls := proc.calls.Load()
 	for _, path := range []string{"/api/assets/" + heic + "/original", "/api/assets/" + jxl + "/original?edited=true", "/api/assets/" + jxl + "/thumbnail"} {
-		if rec = get(path, nil); proc.calls.Load() != calls {
+		if get(path, nil); proc.calls.Load() != calls {
 			t.Errorf("%s was converted", path)
 		}
 	}
