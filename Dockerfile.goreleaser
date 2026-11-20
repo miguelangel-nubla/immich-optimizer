@@ -37,13 +37,10 @@ RUN groupadd -r appuser && \
     useradd -r -g appuser -u 1001 appuser
 
 # Install runtime dependencies with security updates
-# libio-compress-brotli-perl lets exiftool read the Brotli-compressed metadata
-# that cjxl and vips write into JPEG XL files (Immich's exiftool reads it too).
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    exiftool \
     ffmpeg \
     handbrake-cli \
     imagemagick \
@@ -51,7 +48,6 @@ RUN apt-get update && \
     libc6 \
     libjxl-tools \
     libgif7 \
-    libio-compress-brotli-perl \
     libtcmalloc-minimal4 \
     libvips-tools \
     tzdata \
@@ -61,6 +57,11 @@ RUN apt-get update && \
     mesa-va-drivers && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Pinned ExifTool with Brotli support, the same in every image. See the script.
+ARG EXIFTOOL_VERSION=13.59
+COPY docker/install-exiftool.sh /tmp/install-exiftool.sh
+RUN EXIFTOOL_VERSION=${EXIFTOOL_VERSION} sh /tmp/install-exiftool.sh && rm /tmp/install-exiftool.sh
 
 # Copy caesium-clt from builder
 COPY --from=builder /usr/local/bin/caesiumclt /usr/local/bin/caesiumclt

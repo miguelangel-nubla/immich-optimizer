@@ -30,7 +30,7 @@ RUN set -eux; \
 
 ARG IMMICH_OPTIMIZER_REPO=miguelangel-nubla/immich-optimizer
 RUN set -eux; \
-    LATEST_TAG=$(curl -s https://api.github.com/repos/$IMMICH_OPTIMIZER_REPO/releases/latest | jq -r '.tag_name'); \
+    LATEST_TAG=$(curl -fsSL https://api.github.com/repos/$IMMICH_OPTIMIZER_REPO/releases/latest | jq -er '.tag_name'); \
     case "$TARGETPLATFORM" in \
     "linux/amd64") ARCH=x86_64 ;; \
     "linux/arm64") ARCH=arm64 ;; \
@@ -54,7 +54,6 @@ RUN apk update && \
     apk add --no-cache \
     ca-certificates \
     curl \
-    exiftool \
     ffmpeg \
     imagemagick \
     jq \
@@ -70,6 +69,11 @@ RUN apk update && \
     libva-utils \
     mesa-va-gallium && \
     rm -rf /var/cache/apk/*
+
+# Pinned ExifTool with Brotli support, the same in every image. See the script.
+ARG EXIFTOOL_VERSION=13.59
+COPY docker/install-exiftool.sh /tmp/install-exiftool.sh
+RUN EXIFTOOL_VERSION=${EXIFTOOL_VERSION} sh /tmp/install-exiftool.sh && rm /tmp/install-exiftool.sh
 
 # Create symlink for libresolv compatibility
 RUN ln -sf /lib/libc.musl-x86_64.so.1 /lib/libresolv.so.2 || \

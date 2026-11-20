@@ -41,6 +41,7 @@ dockers:
   - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
   extra_files:
   - config
+  - docker
   - LICENSE
 
 - goos: linux
@@ -60,6 +61,7 @@ dockers:
   - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
   extra_files:
   - config
+  - docker
   - LICENSE
 
 archives:
