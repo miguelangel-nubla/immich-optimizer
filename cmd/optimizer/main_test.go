@@ -1119,3 +1119,25 @@ func TestHealthCheck(t *testing.T) {
 		t.Errorf("parseConfig: %+v, %v", ac, err)
 	}
 }
+
+func TestLoadTasksDownloads(t *testing.T) {
+	load := func(content string) (*entity.Config, error) {
+		t.Helper()
+		f := filepath.Join(t.TempDir(), "tasks.yaml")
+		if err := os.WriteFile(f, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return loadTasks(f)
+	}
+	c, err := load("downloads:\n- name: d\n  command: djxl \"{{.src_folder}}/{{.name}}.{{.extension}}\" \"{{.dst_folder}}/{{.name}}.jpg\"\n  extensions: [JXL]\ntasks: []\n")
+	if err != nil || len(c.Downloads) != 1 || c.Downloads[0].Extensions[0] != "jxl" || c.Downloads[0].MotionPhotos != entity.MotionPhotosKeep {
+		t.Fatalf("%+v, %v", c, err)
+	}
+	// A download task has to do something, and its command is checked like any other.
+	if _, err := load("downloads:\n- name: d\n  command: \"\"\n  extensions: [jxl]\n"); err == nil {
+		t.Error("a download task without a command was accepted")
+	}
+	if _, err := load("downloads:\n- name: d\n  command: \"x {{.nope}}\"\n  extensions: [jxl]\n"); err == nil {
+		t.Error("a download task with an unknown placeholder was accepted")
+	}
+}

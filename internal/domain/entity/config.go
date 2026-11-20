@@ -33,6 +33,9 @@ func ValidMotionPhotos(v string) bool {
 
 type Config struct {
 	Tasks []Task `mapstructure:"tasks"`
+	// Downloads are tasks the proxy runs on an original when it is
+	// downloaded, to hand it out in another format.
+	Downloads []Task `mapstructure:"downloads"`
 	// MotionPhotos is the default for tasks that do not set their own
 	// "motion_photos". Empty means MotionPhotosKeep.
 	MotionPhotos string `mapstructure:"motion_photos"`

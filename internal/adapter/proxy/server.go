@@ -50,6 +50,14 @@ type Config struct {
 	// AppSync turns on the experimental hidden entries that make the Immich
 	// mobile app see converted assets as backed up (see appsync.go).
 	AppSync bool
+	// Downloads are the tasks that convert an original on its way out, run
+	// by Processor. Without them downloads pass through untouched.
+	Downloads []entity.Task
+	Processor port.MediaProcessor
+	// DownloadTimeout bounds one such conversion; 0 means no limit.
+	DownloadTimeout time.Duration
+	// DownloadConcurrency is how many run at once. Default 2.
+	DownloadConcurrency int
 	// Audit, when set, records every upload that reached Immich.
 	Audit *audit.Log
 	// HTTPClient is used for the upstream upload. It should have
@@ -78,6 +86,8 @@ type Server struct {
 	// streamClient has no timeouts: a sync stream can take as long as it takes.
 	streamClient *http.Client
 	users        userCache
+	names        nameCache
+	downloadSem  chan struct{}
 
 	baseCtx    context.Context
 	cancelBase context.CancelCauseFunc
@@ -121,6 +131,7 @@ func NewServer(cfg Config, conv port.Converter, log *logger.Logger) *Server {
 		streamClient: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		jobs:         newJobManager(cfg.ResultTTL, cfg.MaxKeptJobs),
 		admission:    newAdmission(tempFree),
+		downloadSem:  make(chan struct{}, max(cfg.DownloadConcurrency, 2)),
 		baseCtx:      baseCtx,
 		cancelBase:   cancel,
 	}
@@ -244,6 +255,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.serveAppSync(w, r) {
+		return
+	}
+	if s.serveDownload(w, r) {
 		return
 	}
 

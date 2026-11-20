@@ -3,7 +3,11 @@
 package e2e
 
 import (
+	"bytes"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -246,5 +250,100 @@ func TestProxyUploadsAgainAfterTheAssetWasDeleted(t *testing.T) {
 	}
 	if a := u.waitReady(t, out["id"]); a.OriginalMimeType != "image/jxl" {
 		t.Errorf("the new asset is %s, want the converted file", a.OriginalMimeType)
+	}
+}
+
+// "downloads" in the tasks file: what is stored as JPEG XL is handed out as
+// JPEG when its original is downloaded through the proxy.
+func TestProxyConvertsDownloads(t *testing.T) {
+	u := newUser(t)
+	undone := sharedDir(t)
+	base, err := os.ReadFile(filepath.Join(configDir, "lossless", "tasks.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := sharedDir(t)
+	downloads := `downloads:
+  - name: jxl-to-jpeg
+    command: djxl "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jpg"
+    extensions: [jxl]
+`
+	if err := os.WriteFile(filepath.Join(cfg, "tasks.yaml"), []byte(downloads+string(base)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy", "IO_TASKS_FILE": "/custom/tasks.yaml"}, true,
+		undone+":/undone", cfg+":/custom:ro")
+
+	src := filepath.Join(mediaDir, "photo.jpg")
+	status, out := u.upload(t, proxy, src, "photo.jpg", nil)
+	if status != http.StatusCreated {
+		t.Fatalf("upload: %d %s", status, out["_body"])
+	}
+	jxl := u.waitReady(t, out["id"])
+	if jxl.OriginalMimeType != "image/jxl" {
+		t.Fatalf("stored as %s, want JPEG XL", jxl.OriginalMimeType)
+	}
+	status, out = u.upload(t, proxy, filepath.Join(mediaDir, "photo.heic"), "photo.heic", nil)
+	if status != http.StatusCreated {
+		t.Fatalf("upload: %d %s", status, out["_body"])
+	}
+	heic := u.waitReady(t, out["id"])
+
+	get := func(base, id string, header map[string]string) (*http.Response, []byte) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, base+"/api/assets/"+id+"/original", nil)
+		req.Header.Set(u.key[0], u.key[1])
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		resp, err := httpc.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp, body
+	}
+	sum := func(b []byte) string {
+		s := sha1.Sum(b)
+		return hex.EncodeToString(s[:])
+	}
+
+	// Through the proxy: a JPEG, and since the task that made the JXL keeps
+	// the JPEG's own data, the very file that was uploaded.
+	resp, body := get(proxy, jxl.ID, nil)
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "image/jpeg" {
+		t.Fatalf("download: status %d, type %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if d := resp.Header.Get("Content-Disposition"); !strings.Contains(d, "photo.jpg") {
+		t.Errorf("Content-Disposition = %q, want the name photo.jpg", d)
+	}
+	if got, want := sum(body), fileSHA1(t, src); got != want {
+		t.Errorf("the downloaded JPEG is not the uploaded one: %s, want %s (%d bytes)", got, want, len(body))
+	}
+	// A part of it, as a player or a download manager asks.
+	part, partBody := get(proxy, jxl.ID, map[string]string{"Range": "bytes=10-19"})
+	if part.StatusCode != http.StatusPartialContent || !bytes.Equal(partBody, body[10:20]) {
+		t.Errorf("range request: status %d, %d bytes", part.StatusCode, len(partBody))
+	}
+
+	// Immich itself still has, and sends, the JXL.
+	direct, directBody := get(immichURL, jxl.ID, nil)
+	if direct.Header.Get("Content-Type") != "image/jxl" || sum(directBody) == sum(body) {
+		t.Errorf("Immich's own download changed: type %q", direct.Header.Get("Content-Type"))
+	}
+	// A type no download task handles passes through byte for byte.
+	_, viaProxy := get(proxy, heic.ID, nil)
+	_, straight := get(immichURL, heic.ID, nil)
+	if !bytes.Equal(viaProxy, straight) || len(straight) == 0 {
+		t.Errorf("a file no download task handles was changed: %d bytes, want %d", len(viaProxy), len(straight))
+	}
+	// Immich's refusals stay Immich's.
+	req, _ := http.NewRequest(http.MethodGet, proxy+"/api/assets/"+jxl.ID+"/original", nil)
+	if r2, err := httpc.Do(req); err == nil {
+		r2.Body.Close()
+		if r2.StatusCode != http.StatusUnauthorized {
+			t.Errorf("download without credentials: status %d, want 401", r2.StatusCode)
+		}
 	}
 }

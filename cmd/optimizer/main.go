@@ -371,6 +371,17 @@ func loadTasks(configFile string) (*entity.Config, error) {
 		}
 	}
 
+	for i := range c.Downloads {
+		// A download is converted as it is stored: nothing is split off.
+		c.Downloads[i].MotionPhotos = entity.MotionPhotosKeep
+		if c.Downloads[i].Command == "" {
+			return nil, fmt.Errorf("error validating config: download task %s has no command", c.Downloads[i].Name)
+		}
+		if err := initTask(&c.Downloads[i]); err != nil {
+			return nil, fmt.Errorf("error validating config: download %w", err)
+		}
+	}
+
 	return c, nil
 }
 
@@ -556,8 +567,13 @@ func run(args []string) error {
 			UpstreamURL: parsedImmichURL,
 			BindAddr:    config.BindAddr,
 			AppSync:     config.ProxyAppSync,
-			HTTPClient:  httpClient,
-			Audit:       auditLog,
+			Downloads:   config.Tasks.Downloads,
+			Processor:   processorAdapter,
+			// The same limits as for uploads.
+			DownloadTimeout:     config.TasksTimeout,
+			DownloadConcurrency: config.MaxConcurrentRequests,
+			HTTPClient:          httpClient,
+			Audit:               auditLog,
 		}, engine, logger)
 		if config.ProxyAppSync {
 			logger.Warnf("Experimental app sync is on: the proxy adds hidden entries to the mobile app's sync so converted photos count as backed up")
