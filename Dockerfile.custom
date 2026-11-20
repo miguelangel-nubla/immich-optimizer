@@ -28,16 +28,17 @@ RUN set -eux; \
     tar xzf "/tmp/${CAESIUM_ARCHIVE}.tar.gz" -C /tmp; \
     install -m 755 "/tmp/${CAESIUM_ARCHIVE}/caesiumclt" /usr/local/bin/caesiumclt
 
+# The latest release, through the download link: no GitHub API call, so no
+# rate limit.
 ARG IMMICH_OPTIMIZER_REPO=miguelangel-nubla/immich-optimizer
 RUN set -eux; \
-    LATEST_TAG=$(curl -fsSL https://api.github.com/repos/$IMMICH_OPTIMIZER_REPO/releases/latest | jq -er '.tag_name'); \
     case "$TARGETPLATFORM" in \
     "linux/amd64") ARCH=x86_64 ;; \
     "linux/arm64") ARCH=arm64 ;; \
     *) echo "Platform $TARGETPLATFORM not supported"; exit 1 ;; \
     esac; \
     curl -fsSL -o /tmp/immich-optimizer.tar.gz \
-    "https://github.com/$IMMICH_OPTIMIZER_REPO/releases/download/${LATEST_TAG}/immich-optimizer_Linux_${ARCH}.tar.gz"; \
+    "https://github.com/$IMMICH_OPTIMIZER_REPO/releases/latest/download/immich-optimizer_Linux_${ARCH}.tar.gz"; \
     tar xzf /tmp/immich-optimizer.tar.gz -C /usr/local/bin immich-optimizer; \
     rm /tmp/immich-optimizer.tar.gz; \
     chmod +x /usr/local/bin/immich-optimizer
