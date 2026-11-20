@@ -184,3 +184,100 @@ func TestProxyAppSyncAddsHiddenEntries(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 }
+
+// settle syncs and acknowledges through base until Immich has nothing more
+// to say about assets, as a phone that has been idle for a while.
+func settle(t *testing.T, u *user, base string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Minute)
+	quiet := 0
+	for quiet < 3 {
+		lines := syncThrough(t, u, base)
+		busy := false
+		for _, l := range lines {
+			if l.Type == "AssetV2" || l.Type == "AssetMetadataV1" || l.Type == "AssetExifV1" {
+				busy = true
+			}
+		}
+		ackAll(t, u, base, lines)
+		if busy {
+			quiet = 0
+		} else {
+			quiet++
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Immich kept sending asset changes")
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// Two things that reach a phone without a new marker: the setting being
+// turned on after the phone had synced, and the trash.
+func TestProxyAppSyncHealsAndFollowsTheTrash(t *testing.T) {
+	u := newUser(t)
+	undone := sharedDir(t)
+	src := filepath.Join(mediaDir, "photo.jpg")
+
+	// Uploaded and synced through a proxy without the setting: the phone
+	// has seen the marker and acknowledged it, and has no hidden entry.
+	_, plain := startOptimizer(t, map[string]string{"IO_MODE": "proxy"}, true, undone+":/undone")
+	status, out := u.upload(t, plain, src, "photo.jpg", nil)
+	if status != http.StatusCreated {
+		t.Fatalf("upload: %d %s", status, out["_body"])
+	}
+	converted := u.waitReady(t, out["id"])
+	settle(t, u, plain)
+
+	// Now with the setting on. Nothing about the asset changes, so the sync
+	// has nothing for the phone, which therefore uploads its photo again.
+	_, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy", "IO_PROXY_EXPERIMENTAL_APP_SYNC": "true"}, true, undone+":/undone")
+	if n := len(hiddenLines(syncThrough(t, u, proxy))); n != 0 {
+		t.Fatalf("%d hidden entries before anything happened; the test expects none", n)
+	}
+	status, out = u.upload(t, proxy, src, "photo.jpg", nil)
+	if status != http.StatusOK || out["status"] != "duplicate" || out["id"] != converted.ID {
+		t.Fatalf("second upload: %d %s, want a duplicate of %s", status, out["_body"], converted.ID)
+	}
+	// That upload makes the proxy announce the marker again, and with it
+	// comes the hidden entry.
+	lines := syncThrough(t, u, proxy)
+	hidden := hiddenLines(lines)
+	if len(hidden) != 1 || hidden[0].Data["deletedAt"] != nil {
+		t.Fatalf("after the second upload: %d hidden entries, want 1", len(hidden))
+	}
+	hid := hidden[0].Data["id"]
+	ackAll(t, u, proxy, lines)
+	settle(t, u, proxy)
+
+	// hiddenAfter syncs until the hidden entry shows up again, and returns it.
+	hiddenAfter := func(what string) map[string]any {
+		t.Helper()
+		deadline := time.Now().Add(time.Minute)
+		for {
+			lines := syncThrough(t, u, proxy)
+			ackAll(t, u, proxy, lines)
+			if h := hiddenLines(lines); len(h) > 0 {
+				if h[len(h)-1].Data["id"] != hid {
+					t.Fatalf("after %s: a hidden entry with another id", what)
+				}
+				return h[len(h)-1].Data
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("after %s the phone was told nothing about the hidden entry", what)
+			}
+			time.Sleep(time.Second)
+		}
+	}
+	// In the trash: the hidden entry follows, so the phone does not take
+	// its photo for safely backed up.
+	must(t, u.key, http.MethodDelete, "/assets", map[string]any{"ids": []string{converted.ID}}, nil)
+	if h := hiddenAfter("trashing"); h["deletedAt"] == nil {
+		t.Errorf("the hidden entry of a trashed asset is not in the trash: %v", h)
+	}
+	settle(t, u, proxy)
+	must(t, u.key, http.MethodPost, "/trash/restore/assets", map[string]any{"ids": []string{converted.ID}}, nil)
+	if h := hiddenAfter("restoring"); h["deletedAt"] != nil {
+		t.Errorf("the hidden entry of a restored asset is still in the trash: %v", h)
+	}
+}

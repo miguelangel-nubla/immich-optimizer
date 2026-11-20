@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,8 +37,11 @@ import (
 //     only allows one asset per checksum outside libraries, so it can coexist
 //     with an original that is still on the server.
 //   - Its visibility is "hidden", so the app never shows it.
-//   - It is never marked deleted: the app can be set to delete phone photos
-//     whose server asset is in the trash.
+//   - It is in the trash exactly when the real asset is, like the entry of an
+//     ordinary asset would be: the app does not offer to free up a phone photo
+//     whose server copy is in the trash. Trashing and restoring do not touch
+//     the marker, so for those the proxy asks Immich for the marker of the
+//     asset whose line goes by.
 //   - When the real asset is deleted, or loses its marker, the hidden entry is
 //     deleted from the phone as well.
 
@@ -143,9 +145,25 @@ type syncInjector struct {
 	ownerErr error
 	asked    bool
 
+	// marker returns the marker of an asset, or nil. It is asked for assets
+	// whose own line goes by, which is how a change that does not touch the
+	// marker (trash, restore) reaches the hidden entry.
+	marker func(assetID string) *entity.Marker
+
+	// trashed remembers, for this one stream, the assets that are in the
+	// trash and since when; done the hidden entries already sent.
+	trashed map[string]string
+	done    map[string]bool
+	lookups int
+
 	// Injected counts the hidden entries added.
 	Injected int
 }
+
+// maxLookups bounds how many markers are asked for in one stream for assets
+// that are not in the trash. A first sync has a line for every asset, and
+// each of them gets its hidden entry from its marker line anyway.
+const maxLookups = 200
 
 func (in *syncInjector) owned() (string, error) {
 	if !in.asked {
@@ -164,7 +182,8 @@ func encodeLine(l syncLine) []byte {
 func (in *syncInjector) extra(line []byte) [][]byte {
 	// Cheap test first: almost every line is of no interest.
 	if in.assetType == "" || !(bytes.Contains(line, []byte(`"AssetMetadataV1"`)) ||
-		bytes.Contains(line, []byte(`"AssetMetadataDeleteV1"`)) || bytes.Contains(line, []byte(`"AssetDeleteV1"`))) {
+		bytes.Contains(line, []byte(`"AssetMetadataDeleteV1"`)) || bytes.Contains(line, []byte(`"AssetDeleteV1"`)) ||
+		bytes.Contains(line, []byte(`"`+in.assetType+`"`))) {
 		return nil
 	}
 	var l syncLine
@@ -210,44 +229,86 @@ func (in *syncInjector) extra(line []byte) [][]byte {
 		if json.Unmarshal(l.Data, &d) != nil || d.Key != entity.MarkerKey {
 			return nil
 		}
-		m := d.Value
-		sum, err := hex.DecodeString(m.SHA1)
-		id := hiddenID(d.AssetID)
-		// Not for an original that was kept as it is (its own checksum is
-		// already right), nor for a replacement that is not finished.
-		if err != nil || len(sum) != 20 || id == "" || m.Kept || m.State == entity.MarkerStatePending {
+		if in.done[d.AssetID] {
 			return nil
 		}
-		owner, err := in.owned()
-		if err != nil || owner == "" {
+		return in.entry(d.AssetID, &d.Value, hiddenAckPrefix+d.AssetID)
+
+	case in.assetType:
+		var d struct {
+			ID        string  `json:"id"`
+			DeletedAt *string `json:"deletedAt"`
+		}
+		if json.Unmarshal(l.Data, &d) != nil || hiddenID(d.ID) == "" || in.marker == nil {
 			return nil
 		}
-		data, _ := json.Marshal(map[string]any{
-			"id":               id,
-			"ownerId":          owner,
-			"originalFileName": hiddenFileName,
-			"thumbhash":        nil,
-			"checksum":         base64.StdEncoding.EncodeToString(sum),
-			"fileCreatedAt":    hiddenDate,
-			"fileModifiedAt":   hiddenDate,
-			"createdAt":        hiddenDate,
-			"localDateTime":    hiddenDate,
-			"duration":         nil,
-			"type":             "IMAGE",
-			"deletedAt":        nil,
-			"isFavorite":       false,
-			"visibility":       "hidden",
-			"livePhotoVideoId": nil,
-			"stackId":          nil,
-			"libraryId":        hiddenLibraryID,
-			"width":            nil,
-			"height":           nil,
-			"isEdited":         false,
-		})
-		in.Injected++
-		return [][]byte{encodeLine(syncLine{Type: in.assetType, Data: data, Ack: hiddenAckPrefix + d.AssetID})}
+		if d.DeletedAt != nil {
+			if in.trashed == nil {
+				in.trashed = map[string]string{}
+			}
+			in.trashed[d.ID] = *d.DeletedAt
+		} else {
+			if in.lookups >= maxLookups {
+				return nil
+			}
+			in.lookups++
+		}
+		// Same kind of line as the one before it, so the same token.
+		return in.entry(d.ID, in.marker(d.ID), l.Ack)
 	}
 	return nil
+}
+
+// entry returns the hidden entry line of an asset with marker m, or nil when
+// it gets none.
+func (in *syncInjector) entry(assetID string, m *entity.Marker, ack string) [][]byte {
+	sum, ok := hiddenChecksum(m)
+	id := hiddenID(assetID)
+	if !ok || id == "" {
+		return nil
+	}
+	owner, err := in.owned()
+	if err != nil || owner == "" {
+		return nil
+	}
+	asset := hiddenAsset(id, owner, sum)
+	if since, ok := in.trashed[assetID]; ok {
+		asset["deletedAt"] = since
+	}
+	data, _ := json.Marshal(asset)
+	if in.done == nil {
+		in.done = map[string]bool{}
+	}
+	in.done[assetID] = true
+	in.Injected++
+	return [][]byte{encodeLine(syncLine{Type: in.assetType, Data: data, Ack: ack})}
+}
+
+// hiddenAsset is the asset entry the app gets for the original of a converted
+// asset.
+func hiddenAsset(id, owner string, sum []byte) map[string]any {
+	return map[string]any{
+		"id":               id,
+		"ownerId":          owner,
+		"originalFileName": hiddenFileName,
+		"thumbhash":        nil,
+		"checksum":         base64.StdEncoding.EncodeToString(sum),
+		"fileCreatedAt":    hiddenDate,
+		"fileModifiedAt":   hiddenDate,
+		"createdAt":        hiddenDate,
+		"localDateTime":    hiddenDate,
+		"duration":         nil,
+		"type":             "IMAGE",
+		"deletedAt":        nil,
+		"isFavorite":       false,
+		"visibility":       "hidden",
+		"livePhotoVideoId": nil,
+		"stackId":          nil,
+		"libraryId":        hiddenLibraryID,
+		"width":            nil,
+		"height":           nil,
+		"isEdited":         false,
+	}
 }
 
 // copyStream copies a sync stream from r to w line by line, adding the hidden
@@ -419,6 +480,13 @@ func (s *Server) serveSyncStream(w http.ResponseWriter, r *http.Request) {
 	in := &syncInjector{
 		assetType: assetLineType(body),
 		ownerID:   func() (string, error) { return s.userID(r.Context(), r.Header) },
+		marker: func(assetID string) *entity.Marker {
+			m, err := immich.GetMarker(r.Context(), s.client, s.cfg.UpstreamURL.String(), immich.AuthHeaders(r.Header), assetID)
+			if err != nil && r.Context().Err() == nil {
+				s.logger.Warnf("App sync: could not read the marker of asset %s: %v", assetID, err)
+			}
+			return m
+		},
 	}
 	if err := in.copyStream(w, resp.Body, flush); err != nil && r.Context().Err() == nil {
 		s.logger.Warnf("Sync stream ended early: %v", err)
@@ -482,6 +550,8 @@ func (s *Server) serveAppSync(w http.ResponseWriter, r *http.Request) bool {
 		r.URL.Path, r.URL.RawPath = p, ""
 	}
 	switch {
+	case r.URL.Path == socketPath && isWebsocketUpgrade(r):
+		return s.serveSocket(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == syncStreamPath:
 		s.serveSyncStream(w, r)
 		return true

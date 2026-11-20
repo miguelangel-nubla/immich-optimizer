@@ -103,6 +103,20 @@ func (m *jobManager) attach(key string, self *job) (*job, bool) {
 	return nil, false
 }
 
+// replace registers self under key in place of stale, a finished job whose
+// result is no longer true. It reports false when another job got there
+// first, which is then the one to share.
+func (m *jobManager) replace(key string, stale, self *job) (*job, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cur := m.byKey[key]; cur != nil && cur != stale && cur != self && !m.expiredLocked(cur) {
+		return cur, false
+	}
+	self.key = key
+	m.byKey[key] = self
+	return nil, true
+}
+
 func (m *jobManager) finish(j *job, res jobResult) {
 	m.mu.Lock()
 	j.result = res

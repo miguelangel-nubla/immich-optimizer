@@ -206,7 +206,7 @@ func (c *client) doUpload(ctx context.Context, u entity.Upload, stat os.FileInfo
 		c.logger.Printf("Immich already has %s (%s) as asset %s", filename, utils.HumanReadableSize(stat.Size()), id)
 		if u.Marker != nil {
 			auth := http.Header{"X-Api-Key": []string{c.APIKey}}
-			if err := EnsureMarker(ctx, c.httpClient, c.BaseURL, auth, id, u.Marker); err != nil {
+			if err := EnsureMarker(ctx, c.httpClient, c.BaseURL, auth, id, u.Marker, false); err != nil {
 				// The file is safely in Immich; a missing marker is not a failed upload.
 				c.logger.Warnf("Could not record the optimizer marker on existing asset %s: %v", id, err)
 			}

@@ -448,10 +448,17 @@ func events(entries []map[string]any, assetID string) []string {
 // returns its name and, for the proxy, the host URL it is published on.
 func startOptimizer(t *testing.T, env map[string]string, publish bool, mounts ...string) (name, url string) {
 	t.Helper()
+	return startOptimizerOn(t, env, publish, "", mounts...)
+}
+
+// startOptimizerOn is startOptimizer with the proxy on a given host port
+// ("" for any free one).
+func startOptimizerOn(t *testing.T, env map[string]string, publish bool, port string, mounts ...string) (name, url string) {
+	t.Helper()
 	name = "io-e2e-" + randomName()
 	args := []string{"run", "-d", "--name", name}
 	if publish {
-		args = append(args, "-p", "127.0.0.1::2283")
+		args = append(args, "-p", "127.0.0.1:"+port+":2283")
 	}
 	args = append(args, dockerArgs(env, mounts...)...)
 	if out, err := exec.Command("docker", append(args, image)...).CombinedOutput(); err != nil {

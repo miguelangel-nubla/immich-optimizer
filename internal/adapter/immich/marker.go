@@ -34,7 +34,11 @@ func DuplicateAssetID(body []byte) string {
 // "duplicate", so this is how an already stored conversion gets its marker.
 // auth carries the caller's credentials (API key, or the proxied client's
 // own headers); it is sent as it is and never logged.
-func EnsureMarker(ctx context.Context, hc *http.Client, baseURL string, auth http.Header, assetID string, marker *entity.Marker) error {
+//
+// With refresh, a marker that is already there is written again unchanged.
+// Immich then sends it to its sync clients once more, which is how a phone
+// that missed it gets it.
+func EnsureMarker(ctx context.Context, hc *http.Client, baseURL string, auth http.Header, assetID string, marker *entity.Marker, refresh bool) error {
 	base := strings.TrimRight(baseURL, "/") + "/api/assets/" + url.PathEscape(assetID) + "/metadata"
 
 	do := func(method, target string, body []byte) (*http.Response, error) {
@@ -62,14 +66,21 @@ func EnsureMarker(ctx context.Context, hc *http.Client, baseURL string, auth htt
 	if err != nil {
 		return err
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	existing, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	resp.Body.Close()
+	var value json.RawMessage
 	if resp.StatusCode == http.StatusOK {
-		return nil
-	}
-
-	value, err := json.Marshal(marker)
-	if err != nil {
+		if !refresh {
+			return nil
+		}
+		var item struct {
+			Value json.RawMessage `json:"value"`
+		}
+		if json.Unmarshal(existing, &item) != nil || len(item.Value) == 0 {
+			return nil
+		}
+		value = item.Value
+	} else if value, err = json.Marshal(marker); err != nil {
 		return err
 	}
 	payload, err := json.Marshal(map[string]any{
@@ -88,6 +99,44 @@ func EnsureMarker(ctx context.Context, hc *http.Client, baseURL string, auth htt
 		return fmt.Errorf("writing asset metadata: status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return nil
+}
+
+// GetMarker reads the marker of an asset with the caller's credentials. It
+// returns nil when the asset has none.
+func GetMarker(ctx context.Context, hc *http.Client, baseURL string, auth http.Header, assetID string) (*entity.Marker, error) {
+	target := strings.TrimRight(baseURL, "/") + "/api/assets/" + url.PathEscape(assetID) + "/metadata/" + url.PathEscape(entity.MarkerKey)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	for k, vv := range auth {
+		for _, v := range vv {
+			req.Header.Add(k, v)
+		}
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	// Immich answers 400 when the asset has no such key.
+	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("reading asset metadata: status %d", resp.StatusCode)
+	}
+	var item struct {
+		Value *entity.Marker `json:"value"`
+	}
+	if err := json.Unmarshal(body, &item); err != nil {
+		return nil, err
+	}
+	return item.Value, nil
 }
 
 // AuthHeaders returns the credential headers of h, for follow-up requests on

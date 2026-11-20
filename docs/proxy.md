@@ -57,13 +57,17 @@ Every converted asset carries a [provenance marker](marker.md) with the checksum
 
 - Nothing is stored: the hidden entry is built from the marker as it goes by.
 - The real asset's entry is not changed.
-- The hidden entry is never shown, and it disappears from the phone when the converted asset is deleted.
+- The hidden entry is never shown.
+- **It arrives at once.** Immich tells the app about a finished upload over a websocket, and the proxy adds the hidden entry there too, so the app's backup page counts the photo as backed up right away.
+- **It follows its asset.** It is in the trash while the converted asset is, and it is deleted from the phone when the converted asset is deleted for good or loses its marker. The app then treats the photo as it treats any photo whose server copy was trashed or deleted.
 - Requests the app makes about a hidden entry are answered with the real asset.
-- The hidden entry reaches the phone with the app's next sync, not at the moment of the upload. The app syncs when it is opened and before every backup round, so a photo is not uploaded twice, but the app's backup page can show it as remaining until then.
 
 **What to know before trying it**
 
-- **The app must sync through the proxy.** A phone only gets a hidden entry when the marker reaches it through the proxy. Assets it had already synced before the setting was turned on do not get one until the app does a full resync (log out and in again).
-- **"Free up space" will trust it.** The app will consider those photos safely backed up and offer to delete them from the phone, although the server holds the converted file, not the original.
-- It depends on the format of Immich's sync, which can change with any Immich release. If the proxy does not recognise a line it passes it through unchanged, so the worst case is that the app goes back to uploading again.
-- Turning it off again does not remove hidden entries already on a phone; a full resync does.
+- **The app must reach Immich through the proxy**, for everything: uploads, sync and the websocket.
+- **A phone that had already synced catches up by itself.** It gets the hidden entry of an asset the next time Immich sends it anything about that asset. Until then it uploads the photo once more; the proxy finds the conversion already in Immich and announces its marker again, which brings the hidden entry with the next sync.
+- **"Free up space" will trust it.** The app considers those photos safely backed up and offers to delete them from the phone, although the server holds the converted file, not the original. It does not offer photos whose converted asset is in the trash.
+- **The proxy reads the websocket**, so it asks Immich not to compress it, and it asks Immich for the marker of each asset the app is told about. With thousands of changes in one sync it asks for the first 200 only; the rest get their hidden entry from their marker.
+- It depends on the format of Immich's sync and websocket messages, which can change with any Immich release. What the proxy does not recognise it passes through unchanged, so the worst case is that the app goes back to uploading again.
+- Turning it off again does not remove hidden entries already on a phone; a full resync does (log out and in again).
+

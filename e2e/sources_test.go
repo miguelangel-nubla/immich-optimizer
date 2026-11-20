@@ -214,3 +214,37 @@ func TestRefusesToStartWithoutAuditLog(t *testing.T) {
 	}
 	_ = u
 }
+
+// The proxy remembers the answer to an upload, to serve identical retries.
+// That answer must not outlive the asset: a photo deleted from Immich and
+// uploaded again has to be stored again.
+func TestProxyUploadsAgainAfterTheAssetWasDeleted(t *testing.T) {
+	u := newUser(t)
+	undone := sharedDir(t)
+	_, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy"}, true, undone+":/undone")
+	src := filepath.Join(mediaDir, "plain.jpg")
+	fields := map[string]string{"deviceAssetId": "same-every-time"}
+
+	status, out := u.upload(t, proxy, src, "plain.jpg", fields)
+	if status != http.StatusCreated {
+		t.Fatalf("upload: %d %s", status, out["_body"])
+	}
+	first := u.waitReady(t, out["id"])
+
+	// A retry while the asset exists gets the same answer.
+	if status, out = u.upload(t, proxy, src, "plain.jpg", fields); out["id"] != first.ID {
+		t.Fatalf("retry: %d %s, want asset %s again", status, out["_body"], first.ID)
+	}
+
+	must(t, u.key, http.MethodDelete, "/assets", map[string]any{"ids": []string{first.ID}, "force": true}, nil)
+	eventually(t, time.Minute, "Immich to delete the asset", func() bool {
+		return call(t, u.key, http.MethodGet, "/assets/"+first.ID, nil, nil) >= 400
+	})
+	status, out = u.upload(t, proxy, src, "plain.jpg", fields)
+	if status != http.StatusCreated || out["id"] == first.ID || out["id"] == "" {
+		t.Fatalf("upload after deletion: %d %s, want a new asset", status, out["_body"])
+	}
+	if a := u.waitReady(t, out["id"]); a.OriginalMimeType != "image/jxl" {
+		t.Errorf("the new asset is %s, want the converted file", a.OriginalMimeType)
+	}
+}

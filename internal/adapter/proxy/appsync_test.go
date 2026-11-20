@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	customlogger "github.com/miguelangel-nubla/immich-optimizer/internal/logger"
 )
 
@@ -64,7 +65,11 @@ func marker(assetID string, value map[string]any) string {
 // run feeds a stream through the injector and returns the lines that come out.
 func run(t *testing.T, assetType, stream string) ([]syncLine, *syncInjector) {
 	t.Helper()
-	in := &syncInjector{assetType: assetType, ownerID: func() (string, error) { return owner, nil }}
+	return runWith(t, &syncInjector{assetType: assetType, ownerID: func() (string, error) { return owner, nil }}, stream)
+}
+
+func runWith(t *testing.T, in *syncInjector, stream string) ([]syncLine, *syncInjector) {
+	t.Helper()
 	var out bytes.Buffer
 	if err := in.copyStream(&out, strings.NewReader(stream), func() {}); err != nil {
 		t.Fatal(err)
@@ -177,6 +182,87 @@ func TestDeletionsReachTheHiddenEntry(t *testing.T) {
 // End to end through the proxy: the stream is edited, the proxy's own tokens
 // never reach Immich, and requests about a hidden entry are answered with the
 // real asset.
+// hiddenLines returns what the hidden entries in lines say about being in the
+// trash, in order: "" for not in the trash.
+func hiddenLines(t *testing.T, lines []syncLine) []string {
+	t.Helper()
+	var out []string
+	for _, l := range lines {
+		var d struct {
+			ID        string  `json:"id"`
+			Checksum  string  `json:"checksum"`
+			DeletedAt *string `json:"deletedAt"`
+		}
+		if l.Type != "AssetV2" || json.Unmarshal(l.Data, &d) != nil || d.ID != hiddenID(realAsset) {
+			continue
+		}
+		if d.Checksum != abcBase64 {
+			t.Errorf("hidden entry with checksum %q", d.Checksum)
+		}
+		if d.DeletedAt == nil {
+			out = append(out, "")
+		} else {
+			out = append(out, *d.DeletedAt)
+		}
+	}
+	return out
+}
+
+func TestHiddenEntryFollowsTheTrash(t *testing.T) {
+	const when = "2026-01-02T03:04:05.000Z"
+	asked := 0
+	withMarker := func() *syncInjector {
+		return &syncInjector{assetType: "AssetV2", ownerID: func() (string, error) { return owner, nil },
+			marker: func(id string) *entity.Marker {
+				asked++
+				if id == realAsset {
+					return &entity.Marker{V: 1, SHA1: abcHex}
+				}
+				return nil
+			}}
+	}
+	trashed := line("AssetV2", map[string]any{"id": realAsset, "deletedAt": when}, "AssetV2|u5")
+	restored := line("AssetV2", map[string]any{"id": realAsset, "deletedAt": nil}, "AssetV2|u6")
+	plain := line("AssetV2", map[string]any{"id": "5f908a71-185e-4fb6-960c-278a8d87e66b", "deletedAt": nil}, "AssetV2|u7")
+	mark := marker(realAsset, map[string]any{"v": 1, "sha1": abcHex})
+
+	// Trashing sends only the asset's line: the marker is asked for.
+	lines, _ := runWith(t, withMarker(), trashed)
+	if got := hiddenLines(t, lines); len(got) != 1 || got[0] != when || len(lines) != 2 || lines[1].Ack != "AssetV2|u5" {
+		t.Fatalf("after trashing: %v (%d lines)", got, len(lines))
+	}
+	// Restoring too.
+	lines, _ = runWith(t, withMarker(), restored)
+	if got := hiddenLines(t, lines); len(got) != 1 || got[0] != "" {
+		t.Fatalf("after restoring: %v", got)
+	}
+	// A first sync of an asset that is in the trash: one hidden entry, in the trash.
+	lines, _ = runWith(t, withMarker(), trashed+mark)
+	if got := hiddenLines(t, lines); len(got) != 1 || got[0] != when {
+		t.Fatalf("first sync of a trashed asset: %v", got)
+	}
+	// An asset without a marker gets nothing.
+	if lines, _ = runWith(t, withMarker(), plain); len(lines) != 1 {
+		t.Fatalf("an asset without a marker got %d lines", len(lines))
+	}
+
+	// A long stream does not ask for every asset: beyond the limit only the
+	// trashed ones are asked for, and marker lines still do their work.
+	asked = 0
+	var long strings.Builder
+	for i := 0; i < maxLookups+50; i++ {
+		long.WriteString(plain)
+	}
+	long.WriteString(restored + mark)
+	lines, _ = runWith(t, withMarker(), long.String())
+	if asked != maxLookups {
+		t.Errorf("asked Immich for %d markers, want %d", asked, maxLookups)
+	}
+	if got := hiddenLines(t, lines); len(got) != 1 || got[0] != "" {
+		t.Errorf("long stream: %v", got)
+	}
+}
+
 func TestAppSyncThroughTheProxy(t *testing.T) {
 	var acks [][]string
 	var paths []string

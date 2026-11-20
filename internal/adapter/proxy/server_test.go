@@ -67,11 +67,25 @@ type upstreamRecorder struct {
 	keys   []string
 	got    chan struct{}
 	srv    *httptest.Server
+	// gone makes every asset look deleted; checks counts the questions about
+	// whether an asset still exists.
+	gone   bool
+	checks int
 }
 
 func newUpstream(t *testing.T) *upstreamRecorder {
 	u := &upstreamRecorder{got: make(chan struct{}, 100)}
 	u.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/assets/") {
+			u.mu.Lock()
+			u.checks++
+			gone := u.gone
+			u.mu.Unlock()
+			if gone {
+				w.WriteHeader(http.StatusBadRequest)
+			}
+			return
+		}
 		b, _ := io.ReadAll(r.Body)
 		u.mu.Lock()
 		u.bodies = append(u.bodies, string(b))
@@ -545,6 +559,35 @@ func TestProxyRetryAfterSuccessGetsCachedResponse(t *testing.T) {
 	}
 	if up.count() != 1 || c.calls.Load() != 1 || bodies[0] != bodies[1] {
 		t.Fatalf("retry should reuse the cached result: uploads=%d calls=%d bodies=%v", up.count(), c.calls.Load(), bodies)
+	}
+}
+
+// A remembered answer names an asset. When that asset has been deleted from
+// Immich in the meantime, the same upload must be stored again instead of
+// being answered with the id of something that is gone.
+func TestProxyRetryAfterTheAssetWasDeletedUploadsAgain(t *testing.T) {
+	up := newUpstream(t)
+	c := optimizedTo(t, "small")
+	server := newTestServer(t, up.srv.URL, c)
+	send := func() string {
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, uploadReq(t, "a.jpg", "same"))
+		return rec.Body.String()
+	}
+	first := send()
+	up.mu.Lock()
+	up.gone = true
+	up.mu.Unlock()
+	second := send()
+	if up.count() != 2 || c.calls.Load() != 2 || second == first {
+		t.Fatalf("the upload was not repeated: uploads=%d conversions=%d answers=%q %q", up.count(), c.calls.Load(), first, second)
+	}
+	// The new answer is remembered in place of the old one.
+	up.mu.Lock()
+	up.gone = false
+	up.mu.Unlock()
+	if third := send(); third != second || up.count() != 2 {
+		t.Fatalf("the repeated upload was not remembered: uploads=%d answers=%q %q", up.count(), second, third)
 	}
 }
 

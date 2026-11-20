@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -255,7 +257,15 @@ func setUpPhone(t *testing.T, proxyURL string, u *user, samples []string) phone 
 				"; content delete --uri content://media/external/video/media").CombinedOutput()
 	}
 	wipe()
-	t.Cleanup(wipe)
+	t.Cleanup(func() {
+		if t.Failed() {
+			// What the app knew when the test gave up.
+			out, _ := exec.Command(adbPath, "-s", androidSerial, "shell", `sqlite3 -readonly `+appDB+
+				` "select 'local', name, checksum from local_asset_entity" "select 'remote', id, name, checksum, visibility, library_id, deleted_at from remote_asset_entity"`).CombinedOutput()
+			t.Logf("the app's database:\n%s", out)
+		}
+		wipe()
+	})
 
 	// A fresh app: no account, no database. Clearing also takes its
 	// permissions away, so they are given back.
@@ -333,58 +343,87 @@ func uploads(t *testing.T, undone string) int {
 	return n
 }
 
+// assetOf returns the user's asset that was converted from the sample.
+func (u *user) assetOf(t *testing.T, sample string) string {
+	t.Helper()
+	sum := fileSHA1(t, filepath.Join(mediaDir, sample))
+	for _, a := range u.live(t) {
+		if m := u.marker(t, a.ID); m != nil && m["sha1"] == sum {
+			return a.ID
+		}
+	}
+	t.Fatalf("no asset in Immich was converted from %s", sample)
+	return ""
+}
+
 // The reason the experimental app sync exists: the app decides what to back
 // up by comparing the phone's files with the checksums the server reports,
-// and a converted photo has a different one. This runs the same backup with
-// the setting off and on, in the real app.
+// and a converted photo has a different one. These run backups in the real
+// app, with the setting off and on.
 func TestAndroidAppBackup(t *testing.T) {
 	if androidSerial == "" || adbPath == "" {
 		t.Skip("needs an Android emulator: run with E2E_ANDROID=1 scripts/e2e-test.sh")
 	}
-	samples := []string{"photo.jpg", "plain.jpg", "photo.png"}
+	photos := []string{"photo.jpg", "plain.jpg", "photo.png"}
 
 	t.Run("without app sync the phone uploads converted photos again", func(t *testing.T) {
 		u := newUser(t)
 		undone := sharedDir(t)
 		name, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy"}, true, undone+":/undone")
-		p := setUpPhone(t, proxy, u, samples)
+		p := setUpPhone(t, proxy, u, photos)
 
-		eventually(t, 3*time.Minute, "the app to upload the photos", func() bool { return uploads(t, undone) >= len(samples) })
-		eventually(t, 2*time.Minute, "the app to learn about the converted assets", func() bool { return p.queryInt(sqlRemote) == len(samples) })
-		if n := p.queryInt(sqlNotBackedUp); n != len(samples) {
-			t.Fatalf("the app has %d photo(s) left to back up, want all %d: the converted checksums should not match", n, len(samples))
+		eventually(t, 3*time.Minute, "the app to upload the photos", func() bool { return uploads(t, undone) >= len(photos) })
+		eventually(t, 2*time.Minute, "the app to learn about the converted assets", func() bool { return p.queryInt(sqlRemote) == len(photos) })
+		if n := p.queryInt(sqlNotBackedUp); n != len(photos) {
+			t.Fatalf("the app has %d photo(s) left to back up, want all %d: the converted checksums should not match", n, len(photos))
 		}
 		// So when it looks again, it sends them all again.
 		p.restart()
-		eventually(t, 2*time.Minute, "the app to upload the photos a second time", func() bool { return received(t, name) >= 2*len(samples) })
+		eventually(t, 2*time.Minute, "the app to upload the photos a second time", func() bool { return received(t, name) >= 2*len(photos) })
 	})
 
 	t.Run("with app sync the phone sees them as backed up and uploads once", func(t *testing.T) {
 		u := newUser(t)
 		undone := sharedDir(t)
 		name, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy", "IO_PROXY_EXPERIMENTAL_APP_SYNC": "true"}, true, undone+":/undone")
+		// A motion photo (converted without its video) and a video (not
+		// converted by this profile) next to the ordinary photos.
+		samples := append(append([]string(nil), photos...), "motion.jpg", "clip.mp4")
+		converted := len(samples) - 1
 		p := setUpPhone(t, proxy, u, samples)
 
-		eventually(t, 3*time.Minute, "the app to upload the photos", func() bool { return uploads(t, undone) >= len(samples) })
-		// Right after an upload the app hears about the new asset over the
-		// websocket, which the proxy does not touch. The hidden entries come
-		// with its next sync, which it runs when it starts and before every
-		// backup round.
-		eventually(t, 2*time.Minute, "the app to learn about the converted assets", func() bool { return p.queryInt(sqlRemote) == len(samples) })
-		p.restart()
-		eventually(t, 2*time.Minute, "the hidden entries to reach the app", func() bool { return p.queryInt(sqlHidden) == len(samples) })
-		eventually(t, time.Minute, "the app to count every photo as backed up", func() bool { return p.queryInt(sqlNotBackedUp) == 0 })
+		checksum := func(sample string) string { return sha1Base64(t, filepath.Join(mediaDir, sample)) }
+		hidden := func(sample, more string) int {
+			return p.queryInt("select count(*) from remote_asset_entity where visibility = 1 and library_id = '" + hiddenLibrary +
+				"' and checksum = '" + checksum(sample) + "'" + more)
+		}
+		// freeable is the app's own test for "Free up space": a photo on the
+		// phone whose checksum the server has, outside the trash.
+		freeable := func(sample string) int {
+			return p.queryInt("select count(*) from local_asset_entity l join remote_asset_entity r on r.checksum = l.checksum" +
+				" where r.deleted_at is null and l.name = '" + sample + "'")
+		}
 
-		// The hidden entries carry the checksums of the phone's files.
+		eventually(t, 3*time.Minute, "the app to upload everything", func() bool { return received(t, name) >= len(samples) })
+		// Without the app being restarted: the hidden entries come over the
+		// websocket, right behind Immich's own message about each upload.
+		eventually(t, 3*time.Minute, "the hidden entries to reach the app", func() bool { return p.queryInt(sqlHidden) == converted })
+		eventually(t, time.Minute, "the app to count everything as backed up", func() bool { return p.queryInt(sqlNotBackedUp) == 0 })
 		for _, s := range samples {
-			sum := sha1Base64(t, filepath.Join(mediaDir, s))
-			if n := p.queryInt("select count(*) from remote_asset_entity where visibility = 1 and library_id = '" + hiddenLibrary + "' and checksum = '" + sum + "'"); n != 1 {
-				t.Errorf("%s: %d hidden entries with the original's checksum, want 1", s, n)
+			want := 1
+			if s == "clip.mp4" {
+				want = 0 // stored as it is: its own entry has the right checksum
+			}
+			if n := hidden(s, ""); n != want {
+				t.Errorf("%s: %d hidden entries with the original's checksum, want %d", s, n, want)
+			}
+			if n := freeable(s); n != 1 {
+				t.Errorf("%s: the app would not offer to free it up (%d)", s, n)
 			}
 		}
 
-		// Starting the app again makes it look for things to back up. Nothing
-		// may be uploaded a second time.
+		// Starting the app again makes it sync and look for things to back
+		// up. Nothing may be uploaded a second time.
 		for i := 0; i < 2; i++ {
 			p.restart()
 			time.Sleep(15 * time.Second)
@@ -393,7 +432,10 @@ func TestAndroidAppBackup(t *testing.T) {
 			t.Fatalf("the proxy received %d uploads, want %d: the app uploaded again", n, len(samples))
 		}
 		if n := p.queryInt(sqlNotBackedUp); n != 0 {
-			t.Fatalf("after restarting, the app has %d photo(s) left to back up, want 0", n)
+			t.Fatalf("after restarting, the app has %d file(s) left to back up, want 0", n)
+		}
+		if n := p.queryInt(sqlHidden); n != converted {
+			t.Fatalf("after restarting, the app has %d hidden entries, want %d", n, converted)
 		}
 		if live := u.live(t); len(live) != len(samples) {
 			t.Fatalf("Immich has %d assets, want %d", len(live), len(samples))
@@ -401,9 +443,118 @@ func TestAndroidAppBackup(t *testing.T) {
 
 		// What the user sees on the backup page.
 		p.tap("Button", "Backup")
-		got := p.wait("", "Remainder").label()
-		if !strings.Contains(got, "/ 0 /") {
+		if got := p.wait("", "Remainder").label(); !strings.Contains(got, "/ 0 /") {
 			t.Fatalf("the app's backup page says %q, want a remainder of 0", got)
 		}
+		p.shell("input keyevent KEYCODE_BACK")
+
+		// Trashing the converted asset on the server: the phone must not
+		// consider its photo safe to delete any more, and must not upload it
+		// again either.
+		id := u.assetOf(t, "photo.jpg")
+		must(t, u.key, http.MethodDelete, "/assets", map[string]any{"ids": []string{id}}, nil)
+		eventuallyRestarting(t, p, 3*time.Minute, "the hidden entry to follow its asset into the trash", func() bool {
+			return hidden("photo.jpg", " and deleted_at is not null") == 1
+		})
+		if n := freeable("photo.jpg"); n != 0 {
+			t.Fatalf("the app would free up a photo whose only server copy is in the trash (%d)", n)
+		}
+		if n := freeable("plain.jpg"); n != 1 {
+			t.Fatalf("trashing one asset changed another (%d)", n)
+		}
+		p.restart()
+		time.Sleep(15 * time.Second)
+		if n := received(t, name); n != len(samples) {
+			t.Fatalf("the proxy received %d uploads, want %d: the app uploaded a trashed photo again", n, len(samples))
+		}
+
+		// Restoring it brings everything back.
+		must(t, u.key, http.MethodPost, "/trash/restore/assets", map[string]any{"ids": []string{id}}, nil)
+		eventuallyRestarting(t, p, 3*time.Minute, "the hidden entry to follow its asset out of the trash", func() bool {
+			return hidden("photo.jpg", " and deleted_at is null") == 1
+		})
+		if n := freeable("photo.jpg"); n != 1 {
+			t.Fatalf("after restoring, the app would not offer to free the photo up (%d)", n)
+		}
+
+		// Deleting it for good: the photo is still on the phone, so the app
+		// backs it up again, as it does with any asset deleted on the server.
+		must(t, u.key, http.MethodDelete, "/assets", map[string]any{"ids": []string{id}, "force": true}, nil)
+		eventuallyRestarting(t, p, 4*time.Minute, "the app to upload the deleted photo again", func() bool {
+			return received(t, name) == len(samples)+1
+		})
+		eventuallyRestarting(t, p, 3*time.Minute, "the new upload to count as backed up", func() bool {
+			return hidden("photo.jpg", " and deleted_at is null") == 1 && p.queryInt(sqlNotBackedUp) == 0 && p.queryInt(sqlHidden) == converted
+		})
+		if id2 := u.assetOf(t, "photo.jpg"); id2 == id {
+			t.Fatalf("the deleted asset %s is still there", id)
+		}
 	})
+
+	t.Run("turning app sync on for a phone that had already synced", func(t *testing.T) {
+		u := newUser(t)
+		undone := sharedDir(t)
+		port := freePort(t)
+		first, proxy := startOptimizerOn(t, map[string]string{"IO_MODE": "proxy"}, true, port, undone+":/undone")
+		p := setUpPhone(t, proxy, u, photos)
+		eventually(t, 3*time.Minute, "the app to upload the photos", func() bool { return received(t, first) >= len(photos) })
+		eventually(t, 2*time.Minute, "the app to learn about the converted assets", func() bool { return p.queryInt(sqlRemote) == len(photos) })
+
+		// The same proxy address, now with the setting on.
+		if out, err := exec.Command("docker", "rm", "-f", first).CombinedOutput(); err != nil {
+			t.Fatalf("docker rm: %v\n%s", err, out)
+		}
+		second, _ := startOptimizerOn(t, map[string]string{"IO_MODE": "proxy", "IO_PROXY_EXPERIMENTAL_APP_SYNC": "true"}, true, port, undone+":/undone")
+
+		// The app had synced the markers before the setting was on. It gets
+		// the hidden entries when Immich next sends it one of those assets,
+		// or, when that does not happen, after it has uploaded the photos
+		// once more: the proxy finds the conversions already in Immich and
+		// announces their markers again (TestProxyAppSyncHealsAndFollowsTheTrash
+		// covers that path on its own).
+		eventuallyRestarting(t, p, 5*time.Minute, "the hidden entries to reach the app", func() bool {
+			return p.queryInt(sqlHidden) == len(photos) && p.queryInt(sqlNotBackedUp) == 0
+		})
+		settled := received(t, second)
+		for i := 0; i < 2; i++ {
+			p.restart()
+			time.Sleep(15 * time.Second)
+		}
+		if n := received(t, second); n != settled {
+			t.Fatalf("the app kept uploading: %d uploads after it had settled at %d", n, settled)
+		}
+		if live := u.live(t); len(live) != len(photos) {
+			t.Fatalf("Immich has %d assets, want %d", len(live), len(photos))
+		}
+	})
+}
+
+// eventuallyRestarting is eventually for things the app only does when it
+// syncs or looks for things to back up: it starts the app again now and then.
+func eventuallyRestarting(t *testing.T, p phone, timeout time.Duration, what string, check func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		for i := 0; i < 20; i++ {
+			if check() {
+				return
+			}
+			time.Sleep(time.Second)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		p.restart()
+	}
+}
+
+func freePort(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	_, port, _ := net.SplitHostPort(l.Addr().String())
+	return port
 }

@@ -14,6 +14,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,7 +96,16 @@ func (s *Server) runJob(ctx context.Context, j *job, spec jobSpec) jobResult {
 	// caller's identity, so only true retries share a result.
 	if len(targets) == 1 {
 		key := coalesceKey(targets[0].sha1, formHash, spec)
-		if existing, dup := s.jobs.attach(key, j); dup {
+		existing, dup := s.jobs.attach(key, j)
+		if dup && s.resultIsStale(ctx, existing, spec) {
+			// The asset that upload created has since been deleted from
+			// Immich: its answer would send the client away with nothing
+			// stored. This upload is handled as a new one.
+			s.logger.Printf("Proxy job %s: the asset of the identical upload handled by job %s is gone from Immich, uploading again", j.id, existing.id)
+			existing, dup = s.jobs.replace(key, existing, j)
+			dup = !dup
+		}
+		if dup {
 			s.logger.Printf("Proxy job %s: identical upload of %s already handled by job %s, reusing its result",
 				j.id, targets[0].fileName, existing.id)
 			// This job's copies are never used: free the disk now instead of
@@ -275,6 +285,41 @@ func extractPart(part *multipart.Part, idx int) (*targetPart, error) {
 	return t, nil
 }
 
+// resultIsStale reports whether a finished job's answer names an asset that
+// Immich no longer has. A job that is still running, an answer without an
+// asset, and any doubt (Immich unreachable, an unexpected status) all count
+// as not stale.
+func (s *Server) resultIsStale(ctx context.Context, existing *job, spec jobSpec) bool {
+	select {
+	case <-existing.done:
+	default:
+		return false
+	}
+	var answer struct {
+		ID string `json:"id"`
+	}
+	res := existing.result
+	if res.status < 200 || res.status > 299 || json.Unmarshal(res.body, &answer) != nil || answer.ID == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	target := strings.TrimRight(s.cfg.UpstreamURL.String(), "/") + "/api/assets/" + url.PathEscape(answer.ID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return false
+	}
+	req.Header = immich.AuthHeaders(spec.header)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return false
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	_ = resp.Body.Close()
+	// Immich answers 400 for an asset that does not exist.
+	return resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound
+}
+
 // markerOf returns the provenance marker of the request's converted file. A
 // request with several converted files gets none: one asset, one marker.
 func markerOf(targets []*targetPart) *entity.Marker {
@@ -301,7 +346,7 @@ func (s *Server) markDuplicate(ctx context.Context, j *job, spec jobSpec, target
 	if id == "" {
 		return
 	}
-	err := immich.EnsureMarker(ctx, s.client, s.cfg.UpstreamURL.String(), immich.AuthHeaders(spec.header), id, marker)
+	err := immich.EnsureMarker(ctx, s.client, s.cfg.UpstreamURL.String(), immich.AuthHeaders(spec.header), id, marker, s.cfg.AppSync)
 	if err != nil {
 		s.logger.Warnf("Proxy job %s: could not record the optimizer marker on existing asset %s: %v", j.id, id, err)
 	}
