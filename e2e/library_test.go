@@ -361,21 +361,6 @@ func TestLibraryFinishesAnInterruptedReplacement(t *testing.T) {
 	})
 }
 
-func TestLibraryLimit(t *testing.T) {
-	u := newUser(t)
-	a := u.add(t, "plain.jpg", nil)
-	b := u.add(t, "photo.jpg", nil)
-
-	logDir := sharedDir(t)
-	code, out, _ := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_LIBRARY_LIMIT": "1"})
-	if code != 0 {
-		t.Fatalf("library run exited %d:\n%s", code, out)
-	}
-	if u.asset(t, a.ID).IsTrashed == u.asset(t, b.ID).IsTrashed {
-		t.Errorf("with a limit of 1, exactly one of the two photos must be converted:\n%s", out)
-	}
-}
-
 // replacedBy returns the id of the copy that replaced an original, from the log.
 func replacedBy(log []map[string]any, originalID string) string {
 	for _, e := range log {

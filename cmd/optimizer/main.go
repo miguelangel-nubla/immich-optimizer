@@ -275,9 +275,6 @@ func validateAppConfig(ac *entity.AppConfig) error {
 		if len(strings.TrimSpace(ac.ImmichAPIKey)) < 10 {
 			return fmt.Errorf("library mode needs an Immich API key (-immich_api_key)")
 		}
-		if ac.LibraryLimit < 0 {
-			return fmt.Errorf("library_limit must not be negative")
-		}
 		if ac.LibraryDryRunSample < 0 {
 			return fmt.Errorf("library_dry_run_sample must not be negative")
 		}
@@ -541,7 +538,6 @@ func run(args []string) error {
 		}
 		svc := library.New(library.Config{
 			DryRun:        config.LibraryDryRun,
-			Limit:         config.LibraryLimit,
 			ReadyTimeout:  config.LibraryReadyTimeout,
 			Version:       version,
 			Concurrency:   config.LibraryConcurrency,

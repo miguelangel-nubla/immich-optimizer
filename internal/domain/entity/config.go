@@ -51,7 +51,6 @@ type AppConfig struct {
 	AuditLogFile     string
 	// Library mode.
 	LibraryDryRun         bool
-	LibraryLimit          int
 	LibraryDryRunSample   int
 	LibraryReportFile     string
 	ImmichPublicURL       string

@@ -42,8 +42,6 @@ import (
 type Config struct {
 	// DryRun reports what would be converted without changing anything.
 	DryRun bool
-	// Limit stops the run after this many replacements; 0 means no limit.
-	Limit int
 	// ReadyTimeout is how long to wait for Immich to finish reading a newly
 	// uploaded asset before giving up on it.
 	ReadyTimeout time.Duration
@@ -346,41 +344,14 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	}
 	candidates = rest
 
-	// 4. Convert. The limit counts replacements that are done or under way.
+	// 4. Convert, oldest first.
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].asset.FileCreatedAt.Before(candidates[j].asset.FileCreatedAt)
 	})
-	inFlight := 0
-	limitReached := func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		if s.cfg.Limit > 0 && sum.Replaced+sum.WouldReplace+inFlight >= s.cfg.Limit {
-			return true
-		}
-		inFlight++
-		return false
-	}
-	announced := false
-	s.forEach(len(candidates), func() bool {
-		if stopped() {
-			return true
-		}
-		if limitReached() {
-			if !announced {
-				announced = true
-				s.infof("Library: limit of %d replacement(s) reached", s.cfg.Limit)
-			}
-			return true
-		}
-		return false
-	}, func(i int) {
+	s.forEach(len(candidates), stopped, func(i int) {
 		c := candidates[i]
 		t := &tally{}
-		err := s.work(ctx, c.asset, c.items, t)
-		mu.Lock()
-		inFlight--
-		mu.Unlock()
-		outcome(c.asset, t, err)
+		outcome(c.asset, t, s.work(ctx, c.asset, c.items, t))
 	})
 	// 5. A dry run converts a sample, without uploading anything, to say
 	// what a real run would save.

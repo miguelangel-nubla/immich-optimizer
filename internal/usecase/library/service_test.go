@@ -816,27 +816,6 @@ func TestSharedAlbumWithoutActivityIsConverted(t *testing.T) {
 	}
 }
 
-func TestLimit(t *testing.T) {
-	h := newHarness(t)
-	for i := 0; i < 5; i++ {
-		h.im.add(fmt.Sprintf("IMG_%d.jpg", i), photo(i))
-	}
-	h.cfg.Limit = 2
-	sum, err := h.run()
-	if err != nil || sum.Replaced != 2 {
-		t.Fatalf("summary = %+v, err %v", sum, err)
-	}
-	trashed := 0
-	for _, a := range h.im.assets {
-		if a.IsTrashed {
-			trashed++
-		}
-	}
-	if trashed != 2 {
-		t.Errorf("%d originals trashed, want 2", trashed)
-	}
-}
-
 // pendingCopy puts the fake in the state an interrupted run leaves behind:
 // the converted copy exists and is marked pending.
 func pendingCopy(h *harness, old *fakeAsset) *fakeAsset {
@@ -1115,18 +1094,9 @@ func TestConcurrency(t *testing.T) {
 		a.StackPrimaryID = "someone-else"
 		originals = append(originals, a)
 	}
-	h.cfg.Limit = 10
 	sum, err := h.run()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sum.Replaced != 10 || sum.Failed != 0 {
-		t.Fatalf("summary with limit = %+v", sum)
-	}
-	h.cfg.Limit = 0
-	sum, err = h.run()
-	if err != nil || sum.Replaced != n-10 || sum.Failed != 0 {
-		t.Fatalf("second run = %+v, err %v", sum, err)
+	if err != nil || sum.Replaced != n || sum.Failed != 0 {
+		t.Fatalf("summary = %+v, err %v", sum, err)
 	}
 	live := 0
 	for _, a := range h.im.assets {

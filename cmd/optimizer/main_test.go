@@ -791,15 +791,12 @@ func TestLibraryModeConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.LibraryDryRun || cfg.LibraryLimit != 0 || cfg.LibraryReadyTimeout != 10*time.Minute {
+	if !cfg.LibraryDryRun || cfg.LibraryReadyTimeout != 10*time.Minute {
 		t.Errorf("library defaults: %+v", cfg)
 	}
 
 	if _, _, err := parseConfig(base); err == nil {
 		t.Error("library mode without an API key must be refused")
-	}
-	if _, _, err := parseConfig(append(base, "-immich_api_key", "0123456789abcdef", "-library_limit", "-1")); err == nil {
-		t.Error("a negative limit must be refused")
 	}
 	if !hasMode("watcher, Library", "library") || hasMode("watcher,proxy", "library") {
 		t.Error("hasMode")
@@ -1035,7 +1032,7 @@ func TestLibraryIntervalSetting(t *testing.T) {
 	if err != nil || ac.LibraryInterval != 24*time.Hour {
 		t.Fatalf("%+v, %v", ac, err)
 	}
-	for _, bad := range [][]string{{"-library_interval", "-1h"}, {"-library_interval", "90"}, {"-library_taken_before", "2020-01-01"}, {"-library_older_than", "24h"}} {
+	for _, bad := range [][]string{{"-library_interval", "-1h"}, {"-library_interval", "90"}, {"-library_taken_before", "2020-01-01"}, {"-library_older_than", "24h"}, {"-library_limit", "5"}} {
 		if _, _, err := parseConfig(append(append([]string(nil), base...), bad...)); err == nil {
 			t.Errorf("%v was accepted", bad)
 		}
