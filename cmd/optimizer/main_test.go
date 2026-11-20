@@ -691,14 +691,23 @@ func TestDeprecationWarningShownAtErrorLevel(t *testing.T) {
 }
 
 func TestLoadTasksMotionPhotosPolicy(t *testing.T) {
+	task := func(extra string) string {
+		return "  - name: t\n    command: \"\"\n    extensions: [jpg]\n" + extra
+	}
 	cases := []struct {
-		yaml, want string
-		wantErr    bool
+		yaml                 string
+		wantGlobal, wantTask string
+		wantErr              bool
 	}{
-		{"tasks: []\n", entity.MotionPhotosDropVideo, false},
-		{"motion_photos: drop_video\ntasks: []\n", entity.MotionPhotosDropVideo, false},
-		{"motion_photos: keep\ntasks: []\n", entity.MotionPhotosKeep, false},
-		{"motion_photos: sometimes\ntasks: []\n", "", true},
+		// Built-in default: keep as is.
+		{"tasks:\n" + task(""), entity.MotionPhotosKeep, entity.MotionPhotosKeep, false},
+		// The top-level value is the default for every task...
+		{"motion_photos: drop_video\ntasks:\n" + task(""), entity.MotionPhotosDropVideo, entity.MotionPhotosDropVideo, false},
+		// ...and a task can override it.
+		{"motion_photos: drop_video\ntasks:\n" + task("    motion_photos: drop_photo\n"), entity.MotionPhotosDropVideo, entity.MotionPhotosDropPhoto, false},
+		{"tasks:\n" + task("    motion_photos: drop_video\n"), entity.MotionPhotosKeep, entity.MotionPhotosDropVideo, false},
+		{"motion_photos: sometimes\ntasks:\n" + task(""), "", "", true},
+		{"tasks:\n" + task("    motion_photos: sometimes\n"), "", "", true},
 	}
 	for _, c := range cases {
 		p := filepath.Join(t.TempDir(), "tasks.yaml")
@@ -712,8 +721,12 @@ func TestLoadTasksMotionPhotosPolicy(t *testing.T) {
 			}
 			continue
 		}
-		if err != nil || cfg.MotionPhotos != c.want {
-			t.Errorf("%q: got %v, %v; want %q", c.yaml, cfg, err, c.want)
+		if err != nil {
+			t.Errorf("%q: %v", c.yaml, err)
+			continue
+		}
+		if cfg.MotionPhotos != c.wantGlobal || cfg.Tasks[0].MotionPhotos != c.wantTask {
+			t.Errorf("%q: global=%q task=%q, want %q / %q", c.yaml, cfg.MotionPhotos, cfg.Tasks[0].MotionPhotos, c.wantGlobal, c.wantTask)
 		}
 	}
 }

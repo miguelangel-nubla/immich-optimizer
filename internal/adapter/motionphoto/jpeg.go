@@ -5,7 +5,8 @@
 //
 // StripJPEG writes a copy of the still without the trailing video and with
 // the motion flags switched off, so Immich does not look for a video that is
-// no longer there. The input is never modified.
+// no longer there. ExtractVideoJPEG writes only the video. The input is never
+// modified.
 package motionphoto
 
 import (
@@ -18,13 +19,14 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"time"
 )
 
-// Info describes what StripJPEG removed.
+// Info describes the two parts of a motion photo.
 type Info struct {
-	// VideoBytes is the size of the removed trailing video.
+	// VideoBytes is the size of the trailing video.
 	VideoBytes int64
-	// StillBytes is the size of the written still.
+	// StillBytes is the size of the still.
 	StillBytes int64
 }
 
@@ -52,17 +54,19 @@ var (
 	paddingRe  = regexp.MustCompile(`:Padding\s*=\s*["'](\d+)["']`)
 )
 
-// StripJPEG copies the still image of the motion photo at src to dst. It
-// returns ErrNotMotionPhoto (and writes nothing) when src is not a JPEG
-// motion photo, or when the announced video cannot be confirmed at the end of
-// the file.
-func StripJPEG(src, dst string) (*Info, error) {
-	f, err := os.Open(src)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
+// layout is what analyze learns about a JPEG motion photo.
+type layout struct {
+	size    int64
+	cut     int64 // where the video starts
+	xmpOff  int64
+	xmp     []byte
+	flags   [][]int
+	modTime time.Time
+}
 
+// analyze returns ErrNotMotionPhoto when f is not a JPEG motion photo, or
+// when the announced video cannot be confirmed at the end of the file.
+func analyze(f *os.File) (*layout, error) {
 	st, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -76,28 +80,61 @@ func StripJPEG(src, dst string) (*Info, error) {
 	if xmp == nil {
 		return nil, ErrNotMotionPhoto
 	}
-
 	flags := flagRe.FindAllSubmatchIndex(xmp, -1)
 	if len(flags) == 0 {
 		return nil, ErrNotMotionPhoto
 	}
-
 	videoLen := videoLength(xmp)
 	if videoLen <= 0 || videoLen >= size {
 		return nil, ErrNotMotionPhoto
 	}
 	cut := size - videoLen
 
-	// Only cut when an MP4 really starts there ("ftyp" box).
+	// Only accept it when an MP4 really starts there ("ftyp" box).
 	box := make([]byte, 8)
 	if _, err := f.ReadAt(box, cut); err != nil || string(box[4:8]) != "ftyp" {
 		return nil, ErrNotMotionPhoto
 	}
+	return &layout{size: size, cut: cut, xmpOff: xmpOff, xmp: xmp, flags: flags, modTime: st.ModTime()}, nil
+}
+
+// create opens dst for writing and returns a finish function that closes it,
+// applies modTime, and removes the file unless called with ok=true.
+func create(dst string, modTime time.Time) (*os.File, func(ok bool) error, error) {
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, func(ok bool) error {
+		err := out.Close()
+		if !ok || err != nil {
+			os.Remove(dst)
+			return err
+		}
+		// Keep the original modification time: sources use it as the asset date.
+		_ = os.Chtimes(dst, modTime, modTime)
+		return nil
+	}, nil
+}
+
+// StripJPEG copies the still image of the motion photo at src to dst, without
+// the video and with the motion flags switched off. It returns
+// ErrNotMotionPhoto (and writes nothing) when src is not a JPEG motion photo.
+func StripJPEG(src, dst string) (*Info, error) {
+	f, err := os.Open(src)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	l, err := analyze(f)
+	if err != nil {
+		return nil, err
+	}
 
 	// Switch the flags off in place ("1" -> "0"): same length, so no JPEG
 	// segment has to be rewritten.
-	patched := bytes.Clone(xmp)
-	for _, m := range flags {
+	patched := bytes.Clone(l.xmp)
+	for _, m := range l.flags {
 		for _, g := range []int{2, 4} {
 			if m[g] >= 0 {
 				patched[m[g]] = '0'
@@ -105,39 +142,56 @@ func StripJPEG(src, dst string) (*Info, error) {
 		}
 	}
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	out, finish, err := create(dst, l.modTime)
 	if err != nil {
 		return nil, err
 	}
-	ok := false
-	defer func() {
-		out.Close()
-		if !ok {
-			os.Remove(dst)
-		}
-	}()
-
 	w := bufio.NewWriterSize(out, 1<<20)
-	if _, err := io.Copy(w, io.NewSectionReader(f, 0, xmpOff)); err != nil {
+	rest := l.xmpOff + int64(len(l.xmp))
+	_, err = io.Copy(w, io.NewSectionReader(f, 0, l.xmpOff))
+	if err == nil {
+		_, err = w.Write(patched)
+	}
+	if err == nil {
+		_, err = io.Copy(w, io.NewSectionReader(f, rest, l.cut-rest))
+	}
+	if err == nil {
+		err = w.Flush()
+	}
+	if ferr := finish(err == nil); err == nil {
+		err = ferr
+	}
+	if err != nil {
 		return nil, err
 	}
-	if _, err := w.Write(patched); err != nil {
+	return &Info{VideoBytes: l.size - l.cut, StillBytes: l.cut}, nil
+}
+
+// ExtractVideoJPEG copies the embedded MP4 of the motion photo at src to dst.
+// It returns ErrNotMotionPhoto (and writes nothing) when src is not a JPEG
+// motion photo.
+func ExtractVideoJPEG(src, dst string) (*Info, error) {
+	f, err := os.Open(src)
+	if err != nil {
 		return nil, err
 	}
-	rest := xmpOff + int64(len(xmp))
-	if _, err := io.Copy(w, io.NewSectionReader(f, rest, cut-rest)); err != nil {
+	defer f.Close()
+	l, err := analyze(f)
+	if err != nil {
 		return nil, err
 	}
-	if err := w.Flush(); err != nil {
+	out, finish, err := create(dst, l.modTime)
+	if err != nil {
 		return nil, err
 	}
-	if err := out.Close(); err != nil {
+	_, err = io.Copy(out, io.NewSectionReader(f, l.cut, l.size-l.cut))
+	if ferr := finish(err == nil); err == nil {
+		err = ferr
+	}
+	if err != nil {
 		return nil, err
 	}
-	// Keep the original modification time: sources use it as the asset date.
-	_ = os.Chtimes(dst, st.ModTime(), st.ModTime())
-	ok = true
-	return &Info{VideoBytes: videoLen, StillBytes: cut}, nil
+	return &Info{VideoBytes: l.size - l.cut, StillBytes: l.cut}, nil
 }
 
 // videoLength returns the number of trailing bytes that belong to the video,

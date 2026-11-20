@@ -14,6 +14,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/motionphoto"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
@@ -68,6 +69,9 @@ type fileProcessor struct {
 	tempWorkDirDst string
 
 	processedFile *os.File
+
+	// motionPhotos is the current task's motion photo setting.
+	motionPhotos string
 }
 
 func (fp *fileProcessor) logf(str string, args ...any) {
@@ -113,7 +117,7 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 			continue
 		}
 
-		convErr := fp.run(ctx, cmdTmpl, &attempt)
+		convErr := fp.run(ctx, cmdTmpl, task.MotionPhotos, &attempt)
 		attempt.Duration = time.Since(start)
 		if convErr != nil {
 			attempt.Err = convErr.Error()
@@ -186,15 +190,21 @@ func (fp *fileProcessor) cleanWorkDir() {
 	fp.tempWorkDirDst = ""
 }
 
-func (fp *fileProcessor) run(ctx context.Context, commandTemplate *template.Template, attempt *entity.TaskAttempt) error {
+func (fp *fileProcessor) run(ctx context.Context, commandTemplate *template.Template, motionPhotos string, attempt *entity.TaskAttempt) error {
 	if err := fp.setupWorkDirectories(); err != nil {
 		return err
 	}
 
-	tempFile, err := fp.copySourceFile()
+	tempFile, err := fp.motionPhotoSource(motionPhotos)
 	if err != nil {
 		return err
 	}
+	if tempFile == nil {
+		if tempFile, err = fp.copySourceFile(); err != nil {
+			return err
+		}
+	}
+	fp.motionPhotos = motionPhotos
 
 	command, err := fp.buildCommand(commandTemplate, tempFile)
 	if err != nil {
@@ -249,6 +259,45 @@ func (fp *fileProcessor) copySourceFile() (*os.File, error) {
 	return tempFile, nil
 }
 
+// motionPhotoSource prepares the task input for a JPEG motion photo according
+// to the task's setting: only the photo (drop_video) or only the video
+// (drop_photo). It returns nil when the regular copy must be used: the
+// setting is "keep", the file is not a JPEG, or it is not a motion photo.
+func (fp *fileProcessor) motionPhotoSource(setting string) (*os.File, error) {
+	if setting != entity.MotionPhotosDropVideo && setting != entity.MotionPhotosDropPhoto {
+		return nil, nil
+	}
+	if fp.originalExtension != ".jpg" && fp.originalExtension != ".jpeg" {
+		return nil, nil
+	}
+
+	ext, split, what := fp.originalExtension, motionphoto.StripJPEG, "photo"
+	if setting == entity.MotionPhotosDropPhoto {
+		ext, split, what = ".mp4", motionphoto.ExtractVideoJPEG, "video"
+	}
+	// Reserve a unique name, then let the splitter create the file itself.
+	tempFile, err := os.CreateTemp(fp.tempWorkDirSrc, "file-*"+ext)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create temp file: %w", err)
+	}
+	tempFile.Close()
+	if err := os.Remove(tempFile.Name()); err != nil {
+		return nil, fmt.Errorf("unable to prepare temp file: %w", err)
+	}
+
+	info, err := split(fp.originalFile.Name(), tempFile.Name())
+	if errors.Is(err, motionphoto.ErrNotMotionPhoto) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("unable to split motion photo: %w", err)
+	}
+	fp.logf("motion photo %s (%s): passing only the %s to the task (photo %s, video %s)",
+		fp.originalFilename, setting, what,
+		utils.HumanReadableSize(info.StillBytes), utils.HumanReadableSize(info.VideoBytes))
+	return tempFile, nil
+}
+
 func (fp *fileProcessor) copyPassthroughResult(tempFile *os.File) error {
 	srcPath := tempFile.Name()
 	src, err := os.Open(srcPath)
@@ -300,6 +349,11 @@ func (fp *fileProcessor) executeCommand(ctx context.Context, command string, att
 	fp.logf("running: %s", command)
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	if fp.motionPhotos != "" {
+		// Lets scripts apply the task's motion photo setting to formats the
+		// optimizer does not split itself (HEIC).
+		cmd.Env = append(os.Environ(), "IO_MOTION_PHOTOS="+fp.motionPhotos)
+	}
 	if fp.configDir != "" {
 		cmd.Dir = fp.configDir
 	}

@@ -302,29 +302,45 @@ The undone folder belongs to the conversion engine, so it works the same for eve
 
 ## 📸 Motion photos
 
-Android motion photos are a JPEG with a short video appended to the same file. The default policy is **keep the photo, drop the video**. You control it at the top level of your `tasks.yaml`:
+A motion photo is a photo with a short video embedded in the same file (Android/Pixel JPEGs, Samsung HEICs). The `motion_photos` key of your `tasks.yaml` controls **what each task command receives** for such a file:
+
+| Value | The task receives |
+|---|---|
+| `keep` | the file as it is, photo and video together (built-in default) |
+| `drop_video` | only the photo |
+| `drop_photo` | only the video, as an `.mp4` |
+
+Set it at the top of the file as the default for all tasks, and on a task to override it:
 
 ```yaml
-motion_photos: drop_video   # default: keep the photo, drop the video
-# motion_photos: keep       # hand motion photos to the tasks unchanged
+motion_photos: drop_video        # default for every task below
+
 tasks:
-  - ...
+  - name: jpeg-xl                # gets only the photo
+    command: cjxl --lossless_jpeg=1 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
+    extensions: [jpg, jpeg]
+
+  - name: untouched-fallback     # gets the whole file
+    motion_photos: keep
+    command: ""
+    extensions: [jpg, jpeg]
 ```
 
-With `keep`, the optimizer does not touch motion photos and your tasks decide what happens. Be aware that most encoders then either drop the video without notice (lossy tasks) or hide it inside the output where Immich cannot play it (`cjxl --lossless_jpeg=1`). To really keep a motion photo intact, give it a passthrough task. Task commands can read the policy from the `IO_MOTION_PHOTOS` environment variable.
+- The bundled `lossless`, `profile1` and `storage-saver-amd-gpu` profiles set `motion_photos: drop_video`: **keep the photo, drop the video**. A tasks file without the key keeps motion photos as they are.
+- The setting only affects motion photos. Every other file reaches the task unchanged.
+- When several tasks match a file, each one gets its input prepared by its own setting.
+- With `drop_video` the motion flag is also switched off in the photo's metadata, so Immich does not look for a video that is gone.
+- With `drop_photo` the input is `{{.name}}.mp4`, so `{{.extension}}` is `mp4` in the command.
+- The log says what was passed: `motion photo IMG_1234.jpg (drop_video): passing only the photo to the task (photo 3.1 MB, video 2.1 MB)`.
+- If all tasks fail, the **untouched original, video included**, is saved to the undone folder.
 
-With the default `drop_video`:
+Things to know:
 
-- Before any task runs, the optimizer removes the embedded video from JPEG motion photos (Google `MotionPhoto` and the older `MicroVideo` format) and switches the motion flag off in the photo's metadata, so Immich does not look for a video that is gone. Tasks only ever see the still photo.
-- The log says so for each file: `Motion photo IMG_1234.jpg (proxy): keeping the photo, dropping the embedded video (2.1 MB)`.
-- If the task gives no size reduction on the still, the still is uploaded anyway, since it is already smaller than the input.
-- If conversion fails, the **untouched original, video included**, is saved to the undone folder.
-- HEIC motion photos (Samsung) are handled by the `profile1` `heic2jxl.sh` task the same way: the photo is converted and the video is dropped.
-- A file is only cut when an MP4 really starts where the metadata says the video is. Otherwise it is converted as it is.
-
-Older Samsung JPEGs that store the video in a Samsung-specific trailer without the standard motion-photo metadata are not detected.
-
-This applies to every source (watcher and proxy). Apple Live Photos are different: they are two separate files and both are processed normally.
+- **`keep` with a converting task rarely keeps the video.** Lossy encoders drop it without notice, and `cjxl --lossless_jpeg=1` hides it inside the output where Immich cannot play it. To really keep a motion photo intact, use `keep` on a passthrough task (empty command).
+- **JPEG** motion photos (Google `MotionPhoto` and the older `MicroVideo` format) are split by the optimizer itself. A file is only split when an MP4 really starts where its metadata says; otherwise it is passed as it is.
+- **HEIC** motion photos are not split by the optimizer. The task command gets the setting in the `IO_MOTION_PHOTOS` environment variable and applies it itself, as the bundled `profile1/heic2jxl.sh` does.
+- Older Samsung JPEGs that store the video in a Samsung-specific trailer without the standard motion-photo metadata are not detected.
+- Apple Live Photos are different: they are two separate files and both are processed normally.
 
 ## 📋 Optimization Profiles
 

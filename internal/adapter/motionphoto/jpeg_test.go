@@ -111,3 +111,27 @@ func TestStripJPEGElementForm(t *testing.T) {
 		t.Errorf("info=%+v out=%q", info, out)
 	}
 }
+
+func TestExtractVideoJPEG(t *testing.T) {
+	video, err := os.ReadFile("testdata/video.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"motion.jpg", "microvideo.jpg"} {
+		dst := filepath.Join(t.TempDir(), "v.mp4")
+		if _, err := ExtractVideoJPEG(filepath.Join("testdata", name), dst); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		out, _ := os.ReadFile(dst)
+		if !bytes.Equal(out, video) {
+			t.Errorf("%s: extracted video differs from the embedded one", name)
+		}
+	}
+	dst := filepath.Join(t.TempDir(), "none.mp4")
+	if _, err := ExtractVideoJPEG("testdata/still.jpg", dst); !errors.Is(err, ErrNotMotionPhoto) {
+		t.Errorf("still.jpg: err = %v, want ErrNotMotionPhoto", err)
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Error("an output file was written for an ordinary JPEG")
+	}
+}

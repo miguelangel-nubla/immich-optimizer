@@ -73,7 +73,17 @@ When a file is uploaded, the optimizer:
 
 ## Motion photos
 
-By default (`motion_photos: drop_video`, a top-level key of this file) the embedded video of JPEG motion photos is removed before your command runs, so `{{.src_folder}}/{{.name}}.{{.extension}}` is the still photo only. Set `motion_photos: keep` to receive motion photos unchanged. Commands can read the policy from the `IO_MOTION_PHOTOS` environment variable. See "Motion photos" in the README.
+`motion_photos` controls what a task command receives when the file is a motion photo (a photo with an embedded video): `keep` (the file as it is, the default), `drop_video` (only the photo) or `drop_photo` (only the video, as `.mp4`). Set it at the top level as the default and on a task to override it:
+
+```yaml
+motion_photos: drop_video
+tasks:
+  - name: taskA
+    motion_photos: keep
+    command: ...
+```
+
+Commands also get the task's value in the `IO_MOTION_PHOTOS` environment variable. See "Motion photos" in the README for the details.
 
 ## Docker Setup
 

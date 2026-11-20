@@ -1,3 +1,9 @@
+# What a task receives when the file is a motion photo (a photo with a short
+# embedded video): keep (as it is), drop_video (only the photo) or drop_photo
+# (only the video). This is the default for every task below; a task can set
+# its own "motion_photos:" to override it.
+motion_photos: drop_video
+
 tasks:
 - name: jpeg-xl
   command: cjxl --lossless_jpeg=0 -q 75 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"

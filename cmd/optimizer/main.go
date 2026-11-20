@@ -24,7 +24,6 @@ import (
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/filesystem"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/httpclient"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/immich"
-	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/motionphoto"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/processor"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/proxy"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/undone"
@@ -356,22 +355,32 @@ func loadTasks(configFile string) (*entity.Config, error) {
 		c = &entity.Config{}
 	}
 
-	switch c.MotionPhotos {
-	case "":
-		c.MotionPhotos = entity.MotionPhotosDropVideo
-	case entity.MotionPhotosDropVideo, entity.MotionPhotosKeep:
-	default:
-		return nil, fmt.Errorf("error validating config: motion_photos must be %q or %q, got %q",
-			entity.MotionPhotosDropVideo, entity.MotionPhotosKeep, c.MotionPhotos)
+	if c.MotionPhotos == "" {
+		c.MotionPhotos = entity.MotionPhotosKeep
+	}
+	if !entity.ValidMotionPhotos(c.MotionPhotos) {
+		return nil, fmt.Errorf("error validating config: %s", motionPhotosError("top-level", c.MotionPhotos))
 	}
 
 	for i := range c.Tasks {
+		// A task without its own setting uses the top-level default.
+		if c.Tasks[i].MotionPhotos == "" {
+			c.Tasks[i].MotionPhotos = c.MotionPhotos
+		}
+		if !entity.ValidMotionPhotos(c.Tasks[i].MotionPhotos) {
+			return nil, fmt.Errorf("error validating config: %s", motionPhotosError("task "+c.Tasks[i].Name, c.Tasks[i].MotionPhotos))
+		}
 		if err := initTask(&c.Tasks[i]); err != nil {
 			return nil, fmt.Errorf("error validating config: %w", err)
 		}
 	}
 
 	return c, nil
+}
+
+func motionPhotosError(where, got string) string {
+	return fmt.Sprintf("%s motion_photos must be %q, %q or %q, got %q", where,
+		entity.MotionPhotosKeep, entity.MotionPhotosDropVideo, entity.MotionPhotosDropPhoto, got)
 }
 
 func initTask(task *entity.Task) error {
@@ -435,31 +444,12 @@ func run(args []string) error {
 	logger.Printf("Failed inputs are saved to %s", undoneStore.Root())
 
 	processorAdapter := processor.NewLocalProcessor(logger, filepath.Dir(config.ConfigFile))
-	engineConfig := convert.Config{
+	engine := convert.New(convert.Config{
 		Tasks:         config.Tasks.Tasks,
 		MaxConcurrent: config.MaxConcurrentRequests,
 		TaskTimeout:   time.Duration(config.TaskTimeoutSeconds) * time.Second,
 		SaveUnmatched: config.UndoneUnmatched,
-	}
-	// The policy comes from the tasks file. Task commands can read it from
-	// the IO_MOTION_PHOTOS environment variable (used by heic2jxl.sh).
-	if err := os.Setenv("IO_MOTION_PHOTOS", config.Tasks.MotionPhotos); err != nil {
-		return fmt.Errorf("setting IO_MOTION_PHOTOS: %w", err)
-	}
-	if config.Tasks.MotionPhotos == entity.MotionPhotosDropVideo {
-		engineConfig.StripMotionPhoto = func(src, dst string) (int64, bool, error) {
-			info, err := motionphoto.StripJPEG(src, dst)
-			if errors.Is(err, motionphoto.ErrNotMotionPhoto) {
-				return 0, false, nil
-			}
-			if err != nil {
-				return 0, false, err
-			}
-			return info.VideoBytes, true, nil
-		}
-	}
-	logger.Printf("Motion photos policy: %s", config.Tasks.MotionPhotos)
-	engine := convert.New(engineConfig, processorAdapter, undoneStore, logger)
+	}, processorAdapter, undoneStore, logger)
 
 	httpTimeout := time.Duration(config.HTTPTimeoutSeconds) * time.Second
 	httpClient := httpclient.New(httpclient.Options{
