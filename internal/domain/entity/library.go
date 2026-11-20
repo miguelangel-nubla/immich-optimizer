@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -82,6 +83,14 @@ type LibraryAssetUpdate struct {
 	Longitude        *float64
 	IsFavorite       *bool
 	Visibility       *string
+	// LivePhotoVideoID links a photo to the video it is paired with.
+	LivePhotoVideoID *string
+}
+
+// LibraryEdit is one non-destructive edit (crop, rotate, mirror) of an asset.
+type LibraryEdit struct {
+	Action     string          `json:"action"`
+	Parameters json.RawMessage `json:"parameters"`
 }
 
 // LibraryUpload is a converted file uploaded to replace an existing asset.

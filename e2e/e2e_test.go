@@ -169,6 +169,8 @@ type asset struct {
 	LocalDateTime    string  `json:"localDateTime"`
 	IsFavorite       bool    `json:"isFavorite"`
 	IsTrashed        bool    `json:"isTrashed"`
+	IsEdited         bool    `json:"isEdited"`
+	LivePhotoVideoID *string `json:"livePhotoVideoId"`
 	Visibility       string  `json:"visibility"`
 	Thumbhash        *string `json:"thumbhash"`
 	ExifInfo         struct {

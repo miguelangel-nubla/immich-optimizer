@@ -117,6 +117,18 @@ func create(dst string, modTime time.Time) (*os.File, func(ok bool) error, error
 	}, nil
 }
 
+// IsMotionJPEG reports whether the file is a JPEG motion photo this package
+// can split.
+func IsMotionJPEG(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	_, err = analyze(f)
+	return err == nil
+}
+
 // StripJPEG copies the still image of the motion photo at src to dst, without
 // the video and with the motion flags switched off. It returns
 // ErrNotMotionPhoto (and writes nothing) when src is not a JPEG motion photo.

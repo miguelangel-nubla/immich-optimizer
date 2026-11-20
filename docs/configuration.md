@@ -67,6 +67,7 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 | `IO_LIBRARY_DRY_RUN` | `-library_dry_run` | `true` | Only report what would be converted and change nothing |
 | `IO_LIBRARY_TAKEN_BEFORE` | `-library_taken_before` |  | Only convert assets dated before this day (`YYYY-MM-DD`) |
 | `IO_LIBRARY_LIMIT` | `-library_limit` | `0` | Stop after this many replacements; `0` means no limit |
+| `IO_LIBRARY_CONCURRENCY` | `-library_concurrency` | `1` | How many assets are replaced at the same time. Each one makes Immich generate thumbnails and analyse a new file |
 | `IO_LIBRARY_READY_TIMEOUT` | `-library_ready_timeout` | `10m` | How long to wait for Immich to finish reading a converted asset. A [duration](#durations) |
 
 <!-- END SETTINGS -->

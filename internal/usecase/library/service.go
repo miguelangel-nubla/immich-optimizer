@@ -27,8 +27,10 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/audit"
@@ -52,6 +54,11 @@ type Config struct {
 	PollInterval time.Duration
 	// Version is the optimizer version recorded in markers.
 	Version string
+	// Concurrency is how many assets are worked on at the same time.
+	Concurrency int
+	// IsMotionPhoto reports whether a downloaded original is a photo with an
+	// embedded video. Optional.
+	IsMotionPhoto func(path string) bool
 }
 
 // Entry is an audit log entry.
@@ -77,6 +84,42 @@ type Service struct {
 	conv    port.CheckingConverter
 	log     *logger.Logger
 	journal *audit.Log
+
+	// stacks serialises replacements inside one stack: two members worked on
+	// at once would fight over the stack's cover.
+	stacksMu sync.Mutex
+	stacks   map[string]*sync.Mutex
+}
+
+func (s *Service) lockStack(id string) func() {
+	if id == "" {
+		return func() {}
+	}
+	s.stacksMu.Lock()
+	if s.stacks == nil {
+		s.stacks = map[string]*sync.Mutex{}
+	}
+	m := s.stacks[id]
+	if m == nil {
+		m = &sync.Mutex{}
+		s.stacks[id] = m
+	}
+	s.stacksMu.Unlock()
+	m.Lock()
+	return m.Unlock
+}
+
+func (sum *Summary) add(o Summary) {
+	sum.Seen += o.Seen
+	sum.Replaced += o.Replaced
+	sum.WouldReplace += o.WouldReplace
+	sum.Kept += o.Kept
+	sum.Skipped += o.Skipped
+	sum.Failed += o.Failed
+	sum.Finalized += o.Finalized
+	sum.RolledBack += o.RolledBack
+	sum.BytesBefore += o.BytesBefore
+	sum.BytesAfter += o.BytesAfter
 }
 
 func New(cfg Config, api port.LibraryAPI, conv port.CheckingConverter, journal *audit.Log, log *logger.Logger) *Service {
@@ -85,6 +128,9 @@ func New(cfg Config, api port.LibraryAPI, conv port.CheckingConverter, journal *
 	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 2 * time.Second
+	}
+	if cfg.Concurrency <= 0 {
+		cfg.Concurrency = 1
 	}
 	return &Service{cfg: cfg, api: api, conv: conv, log: log, journal: journal}
 }
@@ -142,23 +188,22 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	}
 	s.infof("Library: %d asset(s) listed%s", len(assets), map[bool]string{true: " (dry run: nothing will be changed)"}[s.cfg.DryRun])
 
-	for i := range assets {
-		if ctx.Err() != nil {
-			break
-		}
-		if s.cfg.Limit > 0 && sum.Replaced+sum.WouldReplace >= s.cfg.Limit {
-			s.infof("Library: limit of %d replacement(s) reached", s.cfg.Limit)
-			break
-		}
-		sum.Seen++
-		a := assets[i]
-		err := s.process(ctx, me, a, &sum)
+	// outcome folds one asset's result into the summary. It returns a fatal
+	// error when the run must stop.
+	var mu sync.Mutex
+	var fatalErr error
+	outcome := func(a entity.LibraryAsset, local Summary, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		sum.add(local)
 		var sk *errSkip
 		var fatal *errFatal
 		switch {
 		case err == nil:
 		case errors.As(err, &fatal):
-			return sum, fatal.err
+			if fatalErr == nil {
+				fatalErr = fatal.err
+			}
 		case ctx.Err() != nil:
 			// Interrupted: whatever was in flight has been rolled back or
 			// will be finished by the next run.
@@ -172,10 +217,93 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 			if s.log != nil {
 				s.log.Errorf("Library: %s (%s) failed: %v", a.OriginalFileName, a.ID, err)
 			}
-			if rerr := s.record(Entry{Event: "failed", Asset: a.ID, File: a.OriginalFileName, Detail: err.Error()}); rerr != nil {
-				return sum, rerr
+			if rerr := s.record(Entry{Event: "failed", Asset: a.ID, File: a.OriginalFileName, Detail: err.Error()}); rerr != nil && fatalErr == nil {
+				var f *errFatal
+				errors.As(rerr, &f)
+				fatalErr = f.err
 			}
 		}
+	}
+	stopped := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return fatalErr != nil || ctx.Err() != nil
+	}
+	// 1. Look at every asset: most are skipped here, cheaply.
+	type candidate struct {
+		asset entity.LibraryAsset
+		items []entity.MetadataItem
+	}
+	type pendingCopy struct {
+		asset  entity.LibraryAsset
+		marker *entity.Marker
+	}
+	var candidates []candidate
+	var pendings []pendingCopy
+	s.forEach(len(assets), stopped, func(i int) {
+		a := assets[i]
+		items, m, err := s.classify(ctx, me, a)
+		local := Summary{Seen: 1}
+		if err == nil {
+			mu.Lock()
+			if m != nil {
+				pendings = append(pendings, pendingCopy{a, m})
+			} else {
+				candidates = append(candidates, candidate{a, items})
+			}
+			mu.Unlock()
+		}
+		outcome(a, local, err)
+	})
+
+	// 2. Unfinished replacements of an earlier run are settled first, one by
+	// one, before any of their originals is touched again.
+	for _, p := range pendings {
+		if stopped() {
+			break
+		}
+		var local Summary
+		outcome(p.asset, local, s.resumePending(ctx, p.asset, p.marker, &local))
+	}
+
+	// 3. Convert. The limit counts replacements that are done or under way.
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].asset.FileCreatedAt.Before(candidates[j].asset.FileCreatedAt)
+	})
+	inFlight := 0
+	limitReached := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if s.cfg.Limit > 0 && sum.Replaced+sum.WouldReplace+inFlight >= s.cfg.Limit {
+			return true
+		}
+		inFlight++
+		return false
+	}
+	announced := false
+	s.forEach(len(candidates), func() bool {
+		if stopped() {
+			return true
+		}
+		if limitReached() {
+			if !announced {
+				announced = true
+				s.infof("Library: limit of %d replacement(s) reached", s.cfg.Limit)
+			}
+			return true
+		}
+		return false
+	}, func(i int) {
+		c := candidates[i]
+		var local Summary
+		err := s.work(ctx, c.asset, c.items, &local)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		outcome(c.asset, local, err)
+	})
+	if fatalErr != nil {
+		return sum, fatalErr
 	}
 
 	if err := s.record(Entry{Event: "run_finished", Summary: &sum}); err != nil {
@@ -184,6 +312,27 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	s.infof("Library: run finished: %d seen, %d replaced, %d would be replaced, %d kept, %d skipped, %d failed (%d -> %d bytes)",
 		sum.Seen, sum.Replaced, sum.WouldReplace, sum.Kept, sum.Skipped, sum.Failed, sum.BytesBefore, sum.BytesAfter)
 	return sum, ctx.Err()
+}
+
+// forEach runs fn(i) for i in [0,n) with the configured concurrency. stop is
+// asked before each item is started; once it says yes, no more are started.
+func (s *Service) forEach(n int, stop func() bool, fn func(i int)) {
+	sem := make(chan struct{}, s.cfg.Concurrency)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		sem <- struct{}{}
+		if stop() {
+			<-sem
+			break
+		}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fn(i)
+		}(i)
+	}
+	wg.Wait()
 }
 
 // markerOf returns the optimizer marker among items, if any.
@@ -210,50 +359,54 @@ func markerItem(m *entity.Marker) (entity.MetadataItem, error) {
 	return entity.MetadataItem{Key: entity.MarkerKey, Value: b}, nil
 }
 
-func (s *Service) process(ctx context.Context, me string, listed entity.LibraryAsset, sum *Summary) error {
-	// Cheap checks on the listing first.
+// classify decides, from the listing and the asset's metadata, whether an
+// asset is a candidate. It returns the marker instead when the asset is the
+// unfinished copy of an interrupted replacement.
+func (s *Service) classify(ctx context.Context, me string, listed entity.LibraryAsset) ([]entity.MetadataItem, *entity.Marker, error) {
 	switch {
 	case listed.OwnerID != me:
-		return skip("it belongs to another user")
+		return nil, nil, skip("it belongs to another user")
 	case listed.LibraryID != "":
-		return skip("it is in an external library")
+		return nil, nil, skip("it is in an external library")
 	case listed.IsTrashed:
-		return skip("it is in the trash")
+		return nil, nil, skip("it is in the trash")
 	case listed.IsOffline:
-		return skip("its file is offline")
+		return nil, nil, skip("its file is offline")
 	case listed.Visibility != "timeline" && listed.Visibility != "archive":
-		return skip("its visibility is %q", listed.Visibility)
-	case !s.cfg.TakenBefore.IsZero() && !listed.FileCreatedAt.Before(s.cfg.TakenBefore):
-		return skip("it is newer than the configured date")
+		return nil, nil, skip("its visibility is %q", listed.Visibility)
 	}
 
 	items, err := s.api.GetMetadata(ctx, listed.ID)
 	if err != nil {
-		return fmt.Errorf("reading asset metadata: %w", err)
+		return nil, nil, fmt.Errorf("reading asset metadata: %w", err)
 	}
 	if m := markerOf(items); m != nil {
 		if m.State == entity.MarkerStatePending {
-			return s.resumePending(ctx, listed, m, sum)
+			return nil, m, nil
 		}
-		return skip("it was already handled by the optimizer")
+		return nil, nil, skip("it was already handled by the optimizer")
 	}
-
-	switch {
-	case listed.LivePhotoVideoID != "":
-		return skip("it is a live photo, which library mode does not handle yet")
-	case listed.IsEdited:
-		return skip("it has edits, which library mode does not handle yet")
+	if !s.cfg.TakenBefore.IsZero() && !listed.FileCreatedAt.Before(s.cfg.TakenBefore) {
+		return nil, nil, skip("it is newer than the configured date")
 	}
 	if ok, reason := s.conv.Converts(listed.OriginalFileName); !ok {
-		return skip("%s", reason)
+		return nil, nil, skip("%s", reason)
 	}
+	return items, nil, nil
+}
 
+// work reads a candidate in full and replaces it (or, in a dry run, reports
+// that it would).
+func (s *Service) work(ctx context.Context, listed entity.LibraryAsset, items []entity.MetadataItem, sum *Summary) error {
 	old, err := s.api.GetAsset(ctx, listed.ID)
 	if err != nil {
 		return fmt.Errorf("reading asset: %w", err)
 	}
 	if !old.Ready {
 		return skip("Immich has not finished reading it yet")
+	}
+	if old.IsTrashed {
+		return skip("it is in the trash")
 	}
 	albums, err := s.api.Albums(ctx, old.ID)
 	if err != nil {
@@ -278,6 +431,7 @@ func (s *Service) process(ctx context.Context, me string, listed entity.LibraryA
 		s.infof("Library (dry run): would convert %s (%s)", old.OriginalFileName, old.ID)
 		return s.record(Entry{Event: "would_convert", Asset: old.ID, File: old.OriginalFileName, OriginalBytes: old.Size})
 	}
+	defer s.lockStack(old.StackID)()
 	return s.replace(ctx, old, items, albums, sum)
 }
 
@@ -321,8 +475,17 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 	if res.Outcome != entity.OutcomeOptimized || res.Marker == nil {
 		return s.keep(ctx, old, oldItems, sum, "conversion gave no size reduction")
 	}
-	if res.Marker.MotionPhotos != "" {
-		return s.keep(ctx, old, oldItems, sum, "motion photo, which library mode does not handle yet")
+	// Motion photos (a photo with an embedded video). Immich extracts the
+	// video of such an upload into an asset of its own and pairs it with the
+	// photo, so converting only the photo loses nothing as long as that
+	// pairing exists: the copy is paired with the same video.
+	switch {
+	case res.Marker.MotionPhotos == entity.MotionPhotosDropPhoto:
+		return s.keep(ctx, old, oldItems, sum, "motion photo whose task keeps only the video")
+	case res.Marker.MotionPhotos == entity.MotionPhotosDropVideo && old.LivePhotoVideoID == "":
+		return s.keep(ctx, old, oldItems, sum, "motion photo whose video Immich did not extract: converting it would lose the video")
+	case res.Marker.MotionPhotos == "" && s.cfg.IsMotionPhoto != nil && s.cfg.IsMotionPhoto(src):
+		return s.keep(ctx, old, oldItems, sum, "motion photo converted as a whole (motion_photos: keep): the result would hide its video")
 	}
 	if err := s.conv.CheckOutput(ctx, in, res); err != nil {
 		return fmt.Errorf("the converted file does not look valid: %w", err)
@@ -619,6 +782,31 @@ func (s *Service) apply(ctx context.Context, old, cur *entity.LibraryAsset, oldL
 			return fmt.Errorf("making the new asset the stack's primary: %w", err)
 		}
 	}
+
+	// The video a live or motion photo is paired with.
+	if old.LivePhotoVideoID != "" && cur.LivePhotoVideoID != old.LivePhotoVideoID {
+		if err := s.api.UpdateAsset(ctx, cur.ID, entity.LibraryAssetUpdate{LivePhotoVideoID: &old.LivePhotoVideoID}); err != nil {
+			return fmt.Errorf("pairing the copy with the photo's video: %w", err)
+		}
+	}
+
+	// Edits made in Immich (crop, rotate, mirror) are stored as coordinates
+	// on the original picture, so they only fit a copy of the same size.
+	if old.IsEdited {
+		edits, err := s.api.Edits(ctx, old.ID)
+		if err != nil {
+			return fmt.Errorf("reading the original's edits: %w", err)
+		}
+		if len(edits) > 0 {
+			if cur.Width != old.Width || cur.Height != old.Height {
+				return fmt.Errorf("the original has edits and the conversion changed the picture's size (%dx%d to %dx%d), so they cannot be carried over",
+					old.Width, old.Height, cur.Width, cur.Height)
+			}
+			if err := s.api.SetEdits(ctx, cur.ID, edits); err != nil {
+				return fmt.Errorf("carrying over edits: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -629,6 +817,20 @@ func (s *Service) compare(ctx context.Context, old *entity.LibraryAsset, oldAlbu
 		return nil, fmt.Errorf("reading the new asset: %w", err)
 	}
 	diffs := assetDiffs(old, cur, true)
+
+	if old.IsEdited || cur.IsEdited {
+		want, err := s.api.Edits(ctx, old.ID)
+		if err != nil {
+			return nil, fmt.Errorf("reading the original's edits: %w", err)
+		}
+		got, err := s.api.Edits(ctx, newID)
+		if err != nil {
+			return nil, fmt.Errorf("reading the new asset's edits: %w", err)
+		}
+		if !sameEdits(want, got) {
+			diffs = append(diffs, "edits differ")
+		}
+	}
 
 	newAlbums, err := s.api.Albums(ctx, newID)
 	if err != nil {
@@ -645,6 +847,23 @@ func (s *Service) compare(ctx context.Context, old *entity.LibraryAsset, oldAlbu
 		diffs = append(diffs, fmt.Sprintf("missing from %d shared link(s)", len(missing)))
 	}
 	return diffs, nil
+}
+
+// sameEdits compares two edit lists by action and parameters, in order.
+func sameEdits(a, b []entity.LibraryEdit) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		var x, y any
+		if a[i].Action != b[i].Action || json.Unmarshal(a[i].Parameters, &x) != nil || json.Unmarshal(b[i].Parameters, &y) != nil {
+			return false
+		}
+		if fmt.Sprint(x) != fmt.Sprint(y) {
+			return false
+		}
+	}
+	return true
 }
 
 func albumIDs(albums []entity.LibraryAlbum) []string {
@@ -702,6 +921,7 @@ func assetDiffs(a, b *entity.LibraryAsset, replacement bool) []string {
 		check("checksum", a.Checksum, b.Checksum)
 	}
 	check("owner", a.OwnerID, b.OwnerID)
+	check("paired video", a.LivePhotoVideoID, b.LivePhotoVideoID)
 	check("type", a.Type, b.Type)
 	check("visibility", a.Visibility, b.Visibility)
 	if !replacement {
@@ -755,6 +975,9 @@ func assetDiffs(a, b *entity.LibraryAsset, replacement bool) []string {
 			d = append(d, "the new asset is not the stack's primary")
 		}
 	} else {
+		if a.IsEdited != b.IsEdited {
+			add("edited", a.IsEdited, b.IsEdited)
+		}
 		if m := minus(b.TagIDs, a.TagIDs); len(m) > 0 {
 			d = append(d, fmt.Sprintf("%d tag(s) added", len(m)))
 		}

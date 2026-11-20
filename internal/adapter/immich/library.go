@@ -410,6 +410,9 @@ func (c *LibraryClient) UpdateAsset(ctx context.Context, id string, u entity.Lib
 	if u.Visibility != nil {
 		body["visibility"] = *u.Visibility
 	}
+	if u.LivePhotoVideoID != nil {
+		body["livePhotoVideoId"] = *u.LivePhotoVideoID
+	}
 	if len(body) == 0 {
 		return nil
 	}
@@ -525,6 +528,20 @@ func (c *LibraryClient) AddToSharedLink(ctx context.Context, linkID, assetID str
 
 func (c *LibraryClient) SetStackPrimary(ctx context.Context, stackID, assetID string) error {
 	return c.call(ctx, http.MethodPut, "/stacks/"+url.PathEscape(stackID), map[string]any{"primaryAssetId": assetID}, nil)
+}
+
+func (c *LibraryClient) Edits(ctx context.Context, assetID string) ([]entity.LibraryEdit, error) {
+	var out struct {
+		Edits []entity.LibraryEdit `json:"edits"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/assets/"+url.PathEscape(assetID)+"/edits", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Edits, nil
+}
+
+func (c *LibraryClient) SetEdits(ctx context.Context, assetID string, edits []entity.LibraryEdit) error {
+	return c.call(ctx, http.MethodPut, "/assets/"+url.PathEscape(assetID)+"/edits", map[string]any{"edits": edits}, nil)
 }
 
 func (c *LibraryClient) Trash(ctx context.Context, ids []string) error {

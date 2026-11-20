@@ -51,6 +51,7 @@ type AppConfig struct {
 	// Library mode.
 	LibraryDryRun         bool
 	LibraryLimit          int
+	LibraryConcurrency    int
 	LibraryTakenBefore    string
 	LibraryReadyTimeout   time.Duration
 	ConfigFile            string

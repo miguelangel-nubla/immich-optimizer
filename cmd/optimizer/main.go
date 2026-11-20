@@ -25,6 +25,7 @@ import (
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/httpclient"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/immich"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/mediacheck"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/motionphoto"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/processor"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/proxy"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/undone"
@@ -293,6 +294,9 @@ func validateAppConfig(ac *entity.AppConfig) error {
 		if ac.LibraryLimit < 0 {
 			return fmt.Errorf("library_limit must not be negative")
 		}
+		if ac.LibraryConcurrency < 1 {
+			return fmt.Errorf("library_concurrency must be 1 or more")
+		}
 	}
 
 	if runWatcher {
@@ -535,11 +539,13 @@ func run(args []string) error {
 	if hasMode(config.Mode, "library") {
 		takenBefore, _ := parseLibraryDate(config.LibraryTakenBefore)
 		svc := library.New(library.Config{
-			DryRun:       config.LibraryDryRun,
-			Limit:        config.LibraryLimit,
-			TakenBefore:  takenBefore,
-			ReadyTimeout: config.LibraryReadyTimeout,
-			Version:      version,
+			DryRun:        config.LibraryDryRun,
+			Limit:         config.LibraryLimit,
+			TakenBefore:   takenBefore,
+			ReadyTimeout:  config.LibraryReadyTimeout,
+			Version:       version,
+			Concurrency:   config.LibraryConcurrency,
+			IsMotionPhoto: motionphoto.IsMotionJPEG,
 		}, immich.NewLibraryClient(config.ImmichURL, config.ImmichAPIKey, httpClient), engine, auditLog, logger)
 		if config.LibraryDryRun {
 			logger.Printf("Library mode: DRY RUN, nothing will be changed (set IO_LIBRARY_DRY_RUN=false to convert)")

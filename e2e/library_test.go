@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // richOriginal uploads photo.jpg and gives it everything library mode has to
@@ -178,7 +179,6 @@ func TestLibraryLeavesOtherAssetsAlone(t *testing.T) {
 	u := newUser(t)
 	heic := u.add(t, "photo.heic", nil) // passed through by the lossless profile
 	clip := u.add(t, "clip.mp4", nil)   // no lossless video task
-	motion := u.add(t, "motion.jpg", nil)
 
 	// A photo with a comment from another user in a shared album.
 	other := newUser(t)
@@ -196,7 +196,7 @@ func TestLibraryLeavesOtherAssetsAlone(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
 	}
-	for _, a := range []asset{heic, clip, commented, motion} {
+	for _, a := range []asset{heic, clip, commented} {
 		now := u.asset(t, a.ID)
 		if now.IsTrashed || now.Checksum != a.Checksum {
 			t.Errorf("%s was changed", a.OriginalFileName)
@@ -205,8 +205,6 @@ func TestLibraryLeavesOtherAssetsAlone(t *testing.T) {
 			t.Errorf("%s: something was uploaded: %v", a.OriginalFileName, events(log, a.ID))
 		}
 	}
-	// Immich itself splits an uploaded motion photo into a photo and a linked
-	// video, so library mode sees it as a live photo and leaves it alone.
 	if n := len(u.live(t)); n != before {
 		t.Errorf("%d live assets, want %d", n, before)
 	}
@@ -388,5 +386,128 @@ func TestLibraryDateFilterAndLimit(t *testing.T) {
 	}
 	if u.asset(t, newPhoto.ID).IsTrashed {
 		t.Error("a bad date converted the rest")
+	}
+}
+
+// replacedBy returns the id of the copy that replaced an original, from the log.
+func replacedBy(log []map[string]any, originalID string) string {
+	for _, e := range log {
+		if e["event"] == "replaced" && e["asset"] == originalID {
+			id, _ := e["new_asset"].(string)
+			return id
+		}
+	}
+	return ""
+}
+
+func TestLibraryLivePhotosMotionPhotosAndEdits(t *testing.T) {
+	u := newUser(t)
+
+	// An Apple live photo: two files Immich pairs by their shared identifier.
+	liveVideo := u.add(t, "live.mov", nil)
+	live := u.add(t, "live.jpg", nil)
+	// An Android motion photo: Immich extracts its video into an asset.
+	motion := u.add(t, "motion.jpg", nil)
+	// A photo rotated in Immich.
+	edited := u.add(t, "photo.jpg", nil)
+	edits := map[string]any{"edits": []map[string]any{{"action": "rotate", "parameters": map[string]any{"angle": 90}}}}
+	must(t, u.key, http.MethodPut, "/assets/"+edited.ID+"/edits", edits, nil)
+	// More assets, so several are worked on at once.
+	var plain []asset
+	for _, s := range []string{"plain.jpg", "photo.png", "faces/face1.jpg", "faces/face2.jpg", "faces/face3.jpg"} {
+		status, out := u.upload(t, immichURL, mediaDir+"/"+s, filepath.Base(s), nil)
+		if status != http.StatusCreated {
+			t.Fatalf("uploading %s: %d %s", s, status, out["_body"])
+		}
+		plain = append(plain, u.waitReady(t, out["id"]))
+	}
+
+	// Wait until Immich has paired the photos with their videos and applied the edit.
+	paired := func(id string) string {
+		deadline := time.Now().Add(2 * time.Minute)
+		for {
+			if a := u.asset(t, id); a.LivePhotoVideoID != nil {
+				return *a.LivePhotoVideoID
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("Immich did not pair asset %s with a video", id)
+			}
+			time.Sleep(time.Second)
+		}
+	}
+	if got := paired(live.ID); got != liveVideo.ID {
+		t.Fatalf("live photo paired with %s, want %s", got, liveVideo.ID)
+	}
+	motionVideo := paired(motion.ID)
+	for deadline := time.Now().Add(time.Minute); !u.asset(t, edited.ID).IsEdited; time.Sleep(time.Second) {
+		if time.Now().After(deadline) {
+			t.Fatal("the edit was not applied")
+		}
+	}
+
+	code, out, log := runLibrary(t, u, sharedDir(t), map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_LIBRARY_CONCURRENCY": "4"})
+	if code != 0 {
+		t.Fatalf("library run exited %d:\n%s", code, out)
+	}
+	for _, e := range log {
+		if e["event"] == "failed" || e["event"] == "rolled_back" {
+			t.Errorf("unexpected %v", e)
+		}
+	}
+
+	// Live photo: the copy is paired with the same, untouched video.
+	newLive := replacedBy(log, live.ID)
+	if newLive == "" {
+		t.Fatalf("live photo not replaced: %v\n%s", events(log, live.ID), out)
+	}
+	if a := u.asset(t, newLive); a.LivePhotoVideoID == nil || *a.LivePhotoVideoID != liveVideo.ID {
+		t.Errorf("live copy paired with %v, want %s", a.LivePhotoVideoID, liveVideo.ID)
+	}
+	// Motion photo: the photo is converted and paired with the video Immich extracted.
+	newMotion := replacedBy(log, motion.ID)
+	if newMotion == "" {
+		t.Fatalf("motion photo not replaced: %v\n%s", events(log, motion.ID), out)
+	}
+	if a := u.asset(t, newMotion); a.LivePhotoVideoID == nil || *a.LivePhotoVideoID != motionVideo || a.OriginalMimeType != "image/jxl" {
+		t.Errorf("motion copy = %+v, want pairing with %s", a, motionVideo)
+	}
+	// Edited photo: the copy carries the same edit.
+	newEdited := replacedBy(log, edited.ID)
+	if newEdited == "" {
+		t.Fatalf("edited photo not replaced: %v\n%s", events(log, edited.ID), out)
+	}
+	var got struct {
+		Edits []struct {
+			Action     string         `json:"action"`
+			Parameters map[string]any `json:"parameters"`
+		} `json:"edits"`
+	}
+	must(t, u.key, http.MethodGet, "/assets/"+newEdited+"/edits", nil, &got)
+	if len(got.Edits) != 1 || got.Edits[0].Action != "rotate" || fmt.Sprint(got.Edits[0].Parameters["angle"]) != "90" || !u.asset(t, newEdited).IsEdited {
+		t.Errorf("edits on the copy = %+v", got.Edits)
+	}
+	for _, a := range plain {
+		if replacedBy(log, a.ID) == "" || !u.asset(t, a.ID).IsTrashed {
+			t.Errorf("%s was not replaced", a.OriginalFileName)
+		}
+	}
+
+	// After the trash is emptied the videos must still be there, still paired.
+	must(t, u.key, http.MethodPost, "/trash/empty", nil, nil)
+	deadline := time.Now().Add(2 * time.Minute)
+	for call(t, u.key, http.MethodGet, "/assets/"+live.ID, nil, nil) == http.StatusOK {
+		if time.Now().After(deadline) {
+			t.Fatal("the trash was not emptied")
+		}
+		time.Sleep(time.Second)
+	}
+	time.Sleep(3 * time.Second)
+	for name, id := range map[string]string{"live video": liveVideo.ID, "motion video": motionVideo} {
+		if s := call(t, u.key, http.MethodGet, "/assets/"+id, nil, nil); s != http.StatusOK {
+			t.Errorf("the %s is gone after emptying the trash (status %d)", name, s)
+		}
+	}
+	if a := u.asset(t, newLive); a.LivePhotoVideoID == nil || *a.LivePhotoVideoID != liveVideo.ID {
+		t.Error("live copy lost its video after emptying the trash")
 	}
 }

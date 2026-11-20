@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,12 +34,14 @@ type fakeAsset struct {
 	albums   []string
 	links    []string
 	faces    []entity.LibraryFace
+	edits    []entity.LibraryEdit
 	deleted  bool // permanently
 }
 
 // fakeImmich is an in-memory Immich that behaves like the real one where
 // library mode depends on it. calls records every mutating call in order.
 type fakeImmich struct {
+	mu     sync.Mutex
 	assets map[string]*fakeAsset
 	order  []string
 	nextID int
@@ -84,10 +87,14 @@ func (f *fakeImmich) get(id string) (*fakeAsset, error) {
 }
 
 func (f *fakeImmich) CurrentUserID(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return me, f.fail("CurrentUserID")
 }
 
 func (f *fakeImmich) ListAssets(_ context.Context, page int) ([]entity.LibraryAsset, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.fail("ListAssets"); err != nil {
 		return nil, 0, err
 	}
@@ -112,6 +119,8 @@ func (f *fakeImmich) ListAssets(_ context.Context, page int) ([]entity.LibraryAs
 }
 
 func (f *fakeImmich) GetAsset(_ context.Context, id string) (*entity.LibraryAsset, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.fail("GetAsset"); err != nil {
 		return nil, err
 	}
@@ -132,6 +141,8 @@ func (f *fakeImmich) GetAsset(_ context.Context, id string) (*entity.LibraryAsse
 }
 
 func (f *fakeImmich) GetMetadata(_ context.Context, id string) ([]entity.MetadataItem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	a, err := f.get(id)
 	if err != nil {
 		return nil, err
@@ -144,6 +155,8 @@ func (f *fakeImmich) GetMetadata(_ context.Context, id string) ([]entity.Metadat
 }
 
 func (f *fakeImmich) PutMetadata(_ context.Context, id string, items []entity.MetadataItem) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.fail("PutMetadata"); err != nil {
 		return err
 	}
@@ -159,6 +172,8 @@ func (f *fakeImmich) PutMetadata(_ context.Context, id string, items []entity.Me
 }
 
 func (f *fakeImmich) DownloadOriginal(_ context.Context, id, dst string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.fail("DownloadOriginal"); err != nil {
 		return "", err
 	}
@@ -170,6 +185,8 @@ func (f *fakeImmich) DownloadOriginal(_ context.Context, id, dst string) (string
 }
 
 func (f *fakeImmich) Upload(_ context.Context, u entity.LibraryUpload) (*entity.LibraryUploadResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.fail("Upload"); err != nil {
 		return nil, err
 	}
@@ -196,6 +213,8 @@ func (f *fakeImmich) Upload(_ context.Context, u entity.LibraryUpload) (*entity.
 }
 
 func (f *fakeImmich) CopyAsset(_ context.Context, sourceID, targetID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.fail("CopyAsset"); err != nil {
 		return err
 	}
@@ -222,6 +241,8 @@ func (f *fakeImmich) CopyAsset(_ context.Context, sourceID, targetID string) err
 }
 
 func (f *fakeImmich) UpdateAsset(_ context.Context, id string, u entity.LibraryAssetUpdate) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.fail("UpdateAsset"); err != nil {
 		return err
 	}
@@ -247,10 +268,39 @@ func (f *fakeImmich) UpdateAsset(_ context.Context, id string, u entity.LibraryA
 	if u.Visibility != nil {
 		a.Visibility = *u.Visibility
 	}
+	if u.LivePhotoVideoID != nil {
+		a.LivePhotoVideoID = *u.LivePhotoVideoID
+	}
+	return nil
+}
+
+func (f *fakeImmich) Edits(_ context.Context, assetID string) ([]entity.LibraryEdit, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, err := f.get(assetID)
+	if err != nil {
+		return nil, err
+	}
+	return a.edits, nil
+}
+
+func (f *fakeImmich) SetEdits(_ context.Context, assetID string, edits []entity.LibraryEdit) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail("SetEdits"); err != nil {
+		return err
+	}
+	a, err := f.get(assetID)
+	if err != nil {
+		return err
+	}
+	a.edits, a.IsEdited = edits, len(edits) > 0
 	return nil
 }
 
 func (f *fakeImmich) Albums(_ context.Context, assetID string) ([]entity.LibraryAlbum, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	a, err := f.get(assetID)
 	if err != nil {
 		return nil, err
@@ -263,10 +313,14 @@ func (f *fakeImmich) Albums(_ context.Context, assetID string) ([]entity.Library
 }
 
 func (f *fakeImmich) ActivityCount(_ context.Context, albumID, assetID string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.activity[albumID+"/"+assetID], nil
 }
 
 func (f *fakeImmich) TagAsset(_ context.Context, assetID string, tagIDs []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	a, err := f.get(assetID)
 	if err != nil {
 		return err
@@ -276,6 +330,8 @@ func (f *fakeImmich) TagAsset(_ context.Context, assetID string, tagIDs []string
 }
 
 func (f *fakeImmich) Faces(_ context.Context, assetID string) ([]entity.LibraryFace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	a, err := f.get(assetID)
 	if err != nil {
 		return nil, err
@@ -284,6 +340,8 @@ func (f *fakeImmich) Faces(_ context.Context, assetID string) ([]entity.LibraryF
 }
 
 func (f *fakeImmich) CreateFace(_ context.Context, assetID string, face entity.LibraryFace) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.fail("CreateFace"); err != nil {
 		return err
 	}
@@ -296,6 +354,8 @@ func (f *fakeImmich) CreateFace(_ context.Context, assetID string, face entity.L
 }
 
 func (f *fakeImmich) SharedLinkIDs(_ context.Context, assetID string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	a, err := f.get(assetID)
 	if err != nil {
 		return nil, err
@@ -304,6 +364,8 @@ func (f *fakeImmich) SharedLinkIDs(_ context.Context, assetID string) ([]string,
 }
 
 func (f *fakeImmich) AddToSharedLink(_ context.Context, linkID, assetID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	a, err := f.get(assetID)
 	if err != nil {
 		return err
@@ -313,6 +375,8 @@ func (f *fakeImmich) AddToSharedLink(_ context.Context, linkID, assetID string) 
 }
 
 func (f *fakeImmich) SetStackPrimary(_ context.Context, stackID, assetID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, a := range f.assets {
 		if a.StackID == stackID {
 			a.StackPrimaryID = assetID
@@ -322,6 +386,8 @@ func (f *fakeImmich) SetStackPrimary(_ context.Context, stackID, assetID string)
 }
 
 func (f *fakeImmich) Trash(_ context.Context, ids []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.beforeTrash != nil {
 		f.beforeTrash(f)
 	}
@@ -340,6 +406,8 @@ func (f *fakeImmich) Trash(_ context.Context, ids []string) error {
 }
 
 func (f *fakeImmich) Delete(_ context.Context, ids []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.fail("Delete"); err != nil {
 		return err
 	}
@@ -361,6 +429,7 @@ type fakeConv struct {
 	verifyErr  error
 	motion     string
 	verified   int
+	mu         sync.Mutex
 }
 
 func (c *fakeConv) Convert(_ context.Context, in entity.ConvertInput) (*entity.ConvertResult, error) {
@@ -396,6 +465,8 @@ func (c *fakeConv) SaveUndone(entity.ConvertInput, entity.Failure) (*entity.Undo
 }
 
 func (c *fakeConv) CheckOutput(context.Context, entity.ConvertInput, *entity.ConvertResult) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.verified++
 	return c.verifyErr
 }
@@ -710,8 +781,6 @@ func TestSkips(t *testing.T) {
 	mk("offline.jpg", func(a *fakeAsset) { a.IsOffline = true })
 	mk("hidden.jpg", func(a *fakeAsset) { a.Visibility = "hidden" })
 	mk("locked.jpg", func(a *fakeAsset) { a.Visibility = "locked" })
-	mk("live.jpg", func(a *fakeAsset) { a.LivePhotoVideoID = "video-1" })
-	mk("edited.jpg", func(a *fakeAsset) { a.IsEdited = true })
 	mk("clip.mp4", func(a *fakeAsset) {})
 	mk("not-ready.jpg", func(a *fakeAsset) { a.Ready = false })
 	mk("commented.jpg", func(a *fakeAsset) {
@@ -727,7 +796,7 @@ func TestSkips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sum.Skipped != 12 || sum.Replaced != 0 || sum.Failed != 0 || len(h.im.calls) != 0 {
+	if sum.Skipped != 10 || sum.Replaced != 0 || sum.Failed != 0 || len(h.im.calls) != 0 {
 		t.Errorf("summary = %+v, calls %v", sum, h.im.calls)
 	}
 }
@@ -784,22 +853,36 @@ func TestInterruptedBeforeTrashIsCompletedByNextRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The original is reached first: its conversion gives the same bytes,
-	// Immich answers "duplicate", and the unfinished copy is completed.
-	if sum.Replaced != 1 || !old.IsTrashed || n.deleted {
+	// Unfinished copies are settled before any conversion starts: this one's
+	// original is still live, so the copy is removed and the original is
+	// then converted afresh.
+	if sum.Replaced != 1 || sum.RolledBack != 1 || !old.IsTrashed || !n.deleted {
 		t.Fatalf("summary = %+v, old trashed %v, copy deleted %v", sum, old.IsTrashed, n.deleted)
 	}
-	if m := h.marker(n.ID); m == nil || m.State != "" {
-		t.Errorf("marker still pending: %+v", m)
-	}
 	live := 0
-	for _, a := range h.im.assets {
+	for id, a := range h.im.assets {
 		if !a.deleted && !a.IsTrashed {
 			live++
+			if m := h.marker(id); m == nil || m.State != "" || m.Replaces != old.ID {
+				t.Errorf("final marker = %+v", m)
+			}
 		}
 	}
 	if live != 1 {
 		t.Errorf("%d live assets, want 1", live)
+	}
+	// The rollback happened before the new upload.
+	if d, u := index(h.im.calls, "delete:"+n.ID), -1; d < 0 {
+		t.Errorf("copy not deleted: %v", h.im.calls)
+	} else {
+		for i, c := range h.im.calls {
+			if strings.HasPrefix(c, "upload:") {
+				u = i
+			}
+		}
+		if u < d {
+			t.Errorf("conversion started before the unfinished copy was settled: %v", h.im.calls)
+		}
 	}
 }
 
@@ -902,5 +985,159 @@ func TestReplacementMayChangeShape(t *testing.T) {
 	}
 	if !similarDuration("2000", "2400") || similarDuration("2000", "9000") || !similarDuration("", "") || similarDuration("0:00:02", "0:00:03") {
 		t.Error("similarDuration")
+	}
+}
+
+// A live photo's copy is paired with the same video, which is left alone.
+func TestLivePhotoKeepsItsVideo(t *testing.T) {
+	h := newHarness(t)
+	video := h.im.add("IMG_1.mov", photo(99))
+	video.Type, video.Visibility = "VIDEO", "hidden"
+	old := richAsset(h)
+	old.LivePhotoVideoID = video.ID
+
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 1 {
+		t.Fatalf("summary = %+v, err %v", sum, err)
+	}
+	if video.IsTrashed || video.deleted {
+		t.Error("the video was touched")
+	}
+	for _, a := range h.im.assets {
+		if a.ID != old.ID && a.ID != video.ID && a.LivePhotoVideoID != video.ID {
+			t.Errorf("copy is paired with %q, want %q", a.LivePhotoVideoID, video.ID)
+		}
+	}
+}
+
+func TestMotionPhotos(t *testing.T) {
+	cases := []struct {
+		name         string
+		setup        func(h *harness, old, video *fakeAsset)
+		wantReplaced bool
+	}{
+		{"photo converted, paired with the video Immich extracted", func(h *harness, old, video *fakeAsset) {
+			h.conv.motion, old.LivePhotoVideoID = entity.MotionPhotosDropVideo, video.ID
+		}, true},
+		{"kept when Immich has no video for it", func(h *harness, old, video *fakeAsset) {
+			h.conv.motion = entity.MotionPhotosDropVideo
+		}, false},
+		{"kept when the task keeps only the video", func(h *harness, old, video *fakeAsset) {
+			h.conv.motion, old.LivePhotoVideoID = entity.MotionPhotosDropPhoto, video.ID
+		}, false},
+		{"kept when converted as a whole", func(h *harness, old, video *fakeAsset) {
+			old.LivePhotoVideoID = video.ID
+			h.cfg.IsMotionPhoto = func(string) bool { return true }
+		}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			video := h.im.add("IMG_1.mp4", photo(98))
+			video.Type, video.Visibility = "VIDEO", "hidden"
+			old := richAsset(h)
+			c.setup(h, old, video)
+			sum, err := h.run()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.wantReplaced != (sum.Replaced == 1) || c.wantReplaced != old.IsTrashed || (!c.wantReplaced && sum.Kept != 1) {
+				t.Fatalf("summary = %+v, original trashed %v", sum, old.IsTrashed)
+			}
+			if video.IsTrashed || video.deleted {
+				t.Error("the video was touched")
+			}
+			if !c.wantReplaced {
+				if m := h.marker(old.ID); m == nil || !m.Kept || m.Note == "" {
+					t.Errorf("kept marker = %+v", m)
+				}
+			}
+		})
+	}
+}
+
+func TestEditsAreCarriedOver(t *testing.T) {
+	h := newHarness(t)
+	old := richAsset(h)
+	old.IsEdited = true
+	old.edits = []entity.LibraryEdit{{Action: "rotate", Parameters: json.RawMessage(`{"angle":90}`)}}
+
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 1 {
+		t.Fatalf("summary = %+v, err %v", sum, err)
+	}
+	for _, a := range h.im.assets {
+		if a.ID == old.ID {
+			continue
+		}
+		if !a.IsEdited || len(a.edits) != 1 || a.edits[0].Action != "rotate" {
+			t.Errorf("edits on the copy = %+v", a.edits)
+		}
+	}
+}
+
+// Edits are coordinates on the picture: they cannot follow a conversion that
+// changes its size, so such an asset is left as it is.
+func TestEditsBlockAResizingConversion(t *testing.T) {
+	h := newHarness(t)
+	old := richAsset(h)
+	old.IsEdited = true
+	old.edits = []entity.LibraryEdit{{Action: "crop", Parameters: json.RawMessage(`{"x":0,"y":0,"width":10,"height":10}`)}}
+	prev := h.im.onUpload
+	h.im.onUpload = func(n *fakeAsset) { prev(n); n.Width, n.Height = 320, 240 }
+
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 0 || sum.Failed != 1 || old.IsTrashed {
+		t.Fatalf("summary = %+v, err %v, trashed %v", sum, err, old.IsTrashed)
+	}
+	for _, a := range h.im.assets {
+		if a.ID != old.ID && !a.deleted {
+			t.Error("the copy was left behind")
+		}
+	}
+}
+
+// Several assets at once: every one is replaced exactly once and the limit
+// is never exceeded.
+func TestConcurrency(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Concurrency = 4
+	const n = 24
+	var originals []*fakeAsset
+	for i := 0; i < n; i++ {
+		a := h.im.add(fmt.Sprintf("IMG_%d.jpg", i), photo(1000+i))
+		a.StackID = fmt.Sprintf("stack-%d", i%3) // three shared stacks
+		a.StackPrimaryID = "someone-else"
+		originals = append(originals, a)
+	}
+	h.cfg.Limit = 10
+	sum, err := h.run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Replaced != 10 || sum.Failed != 0 {
+		t.Fatalf("summary with limit = %+v", sum)
+	}
+	h.cfg.Limit = 0
+	sum, err = h.run()
+	if err != nil || sum.Replaced != n-10 || sum.Failed != 0 {
+		t.Fatalf("second run = %+v, err %v", sum, err)
+	}
+	live := 0
+	for _, a := range h.im.assets {
+		if !a.deleted && !a.IsTrashed {
+			live++
+			if !strings.HasSuffix(a.OriginalFileName, ".jxl") {
+				t.Errorf("%s is still live", a.OriginalFileName)
+			}
+		}
+	}
+	for _, a := range originals {
+		if !a.IsTrashed {
+			t.Errorf("%s was not replaced", a.OriginalFileName)
+		}
+	}
+	if live != n {
+		t.Errorf("%d live assets, want %d", live, n)
 	}
 }

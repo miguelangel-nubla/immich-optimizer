@@ -35,6 +35,9 @@ type LibraryAPI interface {
 	SharedLinkIDs(ctx context.Context, assetID string) ([]string, error)
 	AddToSharedLink(ctx context.Context, linkID, assetID string) error
 	SetStackPrimary(ctx context.Context, stackID, assetID string) error
+	// Edits returns the asset's non-destructive edits, in order.
+	Edits(ctx context.Context, assetID string) ([]entity.LibraryEdit, error)
+	SetEdits(ctx context.Context, assetID string, edits []entity.LibraryEdit) error
 	// Trash moves assets to Immich's trash (restorable).
 	Trash(ctx context.Context, ids []string) error
 	// Delete removes assets permanently. Only used on assets this run
