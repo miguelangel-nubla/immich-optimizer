@@ -26,4 +26,4 @@ Requests that are only passed through to Immich, malformed uploads and other cli
 
 Each line carries the time, the run it belongs to, the file name, the Immich asset id, and where known the task, both sizes and both checksums.
 
-If the audit log cannot be written, **library mode stops before changing anything**. Proxy and watcher mode log a warning and keep working, so a full disk does not block uploads.
+**The audit log is mandatory.** The optimizer writes a `started` line when it starts and refuses to start if it cannot. If a later write fails (a full disk, a lost mount), nothing new is converted or uploaded until the log can be written again: the proxy answers `503` so clients retry, the watcher leaves files in the watch folder, and library mode stops its run. It recovers by itself, and marks the gap with an `audit_recovered` line.

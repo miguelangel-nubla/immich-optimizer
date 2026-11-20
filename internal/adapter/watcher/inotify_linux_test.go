@@ -1,0 +1,144 @@
+//go:build linux
+
+package watcher
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	customlogger "github.com/miguelangel-nubla/immich-optimizer/internal/logger"
+	"golang.org/x/sys/unix"
+)
+
+func startWatcher(t *testing.T) (*inotifyWatcher, string) {
+	t.Helper()
+	dir := t.TempDir()
+	w, err := NewInotifyWatcher(dir, customlogger.NewWithLevel(nil, "error", ""), 8192)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := w.(*inotifyWatcher)
+	fw.settle = 200 * time.Millisecond
+	if err := fw.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fw.Stop() })
+	return fw, dir
+}
+
+// collect returns the distinct paths emitted within d.
+func collect(fw *inotifyWatcher, d time.Duration) map[string]bool {
+	got := map[string]bool{}
+	deadline := time.After(d)
+	for {
+		select {
+		case e := <-fw.Events():
+			got[e.Path] = true
+		case <-deadline:
+			return got
+		}
+	}
+}
+
+func TestInotifyEmitsWrittenRenamedAndNestedFiles(t *testing.T) {
+	fw, dir := startWatcher(t)
+
+	plain := filepath.Join(dir, "a.jpg")
+	if err := os.WriteFile(plain, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Written under a temporary name, then renamed into place.
+	tmp := filepath.Join(dir, "b.jpg.part")
+	renamed := filepath.Join(dir, "b.jpg")
+	if err := os.WriteFile(tmp, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, renamed); err != nil {
+		t.Fatal(err)
+	}
+	// A folder created later is watched too.
+	sub := filepath.Join(dir, "trip")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	nested := filepath.Join(sub, "c.jpg")
+	if err := os.WriteFile(nested, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := collect(fw, 2*time.Second)
+	for _, want := range []string{plain, renamed, nested} {
+		if !got[want] {
+			t.Errorf("no event for %s (got %v)", want, got)
+		}
+	}
+	if got[tmp] {
+		t.Errorf("the temporary name %s was emitted", tmp)
+	}
+}
+
+func TestInotifyEmitsFilesPresentAtStart(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "old.jpg")
+	if err := os.WriteFile(existing, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewInotifyWatcher(dir, customlogger.NewWithLevel(nil, "error", ""), 8192)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := w.(*inotifyWatcher)
+	if err := fw.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer fw.Stop()
+	if got := collect(fw, time.Second); !got[existing] {
+		t.Errorf("file present at start not emitted: %v", got)
+	}
+}
+
+// When the kernel drops events, every settled file is found again by a
+// rescan, including one in a folder whose creation was among the lost events.
+func TestInotifyQueueOverflowTriggersRescan(t *testing.T) {
+	fw, dir := startWatcher(t)
+	collect(fw, 300*time.Millisecond)
+
+	// Simulate lost events: stop watching, create things, then report the
+	// overflow the way the kernel does.
+	fw.watchMapMu.Lock()
+	for wd := range fw.watchDirMap {
+		_, _ = unix.InotifyRmWatch(fw.fd, uint32(wd))
+	}
+	fw.watchMapMu.Unlock()
+	lost := filepath.Join(dir, "lost.jpg")
+	lostNested := filepath.Join(dir, "new-folder", "lost2.jpg")
+	if err := os.WriteFile(lost, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(lostNested), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lostNested, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	collect(fw, 300*time.Millisecond) // nothing may have noticed them
+	time.Sleep(fw.settle)
+
+	fw.handleInotifyEvent(&unix.InotifyEvent{Wd: -1, Mask: unix.IN_Q_OVERFLOW}, "", "")
+	got := collect(fw, 2*time.Second)
+	if !got[lost] || !got[lostNested] {
+		t.Errorf("rescan missed files: %v", got)
+	}
+
+	// And watching works again afterwards.
+	after := filepath.Join(dir, "new-folder", "after.jpg")
+	if err := os.WriteFile(after, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := collect(fw, 2*time.Second); !got[after] {
+		t.Errorf("no event after the rescan: %v", got)
+	}
+}

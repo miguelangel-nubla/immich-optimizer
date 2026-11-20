@@ -371,3 +371,26 @@ func TestEngineAuditsFailedAndRefusedInputs(t *testing.T) {
 		t.Errorf("audit events = %v", events)
 	}
 }
+
+// No audit log, no work: the engine refuses before touching the file.
+func TestEngineRefusesWorkWhenAuditLogIsBroken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	l, err := audit.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc := &fakeProc{fn: func(context.Context, string) (*entity.ProcessResult, error) {
+		t.Error("the task ran although the audit log is broken")
+		return nil, errors.New("unreachable")
+	}}
+	store := &fakeStore{}
+	e := New(Config{Tasks: jpgTasks, Audit: l}, proc, store, quiet())
+	l.Close() // every write now fails
+	_ = l.Write(audit.Entry{Event: "x"})
+	if _, err := e.Convert(context.Background(), input(t, 100)); !errors.Is(err, entity.ErrAuditUnavailable) {
+		t.Fatalf("err = %v, want ErrAuditUnavailable", err)
+	}
+	if store.count() != 0 {
+		t.Error("something was saved to undone")
+	}
+}

@@ -53,6 +53,8 @@ type Log struct {
 	run  string
 	now  func() time.Time
 	path string
+	// failed is the error of the last write, nil when it succeeded.
+	failed error
 }
 
 // Open opens (creating if needed) the log file for appending.
@@ -70,15 +72,37 @@ func Open(path string) (*Log, error) {
 
 func (j *Log) Path() string { return j.path }
 
-// Write appends one entry and syncs it to disk. A nil Log records nothing.
-// What a failed write means is up to the caller: library mode stops rather
-// than change Immich without a record, the other modes only warn.
+// Write appends one entry and syncs it to disk. A nil Log records nothing
+// (tests). The audit log is mandatory: after a failed write, Check reports
+// the log as unavailable and no source starts new work until a write
+// succeeds again.
 func (j *Log) Write(e Entry) error {
 	if j == nil {
 		return nil
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	j.failed = j.write(e)
+	return j.failed
+}
+
+// Check reports whether the log can be written. When the last write failed
+// it tries again with a marker entry, so the log recovers by itself once the
+// cause (a full disk, a lost mount) is gone.
+func (j *Log) Check() error {
+	if j == nil {
+		return nil
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.failed == nil {
+		return nil
+	}
+	j.failed = j.write(Entry{Source: "optimizer", Event: "audit_recovered", Detail: "after: " + j.failed.Error()})
+	return j.failed
+}
+
+func (j *Log) write(e Entry) error {
 	e.Time = j.now().UTC()
 	e.Run = j.run
 	b, err := json.Marshal(e)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -100,16 +101,16 @@ func TestProxyConvertsUploads(t *testing.T) {
 	audit := readLog(t, filepath.Join(undone, "audit.log"))
 	var got []string
 	for _, e := range audit {
-		if e["source"] != "proxy" {
+		if e["source"] != "proxy" && e["event"] != "started" {
 			t.Errorf("unexpected source in %v", e)
 		}
 		got = append(got, fmt.Sprint(e["event"]))
 	}
-	if strings.Join(got, " ") != "uploaded duplicate uploaded failed" {
+	if strings.Join(got, " ") != "started uploaded duplicate uploaded failed" {
 		t.Errorf("audit events = %v", got)
 	}
-	if audit[0]["asset"] != a.ID || audit[0]["outcome"] != "optimized" || audit[0]["original_sha1"] != fileSHA1(t, src) {
-		t.Errorf("first audit entry = %v", audit[0])
+	if audit[1]["asset"] != a.ID || audit[1]["outcome"] != "optimized" || audit[1]["original_sha1"] != fileSHA1(t, src) {
+		t.Errorf("first upload audit entry = %v", audit[1])
 	}
 	if last := audit[len(audit)-1]; last["file"] != "broken.jpg" || !strings.HasSuffix(fmt.Sprint(last["undone"]), folders[0]) {
 		t.Errorf("failure audit entry = %v", last)
@@ -189,10 +190,27 @@ func TestWatcherUploadsAndCleansUp(t *testing.T) {
 		t.Error("the hidden file was touched")
 	}
 	audit := readLog(t, filepath.Join(undone, "audit.log"))
-	if len(audit) != 1 || audit[0]["event"] != "uploaded" || audit[0]["source"] != "watcher" || audit[0]["asset"] != a.ID || audit[0]["file"] != "scan.jpg" {
+	if len(audit) != 2 || audit[0]["event"] != "started" || audit[1]["event"] != "uploaded" || audit[1]["source"] != "watcher" || audit[1]["asset"] != a.ID || audit[1]["file"] != "scan.jpg" {
 		t.Errorf("audit log = %v", audit)
 	}
 	if f := undoneFolders(t, undone); len(f) != 0 {
 		t.Errorf("unexpected undone folders: %v", f)
 	}
+}
+
+// The audit log is mandatory: without a writable one the optimizer does not
+// start.
+func TestRefusesToStartWithoutAuditLog(t *testing.T) {
+	u := newUser(t)
+	undone := sharedDir(t)
+	args := append([]string{"run", "--rm"}, dockerArgs(map[string]string{
+		"IO_MODE": "proxy", "IO_AUDIT_LOG_FILE": "/proc/no-such-dir/audit.log"}, undone+":/undone")...)
+	out, err := exec.Command("docker", append(args, image)...).CombinedOutput()
+	if err == nil {
+		t.Fatalf("the optimizer started without an audit log:\n%s", out)
+	}
+	if !strings.Contains(string(out), "audit log") {
+		t.Errorf("the reason is not in the output:\n%s", out)
+	}
+	_ = u
 }

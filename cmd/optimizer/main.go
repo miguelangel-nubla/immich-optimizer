@@ -453,6 +453,10 @@ func run(args []string) error {
 		return err
 	}
 	defer auditLog.Close()
+	// Mandatory: prove it can be written before anything else starts.
+	if err := auditLog.Write(audit.Entry{Source: "optimizer", Event: "started", Detail: printVersion() + ", mode " + config.Mode}); err != nil {
+		return fmt.Errorf("the audit log %s cannot be written, refusing to start: %w", auditFile, err)
+	}
 	logger.Printf("Asset operations are recorded in %s", auditFile)
 
 	processorAdapter := processor.NewLocalProcessor(logger, filepath.Dir(config.ConfigFile))

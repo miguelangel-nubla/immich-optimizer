@@ -123,6 +123,9 @@ var (
 	ErrShuttingDown = errors.New("shutting down")
 	ErrEmptyOutput  = errors.New("task produced empty output")
 	ErrEmptyInput   = errors.New("input file is empty")
+	// ErrAuditUnavailable means the audit log cannot be written: no work is
+	// started without a record of it.
+	ErrAuditUnavailable = errors.New("audit log cannot be written")
 )
 
 // ConversionError is returned by the engine for no-task and conversion

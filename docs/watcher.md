@@ -24,6 +24,7 @@ Watcher is the default mode, so `IO_MODE` is not needed. Uploads go to the API k
 - **Ignored files**: hidden files and folders (names starting with a dot, which covers the in-progress files of rsync and Syncthing, `.DS_Store` and macOS `._*` files), `Thumbs.db`, `desktop.ini` and common temporary extensions (`.tmp`, `.part`, `.crdownload`...) are left where they are. They are neither uploaded nor moved to undone.
 - **After a successful upload the source file is deleted** from the watch folder. Use a one-way sync into it.
 - **A file that cannot be converted or uploaded** is moved to the [undone folder](undone.md). If that fails too (for example the disk is full), it stays in the watch folder.
+- If more files arrive at once than the system can report, the folder is scanned again, so nothing is missed.
 - The watch folder must be on a local file system: changes made on a network share by another machine are not noticed.
 - Each converted asset gets a [provenance marker](marker.md), and each upload a line in the [audit log](audit-log.md).
 

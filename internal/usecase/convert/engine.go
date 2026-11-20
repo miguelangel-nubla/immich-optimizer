@@ -85,6 +85,15 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 		in.Filename = filepath.Base(in.Path)
 	}
 
+	// The audit log is mandatory: nothing is converted or delivered without
+	// a place to record it.
+	if err := e.cfg.Audit.Check(); err != nil {
+		if e.log != nil {
+			e.log.Errorf("Refusing %s (%s): the audit log cannot be written: %v", in.Filename, in.Source, err)
+		}
+		return nil, fmt.Errorf("%w: %w", entity.ErrAuditUnavailable, err)
+	}
+
 	if !e.HasTask(in.Filename) {
 		f := entity.Failure{
 			Stage: entity.StageNoTask,

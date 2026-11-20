@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -40,6 +41,11 @@ type inotifyWatcher struct {
 	closedInodes   sync.Map
 	pendingCreates sync.Map
 	stopChan       chan struct{}
+	// rescanning is 1 while a rescan after a queue overflow is scheduled.
+	rescanning atomic.Bool
+	// settle is how recently a file may have been written and still be
+	// picked up by a rescan.
+	settle time.Duration
 }
 
 func NewInotifyWatcher(watchDir string, log *logger.Logger, bufferSize int) (port.FileWatcher, error) {
@@ -57,6 +63,7 @@ func NewInotifyWatcher(watchDir string, log *logger.Logger, bufferSize int) (por
 		watchDirMap: make(map[int]string),
 		events:      make(chan entity.FileEvent, 100),
 		stopChan:    make(chan struct{}),
+		settle:      10 * time.Second,
 	}, nil
 }
 
@@ -164,6 +171,7 @@ func (fw *inotifyWatcher) processExistingFilesRecursive(dir string) {
 
 func (fw *inotifyWatcher) watchLoop() {
 	buf := make([]byte, fw.bufferSize)
+	backoff := 100 * time.Millisecond
 	for {
 		select {
 		case <-fw.stopChan:
@@ -176,10 +184,23 @@ func (fw *inotifyWatcher) watchLoop() {
 					return
 				default:
 				}
-				fw.logger.Printf("Error reading inotify events: %v", err)
-				time.Sleep(100 * time.Millisecond)
+				if err == unix.EINTR {
+					continue
+				}
+				// Back off instead of logging the same error ten times a
+				// second for as long as it lasts.
+				fw.logger.Errorf("Error reading inotify events (retrying in %s): %v", backoff, err)
+				select {
+				case <-fw.stopChan:
+					return
+				case <-time.After(backoff):
+				}
+				if backoff < 30*time.Second {
+					backoff *= 2
+				}
 				continue
 			}
+			backoff = 100 * time.Millisecond
 			fw.processInotifyEvents(buf, n)
 		}
 	}
@@ -211,7 +232,43 @@ func (fw *inotifyWatcher) findWatchedDirectory(wd int) string {
 	return fw.watchDirMap[wd]
 }
 
+// rescan walks the whole watch directory again after the kernel dropped
+// events (queue overflow): it re-adds the watches and emits every file that
+// has not been written to for a moment. Files still being written are left to
+// their own close event, and a second pass catches any whose event was among
+// the dropped ones.
+func (fw *inotifyWatcher) rescan() {
+	if !fw.rescanning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer fw.rescanning.Store(false)
+		for pass := 0; pass < 2; pass++ {
+			select {
+			case <-fw.stopChan:
+				return
+			case <-time.After(time.Duration(pass) * 2 * fw.settle):
+			}
+			_ = fw.addWatchRecursive(fw.watchDir)
+			_ = filepath.WalkDir(fw.watchDir, func(path string, d os.DirEntry, err error) error {
+				if err != nil || d.IsDir() {
+					return nil
+				}
+				if info, err := d.Info(); err == nil && time.Since(info.ModTime()) >= fw.settle {
+					fw.emitEvent(path)
+				}
+				return nil
+			})
+		}
+	}()
+}
+
 func (fw *inotifyWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, watchedDir string) {
+	if event.Mask&unix.IN_Q_OVERFLOW != 0 {
+		fw.logger.Warnf("The kernel dropped file events (inotify queue overflow): scanning %s again", fw.watchDir)
+		fw.rescan()
+		return
+	}
 	if event.Mask&unix.IN_IGNORED != 0 {
 		fw.watchMapMu.Lock()
 		if dir, exists := fw.watchDirMap[int(event.Wd)]; exists {
@@ -266,9 +323,11 @@ func (fw *inotifyWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, wat
 					} else {
 						fw.closedInodes.Store(statT.Ino, time.Now())
 					}
-					return
 				}
 			}
+			// A temporary file is never emitted under its own name, also
+			// when it is already gone (renamed into place) by now.
+			return
 		}
 		if watchedDir != "" {
 			fw.emitEvent(filePath)

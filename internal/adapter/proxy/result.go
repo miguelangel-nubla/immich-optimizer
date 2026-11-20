@@ -57,6 +57,9 @@ func resultFromError(err error) jobResult {
 	case errors.Is(err, entity.ErrCanceled) || errors.Is(err, entity.ErrShuttingDown):
 		res = textResult(http.StatusServiceUnavailable, "server is shutting down, retry later", false)
 		res.header.Set("Retry-After", "30")
+	case errors.Is(err, entity.ErrAuditUnavailable):
+		res = textResult(http.StatusServiceUnavailable, "the optimizer cannot write its audit log, retry later", false)
+		res.header.Set("Retry-After", "60")
 	case errors.As(err, &ce) && ce.Failure.Stage == entity.StageNoTask:
 		// Not cacheable if saving to undone failed: a retry must try again.
 		res = textResult(http.StatusUnsupportedMediaType,
