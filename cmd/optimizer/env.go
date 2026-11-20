@@ -31,7 +31,7 @@ var envSettings = []envSetting{
 	{"undone_dir", "IO_UNDONE_DIR", []string{"IUO_WATCHER_UNDONE_DIR", "IUO_UNDONE_DIR"}},
 	{"undone_unmatched", "IO_UNDONE_UNMATCHED", nil},
 	{"library_dry_run", "IO_LIBRARY_DRY_RUN", nil},
-	{"library_log_file", "IO_LIBRARY_LOG_FILE", nil},
+	{"audit_log_file", "IO_AUDIT_LOG_FILE", nil},
 	{"library_limit", "IO_LIBRARY_LIMIT", nil},
 	{"library_taken_before", "IO_LIBRARY_TAKEN_BEFORE", nil},
 	{"library_ready_timeout_seconds", "IO_LIBRARY_READY_TIMEOUT_SECONDS", nil},

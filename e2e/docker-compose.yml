@@ -1,5 +1,6 @@
 # A throwaway Immich for the end-to-end tests (scripts/e2e-test.sh).
-# Machine learning is off: the tests create people and faces through the API.
+# Machine learning is off unless the "ml" profile is used (E2E_ML=1): the
+# ordinary tests create people and faces through the API.
 name: io-e2e
 services:
   immich-server:
@@ -11,12 +12,17 @@ services:
       DB_DATABASE_NAME: immich
       DB_HOSTNAME: database
       REDIS_HOSTNAME: redis
-      IMMICH_MACHINE_LEARNING_ENABLED: "false"
+      IMMICH_MACHINE_LEARNING_ENABLED: "${E2E_ML_ENABLED:-false}"
+      IMMICH_MACHINE_LEARNING_URL: http://immich-machine-learning:3003
     ports: ['127.0.0.1:${E2E_PORT:-12383}:2283']
     depends_on:
       database: {condition: service_healthy}
       redis: {condition: service_started}
     restart: on-failure
+  immich-machine-learning:
+    profiles: [ml]
+    image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-v3.4.2}
+    volumes: [model-cache:/cache]
   redis:
     image: docker.io/valkey/valkey:9
   database:
@@ -33,4 +39,4 @@ services:
       interval: 3s
       timeout: 3s
       retries: 40
-volumes: {library: {}, pgdata: {}}
+volumes: {library: {}, pgdata: {}, model-cache: {}}

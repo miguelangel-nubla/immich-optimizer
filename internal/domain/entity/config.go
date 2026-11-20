@@ -49,9 +49,9 @@ type AppConfig struct {
 	WatchDir        string
 	UndoneDir       string
 	UndoneUnmatched bool
+	AuditLogFile    string
 	// Library mode.
 	LibraryDryRun              bool
-	LibraryLogFile             string
 	LibraryLimit               int
 	LibraryTakenBefore         string
 	LibraryReadyTimeoutSeconds int

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/audit"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
@@ -18,6 +19,7 @@ import (
 )
 
 type Service struct {
+	audit    *audit.Log
 	watcher  port.FileWatcher
 	conv     port.Converter
 	uploader port.AssetUploader
@@ -42,6 +44,7 @@ func NewService(
 	log *logger.Logger,
 	maxConcurrent int,
 	watchDir string,
+	auditLog *audit.Log,
 ) *Service {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1
@@ -54,6 +57,7 @@ func NewService(
 		fs:        fs,
 		logger:    log,
 		watchDir:  watchDir,
+		audit:     auditLog,
 		semaphore: make(chan struct{}, maxConcurrent),
 		stopChan:  make(chan struct{}),
 		ctx:       ctx,
@@ -196,19 +200,28 @@ func (s *Service) handleEvent(ctx context.Context, event entity.FileEvent) {
 		ModTime: info.ModTime(),
 		Marker:  res.Marker,
 	}
-	if err := s.uploader.UploadAsset(ctx, upload); err != nil {
+	up, err := s.uploader.UploadAsset(ctx, upload)
+	if err != nil {
 		if ctx.Err() != nil {
 			s.logger.Printf("Upload of %s canceled; it stays in the watch directory: %v", path, err)
 			return
 		}
 		f := entity.Failure{Stage: entity.StageUpload, Err: err}
-		if _, saveErr := s.conv.SaveUndone(in, f); saveErr != nil {
+		rec, saveErr := s.conv.SaveUndone(in, f)
+		entry := audit.Entry{Source: string(entity.SourceWatcher), Event: "upload_failed", File: in.Filename, Detail: err.Error()}
+		if rec != nil {
+			entry.Undone, entry.OriginalSHA1 = rec.Dir, rec.SHA1
+		}
+		s.record(entry)
+		if saveErr != nil {
 			s.logger.Errorf("Keeping %s in the watch directory: %v", path, saveErr)
 			return
 		}
 		s.removeSource(path, "after saving it to undone")
 		return
 	}
+
+	s.record(audit.Delivered(entity.SourceWatcher, in.Filename, res, up))
 
 	if res.Outcome == entity.OutcomeOptimized {
 		s.logger.Printf("Optimized file uploaded: %s -> %s",
@@ -217,6 +230,13 @@ func (s *Service) handleEvent(ctx context.Context, event entity.FileEvent) {
 		s.logger.Printf("Original file uploaded (no optimization achieved)")
 	}
 	s.removeSource(path, "after upload")
+}
+
+// record writes an audit entry; the watcher keeps working if it cannot.
+func (s *Service) record(e audit.Entry) {
+	if err := s.audit.Write(e); err != nil {
+		s.logger.Warnf("Could not write the audit log: %v", err)
+	}
 }
 
 func (s *Service) relDir(path string) string {

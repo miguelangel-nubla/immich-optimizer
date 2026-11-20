@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/audit"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
@@ -51,6 +52,9 @@ type Config struct {
 	Version string
 }
 
+// Entry is an audit log entry.
+type Entry = audit.Entry
+
 // Summary counts what a run did.
 type Summary struct {
 	Seen         int   `json:"seen"`
@@ -70,10 +74,10 @@ type Service struct {
 	api     port.LibraryAPI
 	conv    port.VerifyingConverter
 	log     *logger.Logger
-	journal *Journal
+	journal *audit.Log
 }
 
-func New(cfg Config, api port.LibraryAPI, conv port.VerifyingConverter, journal *Journal, log *logger.Logger) *Service {
+func New(cfg Config, api port.LibraryAPI, conv port.VerifyingConverter, journal *audit.Log, log *logger.Logger) *Service {
 	if cfg.ReadyTimeout <= 0 {
 		cfg.ReadyTimeout = 10 * time.Minute
 	}
@@ -105,6 +109,7 @@ func (s *Service) infof(format string, args ...any) {
 // record writes a log entry; a log that cannot be written stops the run.
 func (s *Service) record(e Entry) error {
 	e.DryRun = s.cfg.DryRun
+	e.Source = string(entity.SourceLibrary)
 	if err := s.journal.Write(e); err != nil {
 		return &errFatal{err}
 	}

@@ -144,28 +144,61 @@ Immich has no "replace this file", so the optimizer does it in a fixed order tha
 
 If anything fails or differs before step 6, the new asset is deleted again and the original is left exactly as it was. Because the original goes to the trash, you can restore it from Immich for as long as your trash keeps it (30 days by default). The space is freed when the trash is emptied.
 
-### What it leaves alone
+### What is carried over, and what is not
 
-- Assets whose task has no `verify` command, or is a passthrough. In the bundled profiles only `lossless` has verify commands, for JPEG and PNG.
-- Assets that do not get smaller. They are marked so later runs skip them.
-- Live photos and motion photos, assets with edits made in Immich, and assets with comments or likes in a shared album (those cannot be carried over).
-- Locked-folder assets (not visible to an API key), external libraries, the trash, and other users' assets.
+The converted copy is a new asset in Immich. This is everything the original had, and what happens to it:
+
+| | What | How |
+|---|---|---|
+| ✅ | Albums (including shared ones) | copied by Immich |
+| ✅ | Individual shared links | copied by Immich, completed by the optimizer |
+| ✅ | Stack membership, and being the stack's cover | copied by Immich; cover set by the optimizer |
+| ✅ | Favorite, archived state | set on upload |
+| ✅ | Description, rating | copied by Immich with the sidecar; set by the optimizer if they still differ |
+| ✅ | Date and location you edited in Immich | same |
+| ✅ | Tags | same |
+| ✅ | People (faces assigned to a person) | Immich detects them again in the new file; any still missing are recreated by the optimizer with the same face box |
+| ✅ | File dates, date taken, time zone, GPS, camera and lens, dimensions, orientation | read by Immich from the converted file, then compared |
+| ✅ | Asset metadata written by apps (for example the mobile app's iCloud id) | copied by the optimizer |
+| ✅ | Owner, type, file name (with the new extension) | by upload |
+| ⚠️ | Faces not assigned to anyone | not copied: Immich detects them again |
+| ⚠️ | A face you removed by hand, or hid | may come back when Immich detects faces again |
+| ⚠️ | Thumbnails, search index, face data | generated again by Immich for the new file |
+| ❌ | The asset's id | the copy has a new one: links and bookmarks to the old asset stop working |
+| ❌ | The upload date ("recently added") | becomes the day of the conversion |
+| ❌ | Membership in a memory | not carried over |
+| ❌ | Being an album's cover or a person's featured photo | Immich picks another one |
+
+Every ✅ row is checked in step 5: if the copy differs from the original in any of them, it is deleted and the original stays. The file name is compared without its extension, and the copy may belong to more people than the original, never fewer.
+
+### What is skipped
+
+These assets are left exactly as they are. The reason for each is written to the debug log; assets marked 📝 also get an audit log entry.
+
+| Asset | Why |
+|---|---|
+| Its task has no `verify` command | nothing could prove the conversion. In the bundled profiles only `lossless` has verify commands, for JPEG and PNG |
+| Its task is a passthrough, or no task handles its type | there is nothing to convert |
+| It does not get smaller 📝 | the original is kept and marked, so later runs do not download it again |
+| Live photos and motion photos | a photo paired with a video is not handled yet |
+| Edited in Immich (crop, rotate) | edits are not handled yet |
+| Has comments or likes in a shared album | they belong to the asset and cannot be moved to the copy |
+| In the locked folder | not visible to an API key |
+| In an external library | Immich does not own those files |
+| In the trash, hidden, or offline | not part of the visible library |
+| Belongs to another user or a partner | each user runs library mode with their own key |
+| Already converted, or already looked at | recognised by its [marker](#-provenance-marker) |
+| Newer than `IO_LIBRARY_TAKEN_BEFORE` | your own limit |
+| Immich has not finished reading it yet | it is picked up by a later run |
 
 ### Things to know before running it
 
 - **The official mobile app will upload the originals again** for photos that are still on a phone with backup enabled, because the server no longer has a file with the checksum the app looks for. Use `IO_LIBRARY_TAKEN_BEFORE` to limit the run to photos that are no longer on your phone. See [Proxy mode limitations](#-proxy-mode-limitations).
-- **Each converted asset gets a new id and upload date in Immich**, and Immich generates its thumbnails again (and runs face detection and search indexing if machine learning is on). Links to the old asset id stop working.
-- Faces that Immich detected but that are not assigned to a person are detected again rather than copied. A face you removed by hand may come back.
-- It works through one asset at a time and waits for Immich to finish reading each new file, so a large library takes a long time. A run can be stopped at any point and started again: it continues where it left off.
-- Machine-learning-assigned people were only tested with faces created through the API, not with Immich's own face detection running.
+- **Space is freed when Immich empties its trash**, not at once. Until then the original also counts against a user's storage quota.
+- It works through one asset at a time and waits for Immich to finish reading each new file, so a large library takes a long time. A run can be stopped at any point and started again: it continues where it left off, and finishes or undoes whatever was in progress.
+- Start with a small batch (`IO_LIBRARY_LIMIT=20`) and look at the result in Immich before letting it run through everything.
 
-### The log
-
-Every step is appended to `library-log.jsonl` in the undone folder (change it with `IO_LIBRARY_LOG_FILE`), one JSON object per line, and written to disk before the next step starts. It records which asset was converted with which task, both checksums and sizes, the id of the new asset, and why anything was skipped, kept or rolled back. If the log cannot be written, the run stops before changing anything.
-
-```json
-{"time":"2026-11-20T12:28:41Z","run":"20261120T122839Z","event":"replaced","asset":"2f908a71-…","file":"IMG_1234.jpg","new_asset":"552cdf2a-…","original_bytes":29293,"converted_bytes":21961,"original_sha1":"6ea53f87…","converted_sha1":"1df45779…","task":"jpeg-xl"}
-```
+Every step is written to the [audit log](#-audit-log).
 
 ### Settings
 
@@ -174,8 +207,37 @@ Every step is appended to `library-log.jsonl` in the undone folder (change it wi
 | `IO_LIBRARY_DRY_RUN` | Only report what would be converted | `true` |
 | `IO_LIBRARY_TAKEN_BEFORE` | Only assets dated before this day (`YYYY-MM-DD`) | - |
 | `IO_LIBRARY_LIMIT` | Stop after this many replacements (`0` = no limit) | `0` |
-| `IO_LIBRARY_LOG_FILE` | Path of the persistent log | `<undone dir>/library-log.jsonl` |
 | `IO_LIBRARY_READY_TIMEOUT_SECONDS` | How long to wait for Immich to finish reading a converted asset | `600` |
+
+## 🧾 Audit log
+
+Every operation on an asset is appended to `audit.log` in the undone folder (change the path with `IO_AUDIT_LOG_FILE`), in every mode. It is separate from the normal log output: it is persistent, it has one JSON object per line, and each line is written to disk before the optimizer goes on.
+
+It records what happened to your files, and only that:
+
+| Source | Event | Meaning |
+|---|---|---|
+| `proxy`, `watcher` | `uploaded` | a file reached Immich; `outcome` says whether it was `optimized` or sent `unchanged` |
+| `proxy`, `watcher` | `duplicate` | Immich already had those bytes |
+| `proxy`, `watcher` | `failed` | conversion failed; `undone` is the folder the original was saved to |
+| `proxy`, `watcher` | `refused` | no task handles the file type |
+| `proxy`, `watcher` | `upload_failed` | converted, but Immich did not accept it |
+| `library` | `would_convert` | dry run: this asset would be converted |
+| `library` | `converted`, `uploaded`, `verified`, `replaced` | the steps of one replacement; `replaced` means the original is in the trash |
+| `library` | `kept` | looked at and left as it is |
+| `library` | `verify_failed`, `rolled_back`, `failed` | a replacement was abandoned and the original left untouched; `differences` lists what did not match |
+| `library` | `finalized` | an interrupted replacement from an earlier run was completed |
+| `library` | `run_started`, `run_finished` | one pass, with a summary of counts and bytes |
+
+Requests that are only passed through to Immich, malformed uploads and other client mistakes are not recorded.
+
+```json
+{"time":"2026-11-20T12:28:41Z","run":"20261120T122839Z","source":"library","event":"replaced","asset":"2f908a71-…","file":"IMG_1234.jpg","new_asset":"552cdf2a-…","original_bytes":29293,"converted_bytes":21961,"original_sha1":"6ea53f87…","converted_sha1":"1df45779…","task":"jpeg-xl"}
+```
+
+Each line carries the time, the run it belongs to, the file name, the Immich asset id, and where known the task, both sizes and both checksums.
+
+If the audit log cannot be written, **library mode stops before changing anything**. Proxy and watcher mode log a warning and keep working, so a full disk does not block uploads.
 
 ## 🏷️ Provenance marker
 
@@ -342,6 +404,7 @@ services:
 | `IO_SHUTDOWN_TIMEOUT_SECONDS` | All | On stop, how long running jobs may finish before they are cancelled (see [Long jobs & restarts](#-long-jobs--restarts)) | `8` |
 | `IO_UNDONE_DIR` | All | Directory where inputs that failed conversion are saved as `<sha1>/original.file` + `metadata.json` | `/undone` |
 | `IO_UNDONE_UNMATCHED` | All | Also save files that have no matching task to undone (they are always refused) | `true` |
+| `IO_AUDIT_LOG_FILE` | All | Persistent [audit log](#-audit-log) of asset operations | `<undone dir>/audit.log` |
 | `IO_PROXY_BIND_ADDR` | `proxy` | Address for reverse proxy server to listen on | `:2283` |
 | `IO_PROXY_FILTER_PATH` | `proxy` | Path pattern to intercept for proxy uploads | `/api/assets` |
 | `IO_PROXY_FILTER_FORM_KEY` | `proxy` | Form key for upload files | `assetData` |
@@ -600,6 +663,8 @@ docker run -e IO_LOG_LEVEL=debug ghcr.io/miguelangel-nubla/immich-optimizer:late
 ### End-to-end tests
 
 `scripts/e2e-test.sh [image]` starts a throwaway Immich with Docker Compose and runs the optimizer against it in library, proxy and watcher mode: a full library replacement with everything carried over, the dry run, verify failures, interrupted runs, the date filter, proxy uploads with the marker and the undone folder, and watcher uploads. It builds the optimizer from this checkout and mounts it over the image's binary. CI runs it on every push.
+
+`E2E_ML=1 scripts/e2e-test.sh` also starts Immich's machine learning and runs the test that needs real face detection: three photos of the same face are recognised by Immich, the person is named, library mode converts them, and each copy must end up with that person exactly once after Immich has processed the new files. It downloads the machine-learning image and a model, so it takes a few minutes longer. CI runs it this way.
 
 ### Testing the bundled profiles
 

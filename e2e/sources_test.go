@@ -3,9 +3,11 @@
 package e2e
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -94,6 +96,25 @@ func TestProxyConvertsUploads(t *testing.T) {
 		t.Errorf("undone metadata: %v", err)
 	}
 
+	// The audit log has one line per asset operation, and nothing else.
+	audit := readLog(t, filepath.Join(undone, "audit.log"))
+	var got []string
+	for _, e := range audit {
+		if e["source"] != "proxy" {
+			t.Errorf("unexpected source in %v", e)
+		}
+		got = append(got, fmt.Sprint(e["event"]))
+	}
+	if strings.Join(got, " ") != "uploaded duplicate uploaded failed" {
+		t.Errorf("audit events = %v", got)
+	}
+	if audit[0]["asset"] != a.ID || audit[0]["outcome"] != "optimized" || audit[0]["original_sha1"] != fileSHA1(t, src) {
+		t.Errorf("first audit entry = %v", audit[0])
+	}
+	if last := audit[len(audit)-1]; last["file"] != "broken.jpg" || !strings.HasSuffix(fmt.Sprint(last["undone"]), folders[0]) {
+		t.Errorf("failure audit entry = %v", last)
+	}
+
 	// Everything else is passed straight through to Immich.
 	var me struct {
 		ID string `json:"id"`
@@ -166,6 +187,10 @@ func TestWatcherUploadsAndCleansUp(t *testing.T) {
 	}
 	if _, err := os.Stat(hidden); err != nil {
 		t.Error("the hidden file was touched")
+	}
+	audit := readLog(t, filepath.Join(undone, "audit.log"))
+	if len(audit) != 1 || audit[0]["event"] != "uploaded" || audit[0]["source"] != "watcher" || audit[0]["asset"] != a.ID || audit[0]["file"] != "scan.jpg" {
+		t.Errorf("audit log = %v", audit)
 	}
 	if f := undoneFolders(t, undone); len(f) != 0 {
 		t.Errorf("unexpected undone folders: %v", f)

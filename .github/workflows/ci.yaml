@@ -137,7 +137,7 @@ jobs:
   # from this commit, in library, proxy and watcher mode.
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -159,4 +159,5 @@ jobs:
           docker build -f Dockerfile.goreleaser -t immich-optimizer:ci "$ctx"
 
       - name: End-to-end tests
-        run: scripts/e2e-test.sh immich-optimizer:ci -v
+        # With Immich's machine learning, so the face-recognition test runs too.
+        run: E2E_ML=1 scripts/e2e-test.sh immich-optimizer:ci -v

@@ -70,17 +70,17 @@ type mockUploader struct {
 	last     entity.Upload
 }
 
-func (m *mockUploader) UploadAsset(ctx context.Context, u entity.Upload) error {
+func (m *mockUploader) UploadAsset(ctx context.Context, u entity.Upload) (entity.UploadResult, error) {
 	filename := u.Filename
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.last = u
 	m.calls++
 	if err, found := m.failMap[filename]; found {
-		return err
+		return entity.UploadResult{}, err
 	}
 	m.uploaded = append(m.uploaded, filename)
-	return nil
+	return entity.UploadResult{AssetID: "asset-" + filename}, nil
 }
 
 type mockFileSystem struct {
@@ -158,7 +158,7 @@ func waitIdle(t *testing.T, svc *Service) {
 
 func newSvc(conv *fakeConverter, up *mockUploader, fs *mockFileSystem, watchDir string, max int) (*Service, chan entity.FileEvent) {
 	events := make(chan entity.FileEvent, 10)
-	return NewService(&mockWatcher{events: events}, conv, up, fs, quiet(), max, watchDir), events
+	return NewService(&mockWatcher{events: events}, conv, up, fs, quiet(), max, watchDir, nil), events
 }
 
 func TestPipelineSuccessUploadsAndRemoves(t *testing.T) {

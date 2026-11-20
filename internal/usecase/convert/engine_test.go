@@ -1,7 +1,9 @@
 package convert
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/audit"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	customlogger "github.com/miguelangel-nubla/immich-optimizer/internal/logger"
 )
@@ -336,5 +339,44 @@ func TestSkipUndoneDoesNotSaveFailedInput(t *testing.T) {
 	}
 	if store.count() != 0 {
 		t.Errorf("undone saves = %d, want 0", store.count())
+	}
+}
+
+func TestEngineAuditsFailedAndRefusedInputs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	l, err := audit.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	proc := &fakeProc{fn: func(context.Context, string) (*entity.ProcessResult, error) { return nil, errors.New("boom") }}
+	e := New(Config{Tasks: jpgTasks, SaveUnmatched: true, Audit: l}, proc, &fakeStore{}, quiet())
+
+	in := input(t, 100)
+	_, _ = e.Convert(context.Background(), in) // conversion fails
+	xyz := in
+	xyz.Filename = "note.xyz"
+	_, _ = e.Convert(context.Background(), xyz) // no task
+	lib := in
+	lib.Source, lib.SkipUndone = entity.SourceLibrary, true
+	_, _ = e.Convert(context.Background(), lib) // library mode records its own entries
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
+		var entry audit.Entry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry.Source != "proxy" {
+			t.Errorf("entry = %+v", entry)
+		}
+		events = append(events, entry.Event+":"+entry.File)
+	}
+	if len(events) != 2 || events[0] != "failed:orig.JPG" || events[1] != "refused:note.xyz" {
+		t.Errorf("audit events = %v", events)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/sha1" // #nosec G505 -- content identity matching Immich's checksum, not security
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/immich"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/audit"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 )
 
@@ -151,6 +153,7 @@ func (s *Server) runJob(ctx context.Context, j *job, spec jobSpec) jobResult {
 		s.logger.Printf("Proxy job %s: Immich responded %d", j.id, res.status)
 		s.markDuplicate(ctx, j, spec, targets, res)
 	}
+	s.auditUpload(targets, res)
 	return res
 }
 
@@ -301,6 +304,39 @@ func (s *Server) markDuplicate(ctx context.Context, j *job, spec jobSpec, target
 	err := immich.EnsureMarker(ctx, s.client, s.cfg.UpstreamURL.String(), immich.AuthHeaders(spec.header), id, marker)
 	if err != nil {
 		s.logger.Warnf("Proxy job %s: could not record the optimizer marker on existing asset %s: %v", j.id, id, err)
+	}
+}
+
+// auditUpload records what became of the converted file(s) of one request.
+func (s *Server) auditUpload(targets []*targetPart, res jobResult) {
+	if s.cfg.Audit == nil {
+		return
+	}
+	var answer struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	ok := res.err == nil && (res.status == http.StatusOK || res.status == http.StatusCreated) &&
+		json.Unmarshal(res.body, &answer) == nil && answer.ID != ""
+	for _, t := range targets {
+		if t.res == nil {
+			continue
+		}
+		var entry audit.Entry
+		if ok {
+			entry = audit.Delivered(entity.SourceProxy, t.fileName, t.res, entity.UploadResult{AssetID: answer.ID, Duplicate: answer.Status == "duplicate"})
+		} else {
+			entry = audit.Delivered(entity.SourceProxy, t.fileName, t.res, entity.UploadResult{})
+			entry.Event = "upload_failed"
+			if res.err != nil {
+				entry.Detail = res.err.Error()
+			} else {
+				entry.Detail = fmt.Sprintf("Immich answered %d", res.status)
+			}
+		}
+		if err := s.cfg.Audit.Write(entry); err != nil {
+			s.logger.Warnf("Could not write the audit log: %v", err)
+		}
 	}
 }
 

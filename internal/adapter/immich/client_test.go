@@ -66,7 +66,7 @@ func TestUploadAssetWithFilenameSuccess(t *testing.T) {
 	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
 	c := NewClient(server.URL, "test-api-key", nil, logger)
 
-	err := c.UploadAsset(context.Background(), entity.Upload{Path: testFilePath, Filename: "custom_name.jpg"})
+	_, err := c.UploadAsset(context.Background(), entity.Upload{Path: testFilePath, Filename: "custom_name.jpg"})
 	if err != nil {
 		t.Fatalf("UploadAssetWithFilename failed: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestUploadAssetErrorStatus(t *testing.T) {
 	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
 	c := NewClient(server.URL, "bad-key", nil, logger)
 
-	err := c.UploadAsset(context.Background(), entity.Upload{Path: testFilePath, Filename: filepath.Base(testFilePath)})
+	_, err := c.UploadAsset(context.Background(), entity.Upload{Path: testFilePath, Filename: filepath.Base(testFilePath)})
 	if err == nil {
 		t.Fatalf("expected error on 401 unauthorized, got nil")
 	}
@@ -127,7 +127,7 @@ func TestUploadAssetRetryOnServerError(t *testing.T) {
 	logger := customlogger.New(log.New(os.Stdout, "", 0), "")
 	c := NewClient(server.URL, "key", nil, logger)
 
-	err := c.UploadAsset(context.Background(), entity.Upload{Path: testFilePath, Filename: filepath.Base(testFilePath)})
+	_, err := c.UploadAsset(context.Background(), entity.Upload{Path: testFilePath, Filename: filepath.Base(testFilePath)})
 	if err != nil {
 		t.Fatalf("expected upload to succeed after retry, got: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestUploadThroughSlowReadingServer(t *testing.T) {
 	hc := httpclient.New(httpclient.Options{ResponseHeaderTimeout: 500 * time.Millisecond})
 	c := NewClient(server.URL, "key", hc, customlogger.NewWithLevel(nil, "error", ""))
 	start := time.Now()
-	if err := c.UploadAsset(context.Background(), entity.Upload{Path: testFilePath, Filename: filepath.Base(testFilePath)}); err != nil {
+	if _, err := c.UploadAsset(context.Background(), entity.Upload{Path: testFilePath, Filename: filepath.Base(testFilePath)}); err != nil {
 		t.Fatalf("upload through slow server failed: %v", err)
 	}
 	if time.Since(start) < time.Second {

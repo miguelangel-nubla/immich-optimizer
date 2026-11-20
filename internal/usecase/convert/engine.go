@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/audit"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
@@ -34,6 +35,9 @@ type Config struct {
 	SaveUnmatched bool
 	// Version is the optimizer version recorded in provenance markers.
 	Version string
+	// Audit, when set, records every input the engine refused or failed to
+	// convert (library mode records its own, richer entries).
+	Audit *audit.Log
 }
 
 type Engine struct {
@@ -291,7 +295,35 @@ func (e *Engine) fail(in entity.ConvertInput, f entity.Failure, save bool) error
 		ce.Undone, ce.UndoneErr = e.save(in, f)
 	}
 	e.logFailure(in, f, ce.Undone, ce.UndoneErr, save)
+	e.auditFailure(in, f, ce.Undone)
 	return ce
+}
+
+// auditFailure records an input that was not delivered.
+func (e *Engine) auditFailure(in entity.ConvertInput, f entity.Failure, rec *entity.UndoneRecord) {
+	if e.cfg.Audit == nil || in.Source == entity.SourceLibrary {
+		return
+	}
+	entry := audit.Entry{Source: string(in.Source), Event: "failed", File: in.Filename, OriginalSHA1: in.SHA1}
+	if f.Stage == entity.StageNoTask {
+		entry.Event = "refused"
+	}
+	if f.Err != nil {
+		entry.Detail = f.Err.Error()
+		var pe *entity.ProcessError
+		if errors.As(f.Err, &pe) {
+			entry.Detail = pe.Err.Error()
+		}
+	}
+	if rec != nil {
+		entry.Undone = rec.Dir
+		if entry.OriginalSHA1 == "" {
+			entry.OriginalSHA1 = rec.SHA1
+		}
+	}
+	if err := e.cfg.Audit.Write(entry); err != nil {
+		e.warnf("Could not write the audit log: %v", err)
+	}
 }
 
 func (e *Engine) logFailure(in entity.ConvertInput, f entity.Failure, rec *entity.UndoneRecord, saveErr error, saved bool) {
@@ -322,6 +354,12 @@ func (e *Engine) logFailure(in entity.ConvertInput, f entity.Failure, rec *entit
 		e.log.Errorf("%s failed for %s (%s): %s; could NOT save to undone: %v", stage, in.Filename, in.Source, reason, saveErr)
 	default:
 		e.log.Printf("%s failed for %s (%s): %s; saved to %s (seen %dx)", stage, in.Filename, in.Source, reason, rec.Dir, rec.Occurrences)
+	}
+}
+
+func (e *Engine) warnf(format string, args ...any) {
+	if e.log != nil {
+		e.log.Warnf(format, args...)
 	}
 }
 

@@ -8,6 +8,8 @@
 # the profiles are always taken from this checkout (the binary is built here
 # and mounted over the image's), so the tests exercise the code you have.
 # Set E2E_KEEP=1 to leave Immich running afterwards.
+# Set E2E_ML=1 to also start Immich's machine learning and run the tests that
+# need real face detection (downloads the ML image and models: slow).
 set -euo pipefail
 
 IMAGE="${1:-ghcr.io/miguelangel-nubla/immich-optimizer:dev}"
@@ -16,6 +18,10 @@ shift || true
 cd "$(dirname "$0")/.."
 export E2E_PORT="${E2E_PORT:-12383}"
 COMPOSE=(docker compose -f e2e/docker-compose.yml)
+if [ -n "${E2E_ML:-}" ]; then
+  COMPOSE+=(--profile ml)
+  export E2E_ML_ENABLED=true
+fi
 OUT="$(mktemp -d)"
 
 cleanup() {
@@ -48,4 +54,5 @@ E2E_IMAGE="$IMAGE" \
 E2E_BINARY="$OUT/immich-optimizer" \
 E2E_CONFIG_DIR="$PWD/config" \
 E2E_MEDIA_DIR="$PWD/cmd/optimizer/testdata/media" \
+E2E_ML="${E2E_ML:-}" \
   go test -tags e2e -count=1 -timeout 30m ./e2e/ "$@"

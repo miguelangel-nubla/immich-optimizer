@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/httpclient"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/audit"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
@@ -46,6 +47,8 @@ type Config struct {
 	BindAddr      string
 	FilterPath    string
 	FilterFormKey string
+	// Audit, when set, records every upload that reached Immich.
+	Audit *audit.Log
 	// HTTPClient is used for the upstream upload. It should have
 	// transport-level timeouts only (see httpclient.New).
 	HTTPClient *http.Client

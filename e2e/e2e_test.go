@@ -400,7 +400,7 @@ func runLibrary(t *testing.T, u *user, logDir string, env map[string]string, mou
 		}
 		code = ee.ExitCode()
 	}
-	return code, string(out), readLog(t, filepath.Join(logDir, "library-log.jsonl"))
+	return code, string(out), readLog(t, filepath.Join(logDir, "audit.log"))
 }
 
 func readLog(t *testing.T, path string) []map[string]any {

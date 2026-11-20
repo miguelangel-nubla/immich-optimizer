@@ -7,5 +7,5 @@ import (
 )
 
 type AssetUploader interface {
-	UploadAsset(ctx context.Context, u entity.Upload) error
+	UploadAsset(ctx context.Context, u entity.Upload) (entity.UploadResult, error)
 }

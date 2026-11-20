@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/audit"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 )
 
@@ -421,7 +422,7 @@ func newHarness(t *testing.T) *harness {
 
 func (h *harness) run() (Summary, error) {
 	h.t.Helper()
-	j, err := OpenJournal(h.logPath)
+	j, err := audit.Open(h.logPath)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -862,7 +863,7 @@ func TestDuplicateOfUnrelatedAssetIsLeftAlone(t *testing.T) {
 func TestUnwritableLogStopsTheRunBeforeAnyChange(t *testing.T) {
 	h := newHarness(t)
 	old := richAsset(h)
-	j, err := OpenJournal(h.logPath)
+	j, err := audit.Open(h.logPath)
 	if err != nil {
 		t.Fatal(err)
 	}

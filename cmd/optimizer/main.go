@@ -28,6 +28,7 @@ import (
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/proxy"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/undone"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/watcher"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/audit"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
 	customlogger "github.com/miguelangel-nubla/immich-optimizer/internal/logger"
@@ -102,7 +103,7 @@ func parseConfig(args []string) (*entity.AppConfig, []deprecation, error) {
 	fs.StringVar(&ac.UndoneDir, "undone_dir", v.GetString("undone_dir"), "Directory where inputs that failed conversion are saved (all modes)")
 	fs.BoolVar(&ac.UndoneUnmatched, "undone_unmatched", v.GetBool("undone_unmatched"), "Save files with no matching task to the undone directory")
 	fs.BoolVar(&ac.LibraryDryRun, "library_dry_run", v.GetBool("library_dry_run"), "Library mode: only report what would be converted, change nothing")
-	fs.StringVar(&ac.LibraryLogFile, "library_log_file", v.GetString("library_log_file"), "Library mode: persistent log of every step (default: library-log.jsonl in the undone directory)")
+	fs.StringVar(&ac.AuditLogFile, "audit_log_file", v.GetString("audit_log_file"), "Persistent log of every asset operation, all modes (default: audit.log in the undone directory)")
 	fs.IntVar(&ac.LibraryLimit, "library_limit", v.GetInt("library_limit"), "Library mode: stop after this many replacements (0 = no limit)")
 	fs.StringVar(&ac.LibraryTakenBefore, "library_taken_before", v.GetString("library_taken_before"), "Library mode: only assets whose file date is before this day (YYYY-MM-DD)")
 	fs.IntVar(&ac.LibraryReadyTimeoutSeconds, "library_ready_timeout_seconds", v.GetInt("library_ready_timeout_seconds"), "Library mode: how long to wait for Immich to finish reading a converted asset, in seconds")
@@ -507,6 +508,18 @@ func run(args []string) error {
 	}
 	logger.Printf("Failed inputs are saved to %s", undoneStore.Root())
 
+	// One persistent record of every asset operation, whatever the mode.
+	auditFile := config.AuditLogFile
+	if auditFile == "" {
+		auditFile = filepath.Join(config.UndoneDir, "audit.log")
+	}
+	auditLog, err := audit.Open(auditFile)
+	if err != nil {
+		return err
+	}
+	defer auditLog.Close()
+	logger.Printf("Asset operations are recorded in %s", auditFile)
+
 	processorAdapter := processor.NewLocalProcessor(logger, filepath.Dir(config.ConfigFile))
 	engine := convert.New(convert.Config{
 		Tasks:         config.Tasks.Tasks,
@@ -514,6 +527,7 @@ func run(args []string) error {
 		TaskTimeout:   time.Duration(config.TaskTimeoutSeconds) * time.Second,
 		SaveUnmatched: config.UndoneUnmatched,
 		Version:       version,
+		Audit:         auditLog,
 	}, processorAdapter, undoneStore, logger)
 
 	httpTimeout := time.Duration(config.HTTPTimeoutSeconds) * time.Second
@@ -547,6 +561,7 @@ func run(args []string) error {
 			logger,
 			config.MaxConcurrentRequests,
 			config.WatchDir,
+			auditLog,
 		)
 
 		if err := watcherAdapter.Start(); err != nil {
@@ -562,6 +577,7 @@ func run(args []string) error {
 			FilterPath:    config.FilterPath,
 			FilterFormKey: config.FilterFormKey,
 			HTTPClient:    httpClient,
+			Audit:         auditLog,
 		}, engine, logger)
 		if err := proxyServer.Start(); err != nil {
 			if watcherAdapter != nil {
@@ -577,15 +593,6 @@ func run(args []string) error {
 	libraryCtx, cancelLibrary := context.WithCancel(context.Background())
 	defer cancelLibrary()
 	if hasMode(config.Mode, "library") {
-		logFile := config.LibraryLogFile
-		if logFile == "" {
-			logFile = filepath.Join(config.UndoneDir, "library-log.jsonl")
-		}
-		journal, err := library.OpenJournal(logFile)
-		if err != nil {
-			return err
-		}
-		defer journal.Close()
 		takenBefore, _ := parseLibraryDate(config.LibraryTakenBefore)
 		svc := library.New(library.Config{
 			DryRun:       config.LibraryDryRun,
@@ -593,11 +600,11 @@ func run(args []string) error {
 			TakenBefore:  takenBefore,
 			ReadyTimeout: time.Duration(config.LibraryReadyTimeoutSeconds) * time.Second,
 			Version:      version,
-		}, immich.NewLibraryClient(config.ImmichURL, config.ImmichAPIKey, httpClient), engine, journal, logger)
+		}, immich.NewLibraryClient(config.ImmichURL, config.ImmichAPIKey, httpClient), engine, auditLog, logger)
 		if config.LibraryDryRun {
-			logger.Printf("Library mode: DRY RUN, nothing will be changed (set IO_LIBRARY_DRY_RUN=false to convert). Log: %s", logFile)
+			logger.Printf("Library mode: DRY RUN, nothing will be changed (set IO_LIBRARY_DRY_RUN=false to convert)")
 		} else {
-			logger.Printf("Library mode: converting existing assets; originals go to Immich's trash. Log: %s", logFile)
+			logger.Printf("Library mode: converting existing assets; originals go to Immich's trash")
 		}
 		libraryDone = make(chan error, 1)
 		go func() {

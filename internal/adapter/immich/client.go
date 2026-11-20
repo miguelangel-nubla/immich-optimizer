@@ -2,6 +2,7 @@ package immich
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -49,11 +50,12 @@ func (e *statusError) Error() string {
 	return fmt.Sprintf("upload failed with status %d: %s", e.statusCode, e.body)
 }
 
-func (c *client) UploadAsset(ctx context.Context, u entity.Upload) error {
+func (c *client) UploadAsset(ctx context.Context, u entity.Upload) (entity.UploadResult, error) {
+	var res entity.UploadResult
 	filePath, filename := u.Path, u.Filename
 	stat, err := os.Stat(filePath)
 	if err != nil {
-		return fmt.Errorf("unable to get file info: %w", err)
+		return res, fmt.Errorf("unable to get file info: %w", err)
 	}
 	if u.ModTime.IsZero() {
 		u.ModTime = stat.ModTime()
@@ -63,13 +65,13 @@ func (c *client) UploadAsset(ctx context.Context, u entity.Upload) error {
 	backoff := 1 * time.Second
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		err = c.doUpload(ctx, u, stat)
+		res, err = c.doUpload(ctx, u, stat)
 		if err == nil {
-			return nil
+			return res, nil
 		}
 
 		if ctx.Err() != nil {
-			return err
+			return res, err
 		}
 
 		var isTransient bool
@@ -83,30 +85,31 @@ func (c *client) UploadAsset(ctx context.Context, u entity.Upload) error {
 		}
 
 		if !isTransient || attempt == maxRetries {
-			return err
+			return res, err
 		}
 
 		c.logger.Printf("Upload attempt %d/%d failed for %s (%v), retrying in %v...", attempt, maxRetries, filename, err, backoff)
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return res, ctx.Err()
 		case <-time.After(backoff):
 		}
 
 		backoff *= 2
 	}
 
-	return err
+	return res, err
 }
 
-func (c *client) doUpload(ctx context.Context, u entity.Upload, stat os.FileInfo) error {
+func (c *client) doUpload(ctx context.Context, u entity.Upload, stat os.FileInfo) (entity.UploadResult, error) {
+	var res entity.UploadResult
 	filePath, filename := u.Path, u.Filename
 	metadata := ""
 	if u.Marker != nil {
 		var err error
 		if metadata, err = u.Marker.MergeIntoMetadata(""); err != nil {
-			return fmt.Errorf("unable to encode asset metadata: %w", err)
+			return res, fmt.Errorf("unable to encode asset metadata: %w", err)
 		}
 	}
 
@@ -174,7 +177,7 @@ func (c *client) doUpload(ctx context.Context, u entity.Upload, stat os.FileInfo
 	req, err := http.NewRequestWithContext(ctx, "POST", url, pr)
 	if err != nil {
 		pr.Close()
-		return fmt.Errorf("unable to create request: %w", err)
+		return res, fmt.Errorf("unable to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -182,20 +185,24 @@ func (c *client) doUpload(ctx context.Context, u entity.Upload, stat os.FileInfo
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("unable to make request: %w", err)
+		return res, fmt.Errorf("unable to make request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return &statusError{
+		return res, &statusError{
 			statusCode: resp.StatusCode,
 			body:       string(body),
 		}
 	}
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	var answer uploadResponse
+	_ = json.Unmarshal(body, &answer)
+	res.AssetID = answer.ID
 	if id := DuplicateAssetID(body); id != "" {
+		res.Duplicate = true
 		c.logger.Printf("Immich already has %s (%s) as asset %s", filename, utils.HumanReadableSize(stat.Size()), id)
 		if u.Marker != nil {
 			auth := http.Header{"X-Api-Key": []string{c.APIKey}}
@@ -204,9 +211,9 @@ func (c *client) doUpload(ctx context.Context, u entity.Upload, stat os.FileInfo
 				c.logger.Warnf("Could not record the optimizer marker on existing asset %s: %v", id, err)
 			}
 		}
-		return nil
+		return res, nil
 	}
 
 	c.logger.Printf("Successfully uploaded %s (%s)", filename, utils.HumanReadableSize(stat.Size()))
-	return nil
+	return res, nil
 }

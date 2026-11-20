@@ -92,6 +92,13 @@ type Upload struct {
 	Marker *Marker
 }
 
+// UploadResult is what Immich answered to an upload.
+type UploadResult struct {
+	AssetID string
+	// Duplicate means Immich already had these exact bytes as AssetID.
+	Duplicate bool
+}
+
 // MetadataItem is one key/value pair of Immich asset metadata.
 type MetadataItem struct {
 	Key   string          `json:"key"`
