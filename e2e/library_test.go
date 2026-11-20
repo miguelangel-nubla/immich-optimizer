@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -221,16 +222,22 @@ func TestLibraryRejectsInvalidOutputAndAcceptsLossy(t *testing.T) {
 
 	// A task that "succeeds" but produces a single flat colour.
 	cfg := sharedDir(t)
+	// Each variant gets its own file: rewriting one mounted file can show
+	// the container a stale copy.
+	n := 0
+	env := map[string]string{"IO_LIBRARY_DRY_RUN": "false"}
 	write := func(command string) {
+		n++
+		name := fmt.Sprintf("tasks-%d.yaml", n)
 		// A block scalar, so the command needs no YAML quoting.
 		tasks := "tasks:\n  - name: custom\n    command: >-\n      " + command + "\n    extensions: [jpg]\n"
-		if err := os.WriteFile(filepath.Join(cfg, "tasks.yaml"), []byte(tasks), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(cfg, name), []byte(tasks), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		env["IO_TASKS_FILE"] = "/custom/" + name
 	}
 	write(`magick -size 640x480 xc:gray "{{.dst_folder}}/{{.name}}.png"`)
 	logDir := sharedDir(t)
-	env := map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_TASKS_FILE": "/custom/tasks.yaml"}
 	code, out, log := runLibrary(t, u, logDir, env, cfg+":/custom:ro")
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)

@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -39,9 +40,9 @@ func TestParseConfigTuningFlags(t *testing.T) {
 		"-mode", "proxy",
 		"-immich_url", "http://immich.example",
 		"-tasks_file", tasksFile,
-		"-max_concurrent_requests", "3",
-		"-http_timeout_seconds", "45",
-		"-inotify_buffer_size", "4096",
+		"-tasks_concurrency", "3",
+		"-immich_timeout_seconds", "45",
+		"-watcher_inotify_buffer_size", "4096",
 	})
 	if err != nil {
 		t.Fatalf("parseConfig failed: %v", err)
@@ -68,7 +69,7 @@ func TestParseConfigRejectsInvalidMaxConcurrentRequests(t *testing.T) {
 		"-mode", "proxy",
 		"-immich_url", "http://immich.example",
 		"-tasks_file", tasksFile,
-		"-max_concurrent_requests", "0",
+		"-tasks_concurrency", "0",
 	})
 	if err == nil {
 		t.Fatalf("expected invalid max_concurrent_requests to fail")
@@ -83,7 +84,7 @@ func TestParseConfigRejectsInvalidHTTPTimeoutSeconds(t *testing.T) {
 		"-mode", "proxy",
 		"-immich_url", "http://immich.example",
 		"-tasks_file", tasksFile,
-		"-http_timeout_seconds", "0",
+		"-immich_timeout_seconds", "0",
 	})
 	if err == nil {
 		t.Fatalf("expected invalid http_timeout_seconds to fail")
@@ -98,7 +99,7 @@ func TestParseConfigRejectsInvalidInotifyBufferSize(t *testing.T) {
 		"-mode", "proxy",
 		"-immich_url", "http://immich.example",
 		"-tasks_file", tasksFile,
-		"-inotify_buffer_size", "0",
+		"-watcher_inotify_buffer_size", "0",
 	})
 	if err == nil {
 		t.Fatalf("expected invalid inotify_buffer_size to fail")
@@ -293,16 +294,16 @@ func TestEnvIOPrefix(t *testing.T) {
 		"IO_IMMICH_API_KEY":              testAPIKeyEnv,
 		"IO_TASKS_FILE":                  tasks,
 		"IO_LOG_LEVEL":                   "debug",
-		"IO_MAX_CONCURRENT_REQUESTS":     "4",
-		"IO_HTTP_TIMEOUT_SECONDS":        "33",
-		"IO_TASK_TIMEOUT_SECONDS":        "600",
+		"IO_TASKS_CONCURRENCY":           "4",
+		"IO_IMMICH_TIMEOUT_SECONDS":      "33",
+		"IO_TASKS_TIMEOUT_SECONDS":       "600",
 		"IO_SHUTDOWN_TIMEOUT_SECONDS":    "20",
 		"IO_UNDONE_DIR":                  undoneDir,
 		"IO_UNDONE_UNMATCHED":            "false",
 		"IO_PROXY_BIND_ADDR":             ":9999",
 		"IO_PROXY_FILTER_PATH":           "/x",
 		"IO_PROXY_FILTER_FORM_KEY":       "file",
-		"IO_WATCHER_WATCH_DIR":           watchDir,
+		"IO_WATCHER_DIR":                 watchDir,
 		"IO_WATCHER_INOTIFY_BUFFER_SIZE": "1024",
 	}
 	for k, v := range env {
@@ -591,7 +592,7 @@ func TestUndoneInsideWatchRejected(t *testing.T) {
 	for _, undoneDir := range []string{watch, filepath.Join(watch, "undone")} {
 		_, _, err := parseConfig(append(baseArgs(t),
 			"-mode", "watcher", "-immich_url", "http://immich.example", "-immich_api_key", testAPIKeyEnv,
-			"-watch_dir", watch, "-undone_dir", undoneDir))
+			"-watcher_dir", watch, "-undone_dir", undoneDir))
 		if err == nil || !strings.Contains(err.Error(), "inside") {
 			t.Fatalf("undone %q inside watch %q should be rejected, got %v", undoneDir, watch, err)
 		}
@@ -599,7 +600,7 @@ func TestUndoneInsideWatchRejected(t *testing.T) {
 	// A sibling whose name merely starts with the watch dir name is fine.
 	_, _, err := parseConfig(append(baseArgs(t),
 		"-mode", "watcher", "-immich_url", "http://immich.example", "-immich_api_key", testAPIKeyEnv,
-		"-watch_dir", watch, "-undone_dir", watch+"-undone"))
+		"-watcher_dir", watch, "-undone_dir", watch+"-undone"))
 	if err != nil {
 		t.Fatalf("sibling undone dir rejected: %v", err)
 	}
@@ -608,7 +609,7 @@ func TestUndoneInsideWatchRejected(t *testing.T) {
 
 func TestNegativeTaskTimeoutRejected(t *testing.T) {
 	clearConfigEnv(t)
-	for _, flagName := range []string{"-task_timeout_seconds", "-shutdown_timeout_seconds"} {
+	for _, flagName := range []string{"-tasks_timeout_seconds", "-shutdown_timeout_seconds"} {
 		_, _, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-immich_url", "http://immich.example", flagName, "-1"))
 		if err == nil {
 			t.Fatalf("%s=-1 should be rejected", flagName)
@@ -668,7 +669,7 @@ func TestTasksFileInWatchDirCwdIsSkipped(t *testing.T) {
 	}
 	// Through parseConfig in watcher mode this must not be a fatal error.
 	args := []string{"-mode", "watcher", "-immich_url", "http://immich.example", "-immich_api_key", "0123456789abcdef",
-		"-watch_dir", watch, "-undone_dir", filepath.Join(t.TempDir(), "undone")}
+		"-watcher_dir", watch, "-undone_dir", filepath.Join(t.TempDir(), "undone")}
 	_, _, err = parseConfig(args)
 	if err != nil && strings.Contains(err.Error(), "must not be inside the watch directory") {
 		t.Fatalf("auto-detected tasks.yaml in the watch dir must be skipped: %v", err)
@@ -805,5 +806,150 @@ func TestLibraryModeConfig(t *testing.T) {
 	}
 	if !hasMode("watcher, Library", "library") || hasMode("watcher,proxy", "library") {
 		t.Error("hasMode")
+	}
+}
+
+// docs/configuration.md carries the settings reference generated from the
+// settings table. Run with IO_UPDATE_DOCS=1 to rewrite it.
+func TestSettingsDocs(t *testing.T) {
+	const path = "../../docs/configuration.md"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(data)
+	replace := func(begin, end, content string) {
+		i := strings.Index(doc, begin)
+		j := strings.Index(doc, end)
+		if i < 0 || j < i {
+			t.Fatalf("markers %q ... %q not found in %s", begin, end, path)
+		}
+		i += strings.Index(doc[i:], "\n") + 1
+		doc = doc[:i] + "\n" + content + doc[j:]
+	}
+	replace("<!-- BEGIN SETTINGS", "<!-- END SETTINGS -->", settingsMarkdown())
+	replace("<!-- BEGIN OLD NAMES", "<!-- END OLD NAMES -->", deprecatedNamesMarkdown()+"\n")
+	if doc == string(data) {
+		return
+	}
+	if os.Getenv("IO_UPDATE_DOCS") == "" {
+		t.Fatalf("%s is out of date: run IO_UPDATE_DOCS=1 go test ./cmd/optimizer -run TestSettingsDocs", path)
+	}
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The naming rule: a setting's name starts with the thing it belongs to, and
+// flag and environment variable are the same name.
+func TestSettingsNaming(t *testing.T) {
+	prefix := map[string][]string{
+		groupImmich: {"immich_"}, groupTasks: {"tasks_"}, groupUndone: {"undone_", "audit_"},
+		groupProxy: {"proxy_"}, groupWatcher: {"watcher_"}, groupLibrary: {"library_"},
+	}
+	seen := map[string]bool{}
+	for _, s := range settings {
+		if seen[s.Name] {
+			t.Errorf("duplicate setting %s", s.Name)
+		}
+		seen[s.Name] = true
+		if s.Env() != "IO_"+strings.ToUpper(s.Name) || s.Help == "" || s.target == nil {
+			t.Errorf("setting %s is incomplete", s.Name)
+		}
+		ok := s.Group == groupGeneral
+		for _, p := range prefix[s.Group] {
+			ok = ok || strings.HasPrefix(s.Name, p)
+		}
+		if !ok {
+			t.Errorf("setting %s does not carry the prefix of its group %q", s.Name, s.Group)
+		}
+		for _, old := range s.LegacyFlags {
+			if seen[old] {
+				t.Errorf("deprecated flag -%s of %s clashes with a setting", old, s.Name)
+			}
+		}
+	}
+}
+
+func TestDeprecatedFlagsStillWork(t *testing.T) {
+	cfg, deps, err := parseConfig([]string{"-mode", "proxy", "-upstream", "http://immich:2283", "-listen", ":9000",
+		"-max_concurrent_requests", "3", "-undone_dir", t.TempDir(), "-tasks_file", "../../config/lossless/tasks.yaml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ImmichURL != "http://immich:2283" || cfg.BindAddr != ":9000" || cfg.MaxConcurrentRequests != 3 {
+		t.Errorf("deprecated flags not applied: %+v", cfg)
+	}
+	want := map[string]string{"-upstream": "-immich_url", "-listen": "-proxy_bind_addr", "-max_concurrent_requests": "-tasks_concurrency"}
+	for _, d := range deps {
+		if want[d.Old] == d.New {
+			delete(want, d.Old)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("no deprecation reported for %v (got %+v)", want, deps)
+	}
+	// The new name wins when both are given.
+	cfg, _, err = parseConfig([]string{"-mode", "proxy", "-immich_url", "http://new:2283", "-upstream", "http://old:2283",
+		"-undone_dir", t.TempDir(), "-tasks_file", "../../config/lossless/tasks.yaml"})
+	if err != nil || cfg.ImmichURL != "http://new:2283" {
+		t.Errorf("new flag did not win: %v %v", cfg, err)
+	}
+}
+
+// Every relative link and anchor in the documentation must resolve, and every
+// IO_* variable it mentions must exist.
+func TestDocsLinksAndSettingNames(t *testing.T) {
+	files, _ := filepath.Glob("../../docs/*.md")
+	files = append(files, "../../README.md")
+	headingRe := regexp.MustCompile(`(?m)^#+\s+(.*)$`)
+	strip := regexp.MustCompile("[^\\p{L}\\p{N}\\- _]")
+	anchors := func(path string) map[string]bool {
+		data, _ := os.ReadFile(path)
+		out := map[string]bool{}
+		for _, m := range headingRe.FindAllStringSubmatch(string(data), -1) {
+			a := strings.ToLower(strip.ReplaceAllString(strings.TrimSpace(m[1]), ""))
+			out[strings.ReplaceAll(a, " ", "-")] = true
+		}
+		return out
+	}
+	known := map[string]bool{"IO_MOTION_PHOTOS": true, "IO_UPDATE_DOCS": true}
+	for _, s := range settings {
+		known[s.Env()] = true
+	}
+	linkRe := regexp.MustCompile(`\]\(([^)\s]+)\)`)
+	envRe := regexp.MustCompile(`IO_[A-Z][A-Z0-9_]*[A-Z0-9]`)
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range linkRe.FindAllStringSubmatch(string(data), -1) {
+			link := m[1]
+			if strings.Contains(link, "://") {
+				continue
+			}
+			path, anchor, _ := strings.Cut(link, "#")
+			target := f
+			if path != "" {
+				target = filepath.Join(filepath.Dir(f), path)
+			}
+			if _, err := os.Stat(target); err != nil {
+				t.Errorf("%s: link %q points at a missing file", f, link)
+				continue
+			}
+			if anchor != "" && strings.HasSuffix(target, ".md") && !anchors(target)[anchor] {
+				t.Errorf("%s: link %q points at a missing heading", f, link)
+			}
+		}
+		for _, name := range envRe.FindAllString(string(data), -1) {
+			isPrefix := false // e.g. "IO_PROXY_…" in prose
+			for k := range known {
+				isPrefix = isPrefix || strings.HasPrefix(k, name+"_")
+			}
+			if !known[name] && !isPrefix {
+				t.Errorf("%s mentions %s, which is not a setting", f, name)
+			}
+		}
 	}
 }

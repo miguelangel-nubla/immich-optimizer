@@ -34,17 +34,18 @@ type Config struct {
 }
 
 type AppConfig struct {
-	ShowVersion     bool
-	Mode            string
-	BindAddr        string
-	FilterPath      string
-	FilterFormKey   string
-	ImmichURL       string
-	ImmichAPIKey    string
-	WatchDir        string
-	UndoneDir       string
-	UndoneUnmatched bool
-	AuditLogFile    string
+	ShowVersion      bool
+	Mode             string
+	BindAddr         string
+	FilterPath       string
+	FilterFormKey    string
+	ImmichURL        string
+	ImmichAPIKey     string
+	ImmichAPIKeyFile string
+	WatchDir         string
+	UndoneDir        string
+	UndoneUnmatched  bool
+	AuditLogFile     string
 	// Library mode.
 	LibraryDryRun              bool
 	LibraryLimit               int

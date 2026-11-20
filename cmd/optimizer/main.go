@@ -52,10 +52,6 @@ func main() {
 	}
 }
 
-// hiddenFlags are deprecated aliases accepted for immich-upload-optimizer
-// compatibility but not shown in -help.
-var hiddenFlags = map[string]bool{"upstream": true, "listen": true}
-
 // flagOutput is where usage and flag errors are printed (overridable in tests).
 var flagOutput io.Writer = os.Stderr
 
@@ -69,54 +65,10 @@ func parseConfig(args []string) (*entity.AppConfig, []deprecation, error) {
 		return nil, nil, err
 	}
 
-	v.SetDefault("mode", "watcher")
-	v.SetDefault("bind_addr", ":2283")
-	v.SetDefault("filter_path", "/api/assets")
-	v.SetDefault("filter_form_key", "assetData")
-	v.SetDefault("immich_url", "")
-	v.SetDefault("immich_api_key", "")
-	v.SetDefault("immich_api_key_file", "")
-	v.SetDefault("watch_dir", "/watch")
-	v.SetDefault("undone_dir", "/undone")
-	v.SetDefault("undone_unmatched", true)
-	v.SetDefault("library_dry_run", true)
-	v.SetDefault("library_ready_timeout_seconds", 600)
-	v.SetDefault("tasks_file", "")
-	v.SetDefault("log_level", "info")
-	v.SetDefault("max_concurrent_requests", 10)
-	v.SetDefault("http_timeout_seconds", 120)
-	v.SetDefault("task_timeout_seconds", 0)
-	v.SetDefault("shutdown_timeout_seconds", 8)
-	v.SetDefault("inotify_buffer_size", 8192)
-
 	fs := flag.NewFlagSet("immich-optimizer", flag.ContinueOnError)
 	fs.SetOutput(flagOutput)
 	fs.BoolVar(&ac.ShowVersion, "version", false, "Show the current version")
-	fs.StringVar(&ac.Mode, "mode", v.GetString("mode"), "Operating mode: watcher or proxy (comma-separated for multiple)")
-	fs.StringVar(&ac.BindAddr, "bind_addr", v.GetString("bind_addr"), "Address for reverse proxy server to listen on")
-	fs.StringVar(&ac.FilterPath, "filter_path", v.GetString("filter_path"), "Path pattern to intercept for proxy uploads")
-	fs.StringVar(&ac.FilterFormKey, "filter_form_key", v.GetString("filter_form_key"), "Form key for upload files")
-	fs.StringVar(&ac.ImmichURL, "immich_url", v.GetString("immich_url"), "Immich server URL")
-	fs.StringVar(&ac.ImmichAPIKey, "immich_api_key", v.GetString("immich_api_key"), "Immich API key")
-	var immichAPIKeyFile string
-	fs.StringVar(&immichAPIKeyFile, "immich_api_key_file", v.GetString("immich_api_key_file"), "Path to a file containing the Immich API key (takes precedence over immich_api_key)")
-	fs.StringVar(&ac.WatchDir, "watch_dir", v.GetString("watch_dir"), "Directory to watch for new files")
-	fs.StringVar(&ac.UndoneDir, "undone_dir", v.GetString("undone_dir"), "Directory where inputs that failed conversion are saved (all modes)")
-	fs.BoolVar(&ac.UndoneUnmatched, "undone_unmatched", v.GetBool("undone_unmatched"), "Save files with no matching task to the undone directory")
-	fs.BoolVar(&ac.LibraryDryRun, "library_dry_run", v.GetBool("library_dry_run"), "Library mode: only report what would be converted, change nothing")
-	fs.StringVar(&ac.AuditLogFile, "audit_log_file", v.GetString("audit_log_file"), "Persistent log of every asset operation, all modes (default: audit.log in the undone directory)")
-	fs.IntVar(&ac.LibraryLimit, "library_limit", v.GetInt("library_limit"), "Library mode: stop after this many replacements (0 = no limit)")
-	fs.StringVar(&ac.LibraryTakenBefore, "library_taken_before", v.GetString("library_taken_before"), "Library mode: only assets whose file date is before this day (YYYY-MM-DD)")
-	fs.IntVar(&ac.LibraryReadyTimeoutSeconds, "library_ready_timeout_seconds", v.GetInt("library_ready_timeout_seconds"), "Library mode: how long to wait for Immich to finish reading a converted asset, in seconds")
-	fs.StringVar(&ac.ConfigFile, "tasks_file", v.GetString("tasks_file"), "Path to the tasks file (default ./tasks.yaml, else "+defaultTasksFile+")")
-	fs.StringVar(&ac.LogLevel, "log_level", v.GetString("log_level"), "Log level (debug, info, warn, error)")
-	fs.IntVar(&ac.MaxConcurrentRequests, "max_concurrent_requests", v.GetInt("max_concurrent_requests"), "Maximum number of concurrent conversions, shared by all modes")
-	fs.IntVar(&ac.HTTPTimeoutSeconds, "http_timeout_seconds", v.GetInt("http_timeout_seconds"), "Timeout for connecting to Immich, for an upload that stops making progress, and for Immich's response headers after an upload body was sent, in seconds (does not limit total upload or conversion time)")
-	fs.IntVar(&ac.TaskTimeoutSeconds, "task_timeout_seconds", v.GetInt("task_timeout_seconds"), "Maximum processing time per file in seconds (0 = no limit)")
-	fs.IntVar(&ac.ShutdownTimeoutSeconds, "shutdown_timeout_seconds", v.GetInt("shutdown_timeout_seconds"), "How long to let running jobs finish on shutdown before cancelling them, in seconds")
-	fs.IntVar(&ac.InotifyBufferSize, "inotify_buffer_size", v.GetInt("inotify_buffer_size"), "Inotify event read buffer size in bytes")
-	upstream := fs.String("upstream", "", "Deprecated: use -immich_url")
-	listen := fs.String("listen", "", "Deprecated: use -bind_addr")
+	applyLegacyFlags := registerSettings(fs, v, ac)
 	fs.Usage = func() { printUsage(fs) }
 
 	if err := fs.Parse(args); err != nil {
@@ -130,29 +82,14 @@ func parseConfig(args []string) (*entity.AppConfig, []deprecation, error) {
 	visited := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
 
-	deps := legacyEnvUsage(osLookup)
-	applyDeprecatedFlag := func(oldName, newName string, value string, target *string) {
-		if !visited[oldName] {
-			return
-		}
-		d := deprecation{Old: "-" + oldName, New: "-" + newName}
-		if visited[newName] {
-			d.Ignored = true
-			d.Winner = "-" + newName
-		} else {
-			*target = value
-		}
-		deps = append(deps, d)
-	}
-	applyDeprecatedFlag("upstream", "immich_url", *upstream, &ac.ImmichURL)
-	applyDeprecatedFlag("listen", "bind_addr", *listen, &ac.BindAddr)
+	deps := append(legacyEnvUsage(osLookup), applyLegacyFlags(visited)...)
 
-	if immichAPIKeyFile != "" {
+	if ac.ImmichAPIKeyFile != "" {
 		source := envSource("immich_api_key_file", osLookup)
 		if visited["immich_api_key_file"] || source == "" {
 			source = "-immich_api_key_file"
 		}
-		key, err := readSecretFile(source, immichAPIKeyFile)
+		key, err := readSecretFile(source, ac.ImmichAPIKeyFile)
 		if err != nil {
 			return nil, deps, err
 		}
@@ -166,29 +103,33 @@ func parseConfig(args []string) (*entity.AppConfig, []deprecation, error) {
 	return ac, deps, nil
 }
 
-// printUsage prints all flags except the hidden deprecated aliases.
+// printUsage prints the settings by group, without the deprecated flag names.
 func printUsage(fs *flag.FlagSet) {
 	out := fs.Output()
 	fmt.Fprintf(out, "Usage of %s:\n", fs.Name())
-	fs.VisitAll(func(f *flag.Flag) {
-		if hiddenFlags[f.Name] {
-			return
-		}
-		name, usage := flag.UnquoteUsage(f)
-		line := "  -" + f.Name
-		if name != "" {
-			line += " " + name
-		}
-		line += "\n    \t" + strings.ReplaceAll(usage, "\n", "\n    \t")
-		if f.DefValue != "" && f.DefValue != "0" && f.DefValue != "false" {
-			if name == "string" {
-				line += fmt.Sprintf(" (default %q)", f.DefValue)
-			} else {
-				line += fmt.Sprintf(" (default %v)", f.DefValue)
+	fmt.Fprintln(out, "Every setting is a flag and an environment variable (in brackets); a flag wins.")
+	for _, g := range settingGroups {
+		fmt.Fprintf(out, "\n%s:\n", g)
+		for _, st := range settings {
+			if st.Group != g {
+				continue
 			}
+			line := fmt.Sprintf("  -%s  [%s]\n    \t%s", st.Name, st.Env(), st.plainHelp())
+			if strings.HasSuffix(st.Name, "_seconds") {
+				line += ", in seconds"
+			}
+			switch d := st.Default.(type) {
+			case string:
+				if d != "" {
+					line += fmt.Sprintf(" (default %q)", d)
+				}
+			default:
+				line += fmt.Sprintf(" (default %v)", d)
+			}
+			fmt.Fprintln(out, line)
 		}
-		fmt.Fprintln(out, line)
-	})
+	}
+	fmt.Fprintln(out, "\n  -version\n    \tShow the current version")
 }
 
 // resolveTasksFile returns the explicit path, or the first existing file of

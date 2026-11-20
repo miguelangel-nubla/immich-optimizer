@@ -16,32 +16,6 @@ type envSetting struct {
 	Legacy []string
 }
 
-// envSettings is the single source of truth for environment variable names.
-var envSettings = []envSetting{
-	{"mode", "IO_MODE", []string{"IUO_MODE"}},
-	{"immich_url", "IO_IMMICH_URL", []string{"IUO_IMMICH_URL", "IUO_UPSTREAM"}},
-	{"immich_api_key", "IO_IMMICH_API_KEY", []string{"IUO_IMMICH_API_KEY"}},
-	{"immich_api_key_file", "IO_IMMICH_API_KEY_FILE", []string{"IUO_IMMICH_API_KEY_FILE"}},
-	{"tasks_file", "IO_TASKS_FILE", []string{"IUO_TASKS_FILE"}},
-	{"log_level", "IO_LOG_LEVEL", []string{"IUO_LOG_LEVEL"}},
-	{"max_concurrent_requests", "IO_MAX_CONCURRENT_REQUESTS", []string{"IUO_MAX_CONCURRENT_REQUESTS"}},
-	{"http_timeout_seconds", "IO_HTTP_TIMEOUT_SECONDS", []string{"IUO_HTTP_TIMEOUT_SECONDS"}},
-	{"task_timeout_seconds", "IO_TASK_TIMEOUT_SECONDS", nil},
-	{"shutdown_timeout_seconds", "IO_SHUTDOWN_TIMEOUT_SECONDS", nil},
-	{"undone_dir", "IO_UNDONE_DIR", []string{"IUO_WATCHER_UNDONE_DIR", "IUO_UNDONE_DIR"}},
-	{"undone_unmatched", "IO_UNDONE_UNMATCHED", nil},
-	{"library_dry_run", "IO_LIBRARY_DRY_RUN", nil},
-	{"audit_log_file", "IO_AUDIT_LOG_FILE", nil},
-	{"library_limit", "IO_LIBRARY_LIMIT", nil},
-	{"library_taken_before", "IO_LIBRARY_TAKEN_BEFORE", nil},
-	{"library_ready_timeout_seconds", "IO_LIBRARY_READY_TIMEOUT_SECONDS", nil},
-	{"bind_addr", "IO_PROXY_BIND_ADDR", []string{"IUO_PROXY_BIND_ADDR", "IUO_BIND_ADDR", "IUO_LISTEN"}},
-	{"filter_path", "IO_PROXY_FILTER_PATH", []string{"IUO_PROXY_FILTER_PATH", "IUO_FILTER_PATH"}},
-	{"filter_form_key", "IO_PROXY_FILTER_FORM_KEY", []string{"IUO_PROXY_FILTER_FORM_KEY", "IUO_FILTER_FORM_KEY"}},
-	{"watch_dir", "IO_WATCHER_WATCH_DIR", []string{"IUO_WATCHER_WATCH_DIR", "IUO_WATCH_DIR"}},
-	{"inotify_buffer_size", "IO_WATCHER_INOTIFY_BUFFER_SIZE", []string{"IUO_WATCHER_INOTIFY_BUFFER_SIZE", "IUO_INOTIFY_BUFFER_SIZE"}},
-}
-
 // deprecation records one use of a deprecated env var or flag.
 type deprecation struct {
 	Old, New string
@@ -138,7 +112,7 @@ func formatDeprecations(d []deprecation) string {
 		}
 		parts = append(parts, p)
 	}
-	return "Deprecated configuration in use (IUO_* variables and -upstream/-listen flags will be removed in a future release): " +
+	return "Deprecated configuration in use (IUO_* variables and old flag names will be removed in a future release): " +
 		strings.Join(parts, "; ")
 }
 
