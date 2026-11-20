@@ -113,6 +113,7 @@ These assets are left exactly as they are. The reason for each is written to the
 ## Things to know before running it
 
 - **The official mobile app will upload the originals again** for photos that are still on a phone with backup enabled, because the server no longer has a file with the checksum the app looks for. Use `IO_LIBRARY_TAKEN_BEFORE` to limit the run to photos that are no longer on your phone. See [Proxy mode limitations](proxy.md#limitations).
+- **Android: turn off "Sync remote deletions" in the Immich app** (Settings → Advanced, marked experimental, off by default) before a real run. With it on, the app deletes a photo from the phone when the same photo is moved to the trash on the server, which is exactly what library mode does with each original.
 - **Space is freed when Immich empties its trash**, not at once. Until then the original also counts against a user's storage quota.
 - It waits for Immich to finish reading each new file, so a large library takes a long time. By default it works on one asset at a time; [`IO_LIBRARY_CONCURRENCY`](configuration.md#library-mode) raises that, at the cost of more load on Immich. A run can be stopped at any point and started again: it continues where it left off, and finishes or undoes whatever was in progress.
 - Start with a small batch (`IO_LIBRARY_LIMIT=20`) and look at the result in Immich before letting it run through everything.
