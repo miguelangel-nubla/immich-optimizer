@@ -19,9 +19,11 @@ type jobSpec struct {
 	remoteAddr string
 	userAgent  string
 	spoolPath  string
+	// place is the upload's reservation of temp folder room; may be nil.
+	place *ticket
 }
 
-func newJobSpec(r *http.Request, spoolPath string) jobSpec {
+func newJobSpec(r *http.Request, spoolPath string, place *ticket) jobSpec {
 	u := *r.URL
 	return jobSpec{
 		method:     r.Method,
@@ -30,6 +32,7 @@ func newJobSpec(r *http.Request, spoolPath string) jobSpec {
 		remoteAddr: r.RemoteAddr,
 		userAgent:  r.UserAgent(),
 		spoolPath:  spoolPath,
+		place:      place,
 	}
 }
 

@@ -70,6 +70,8 @@ type Server struct {
 	server   *http.Server
 	client   *http.Client
 	jobs     *jobManager
+	// admission holds uploads back while the temp folder has no room.
+	admission *admission
 	// streamClient has no timeouts: a sync stream can take as long as it takes.
 	streamClient *http.Client
 	users        userCache
@@ -115,6 +117,7 @@ func NewServer(cfg Config, conv port.Converter, log *logger.Logger) *Server {
 		client:       client,
 		streamClient: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		jobs:         newJobManager(cfg.ResultTTL, cfg.MaxKeptJobs),
+		admission:    newAdmission(tempFree),
 		baseCtx:      baseCtx,
 		cancelBase:   cancel,
 	}
@@ -236,9 +239,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.logger.Printf("Intercepted upload request from %s: %s", r.RemoteAddr, r.URL.Path)
 	async := s.clientFollowsRedirects(r)
 
+	// Before reading the body: is there room for it? If not, the client
+	// waits here, which slows it down to what the conversions keep up with.
+	place := s.admission.acquire(r.Context(), r.ContentLength)
+	if place == nil {
+		if r.Context().Err() == nil {
+			s.logger.Warnf("The temp folder has no room for the upload from %s next to the ones in progress; asked the client to retry", r.RemoteAddr)
+			w.Header().Set("Retry-After", admissionRetryAfter)
+			http.Error(w, "busy converting earlier uploads, retry later", http.StatusServiceUnavailable)
+		}
+		return
+	}
+
 	// Phase A (bound to the client): spool the body to disk.
 	spoolPath, err := spoolBody(r)
 	if err != nil {
+		place.release()
 		if errors.Is(err, syscall.ENOSPC) || errors.Is(err, errSpoolCreate) {
 			s.logger.Errorf("Unable to buffer upload from %s: %v", r.RemoteAddr, err)
 			w.Header().Set("Retry-After", "60")
@@ -251,8 +267,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Phase B (detached): process and upload.
-	j, ok := s.startJob(newJobSpec(r, spoolPath), async)
+	if st, err := os.Stat(spoolPath); err == nil {
+		place.resize(st.Size())
+	}
+	j, ok := s.startJob(newJobSpec(r, spoolPath, place), async)
 	if !ok {
+		place.release()
 		_ = os.Remove(spoolPath)
 		w.Header().Set("Retry-After", "30")
 		http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
@@ -284,6 +304,8 @@ func (s *Server) startJob(spec jobSpec, async bool) (*job, bool) {
 	j := s.jobs.create(async)
 	go func() {
 		defer s.jobsWG.Done()
+		// Last of all: the place is free once every file of the job is gone.
+		defer spec.place.release()
 		defer os.Remove(spec.spoolPath)
 		var res jobResult
 		func() {
