@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -445,12 +446,24 @@ func TestLibraryLivePhotosMotionPhotosAndEdits(t *testing.T) {
 		}
 	}
 
-	code, out, log := runLibrary(t, u, sharedDir(t), map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_LIBRARY_CONCURRENCY": "4"})
+	// With machine learning running, Immich may still be analysing a fresh
+	// upload when its turn comes: such an asset is left for the next run.
+	// Two runs settle everything; neither may report a failure.
+	logDir := sharedDir(t)
+	env := map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_LIBRARY_CONCURRENCY": "4"}
+	code, out, _ := runLibrary(t, u, logDir, env)
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
 	}
+	if os.Getenv("E2E_ML") != "" {
+		time.Sleep(30 * time.Second)
+	}
+	code, out, log := runLibrary(t, u, logDir, env)
+	if code != 0 {
+		t.Fatalf("second library run exited %d:\n%s", code, out)
+	}
 	for _, e := range log {
-		if e["event"] == "failed" || e["event"] == "rolled_back" {
+		if e["event"] == "failed" {
 			t.Errorf("unexpected %v", e)
 		}
 	}
@@ -509,5 +522,108 @@ func TestLibraryLivePhotosMotionPhotosAndEdits(t *testing.T) {
 	}
 	if a := u.asset(t, newLive); a.LivePhotoVideoID == nil || *a.LivePhotoVideoID != liveVideo.ID {
 		t.Error("live copy lost its video after emptying the trash")
+	}
+}
+
+// readReport reads the data embedded in a library report page.
+func readReport(t *testing.T, path string) (map[string]any, string) {
+	t.Helper()
+	page, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("no report: %v", err)
+	}
+	const open, end = "window.REPORT = ", ";</script>"
+	i := strings.Index(string(page), open)
+	if i < 0 {
+		t.Fatal("no data in the report page")
+	}
+	j := strings.Index(string(page[i:]), end)
+	var data map[string]any
+	if err := json.Unmarshal(page[i+len(open):i+j], &data); err != nil {
+		t.Fatalf("report data is not JSON: %v", err)
+	}
+	if copyTo := os.Getenv("E2E_REPORT_COPY"); copyTo != "" {
+		kind := "run"
+		if data["dry_run"] == true {
+			kind = "dry-run"
+		}
+		_ = os.WriteFile(filepath.Join(copyTo, filepath.Base(t.Name())+"-"+kind+".html"), page, 0o644)
+	}
+	return data, string(page)
+}
+
+func TestLibraryDryRunReport(t *testing.T) {
+	u := newUser(t)
+	samples := []string{"photo.jpg", "plain.jpg", "photo.png", "faces/face1.jpg", "faces/face2.jpg", "photo.heic", "clip.mp4"}
+	for _, s := range samples {
+		status, out := u.upload(t, immichURL, mediaDir+"/"+s, filepath.Base(s), nil)
+		if status != http.StatusCreated {
+			t.Fatalf("uploading %s: %d %s", s, status, out["_body"])
+		}
+		u.waitReady(t, out["id"])
+	}
+	logDir := sharedDir(t)
+	code, out, _ := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN_SAMPLE": "3", "IO_IMMICH_PUBLIC_URL": "https://photos.example.com"})
+	if code != 0 {
+		t.Fatalf("dry run exited %d:\n%s", code, out)
+	}
+	data, _ := readReport(t, filepath.Join(logDir, "library-report.html"))
+	if data["dry_run"] != true || data["public_url"] != "https://photos.example.com" {
+		t.Errorf("report header = %v %v", data["dry_run"], data["public_url"])
+	}
+	items := data["items"].([]any)
+	if len(items) != len(samples) {
+		t.Fatalf("%d items in the report, want %d", len(items), len(samples))
+	}
+	would, sampled := 0, 0
+	for _, raw := range items {
+		it := raw.(map[string]any)
+		if it["status"] == "would_convert" {
+			would++
+		}
+		if it["status"] == "skipped" && it["reason"] == nil {
+			t.Errorf("skipped %v has no reason", it["file"])
+		}
+		if sm, ok := it["sample"].(map[string]any); ok {
+			sampled++
+			before, _ := sm["before"].(string)
+			after, _ := sm["after"].(string)
+			if sm["result"] != "smaller" || !strings.HasPrefix(before, "data:image/jpeg;base64,") || !strings.HasPrefix(after, "data:image/jpeg;base64,") {
+				t.Errorf("sample of %v: result %v, previews %d/%d bytes", it["file"], sm["result"], len(before), len(after))
+			}
+		}
+	}
+	if would != 5 || sampled != 3 {
+		t.Errorf("would=%d sampled=%d, want 5 and 3", would, sampled)
+	}
+	est, _ := data["estimate"].(map[string]any)
+	if est == nil || est["sampled"].(float64) != 3 || est["estimated_after"].(float64) >= est["candidate_bytes"].(float64) {
+		t.Errorf("estimate = %v", est)
+	}
+	// A dry run with a sample still changes nothing.
+	if n := len(u.live(t)); n != len(samples) {
+		t.Errorf("%d live assets after the dry run, want %d", n, len(samples))
+	}
+	for _, a := range u.live(t) {
+		if u.marker(t, a.ID) != nil {
+			t.Errorf("%s got a marker in a dry run", a.OriginalFileName)
+		}
+	}
+
+	// A real run rewrites the report with what was done.
+	code, out, _ = runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	if code != 0 {
+		t.Fatalf("library run exited %d:\n%s", code, out)
+	}
+	data, _ = readReport(t, filepath.Join(logDir, "library-report.html"))
+	replaced := 0
+	for _, raw := range data["items"].([]any) {
+		it := raw.(map[string]any)
+		if it["status"] == "replaced" && it["new_id"] != nil {
+			replaced++
+		}
+	}
+	if data["dry_run"] == true || replaced != 5 {
+		t.Errorf("real run report: dry_run=%v replaced=%d", data["dry_run"], replaced)
 	}
 }

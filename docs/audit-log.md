@@ -12,6 +12,7 @@ It records what happened to your files, and only that:
 | `proxy`, `watcher` | `refused` | no task handles the file type |
 | `proxy`, `watcher` | `upload_failed` | converted, but Immich did not accept it |
 | `library` | `would_convert` | dry run: this asset would be converted |
+| `library` | `sampled` | dry run: this asset was converted as part of the sample; nothing was uploaded |
 | `library` | `converted`, `uploaded`, `verified`, `replaced` | the steps of one replacement; `replaced` means the original is in the trash |
 | `library` | `kept` | looked at and left as it is |
 | `library` | `verify_failed`, `rolled_back`, `failed` | a replacement was abandoned and the original left untouched; `differences` lists what did not match |

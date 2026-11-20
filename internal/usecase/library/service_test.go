@@ -692,7 +692,10 @@ func TestMismatchRollsBack(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if sum.Failed != 1 || sum.Replaced != 0 {
+			// An original that changed meanwhile is not a failure: it is
+			// left for a later run.
+			changed := name == "original edited meanwhile"
+			if (changed && (sum.Skipped != 1 || sum.Failed != 0)) || (!changed && sum.Failed != 1) || sum.Replaced != 0 {
 				t.Fatalf("summary = %+v", sum)
 			}
 			if old.IsTrashed || old.deleted {
@@ -707,7 +710,7 @@ func TestMismatchRollsBack(t *testing.T) {
 				}
 			}
 			ev := h.events()
-			if index(ev, "rolled_back") < 0 || index(ev, "failed") < 0 || index(ev, "replaced") >= 0 {
+			if index(ev, "rolled_back") < 0 || (index(ev, "failed") < 0) == !changed || index(ev, "replaced") >= 0 {
 				t.Errorf("log = %v", ev)
 			}
 		})
@@ -1139,5 +1142,134 @@ func TestConcurrency(t *testing.T) {
 	}
 	if live != n {
 		t.Errorf("%d live assets, want %d", live, n)
+	}
+}
+
+// reportOf runs the harness with a report file and returns the data embedded
+// in the page.
+func reportOf(t *testing.T, h *harness) (reportData, string) {
+	t.Helper()
+	h.cfg.ReportFile = filepath.Join(t.TempDir(), "sub", "report.html")
+	if _, err := h.run(); err != nil {
+		t.Fatal(err)
+	}
+	page, err := os.ReadFile(h.cfg.ReportFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const open, end = "window.REPORT = ", ";</script>"
+	i := strings.Index(string(page), open)
+	j := strings.Index(string(page[i:]), end)
+	if i < 0 || j < 0 {
+		t.Fatalf("no data in the report page")
+	}
+	var data reportData
+	if err := json.Unmarshal(page[i+len(open):i+j], &data); err != nil {
+		t.Fatalf("report data is not JSON: %v", err)
+	}
+	return data, string(page)
+}
+
+func TestDryRunReportWithSample(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.DryRun, h.cfg.Sample, h.cfg.PublicURL = true, 3, "https://photos.example.com/"
+	h.cfg.Preview = func(_ context.Context, path string) ([]byte, error) { return []byte("jpeg:" + filepath.Ext(path)), nil }
+	for i := 0; i < 6; i++ {
+		h.im.add(fmt.Sprintf("IMG_%d.jpg", i), photo(2000+i))
+	}
+	h.im.add("clip.mp4", photo(1))                                          // no task
+	evil := h.im.add(`</script><img src=x onerror=alert(1)>.jpg`, photo(2)) // must not break the page
+
+	data, page := reportOf(t, h)
+	if !data.DryRun || data.PublicURL != "https://photos.example.com" || len(data.Items) != 8 {
+		t.Fatalf("data = %+v", data)
+	}
+	if strings.Contains(page, "<img src=x onerror") {
+		t.Error("a file name reached the page unescaped")
+	}
+	// Nothing was changed: no uploads, no markers, no trash.
+	if len(h.im.calls) != 0 || len(h.im.assets) != 8 || h.marker(evil.ID) != nil {
+		t.Errorf("the dry run with a sample changed Immich: %v", h.im.calls)
+	}
+	would, sampled, skipped := 0, 0, 0
+	for _, it := range data.Items {
+		switch it.Status {
+		case statusWouldConvert:
+			would++
+		case statusSkipped:
+			skipped++
+			if it.Reason == "" {
+				t.Errorf("skipped %s has no reason", it.File)
+			}
+		}
+		if it.Sample != nil {
+			sampled++
+			if it.Sample.Result != "smaller" || it.Sample.NewSize == 0 || it.Sample.NewSize >= it.Size ||
+				!strings.HasPrefix(it.Sample.Before, "data:image/jpeg;base64,") || it.Sample.After == "" {
+				t.Errorf("sample of %s = %+v", it.File, it.Sample)
+			}
+		}
+	}
+	if would != 7 || skipped != 1 || sampled != 3 {
+		t.Errorf("would=%d skipped=%d sampled=%d", would, skipped, sampled)
+	}
+	e := data.Estimate
+	if e == nil || e.Sampled != 3 || e.Smaller != 3 || e.CandidateBytes == 0 || e.EstimatedAfter >= e.CandidateBytes || e.EstimatedAfter == 0 {
+		t.Errorf("estimate = %+v", e)
+	}
+	if index(h.events(), "sampled") < 0 {
+		t.Error("samples are not in the audit log")
+	}
+}
+
+func TestSampleCountsFilesThatDoNotShrinkOrFail(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.DryRun, h.cfg.Sample = true, 10
+	h.conv.noGain = true
+	for i := 0; i < 4; i++ {
+		h.im.add(fmt.Sprintf("IMG_%d.jpg", i), photo(3000+i))
+	}
+	data, _ := reportOf(t, h)
+	if e := data.Estimate; e == nil || e.NotSmaller != 4 || e.EstimatedAfter != e.CandidateBytes {
+		t.Errorf("estimate = %+v", data.Estimate)
+	}
+
+	h = newHarness(t)
+	h.cfg.DryRun, h.cfg.Sample = true, 10
+	h.conv.convertErr = errors.New("encoder crashed")
+	h.im.add("IMG_1.jpg", photo(1))
+	data, _ = reportOf(t, h)
+	if e := data.Estimate; e == nil || e.Failed != 1 || data.Items[0].Sample == nil || !strings.Contains(data.Items[0].Sample.Error, "encoder crashed") {
+		t.Errorf("estimate = %+v, item = %+v", data.Estimate, data.Items[0])
+	}
+	// No sample when it is turned off.
+	h = newHarness(t)
+	h.cfg.DryRun = true
+	h.im.add("IMG_1.jpg", photo(1))
+	h.im.failCall["DownloadOriginal"] = errors.New("must not be called")
+	if data, _ = reportOf(t, h); data.Estimate != nil || data.Items[0].Sample != nil {
+		t.Error("sampled although the sample size is 0")
+	}
+}
+
+func TestRealRunReport(t *testing.T) {
+	h := newHarness(t)
+	old := richAsset(h)
+	h.im.add("clip.mp4", photo(5))
+	failing := h.im.add("IMG_9.jpg", photo(9))
+	failing.Checksum = sha([]byte("other")) // its download will not match
+	data, _ := reportOf(t, h)
+	if data.DryRun || data.Summary.Replaced != 1 || len(data.Items) != 3 || data.Estimate != nil {
+		t.Fatalf("data = %+v", data)
+	}
+	byID := map[string]*Item{}
+	for _, it := range data.Items {
+		byID[it.ID] = it
+	}
+	if it := byID[old.ID]; it.Status != statusReplaced || it.NewID == "" || it.NewSize == 0 || it.NewSize >= it.Size || it.Task != "jpeg-xl" {
+		t.Errorf("replaced item = %+v", it)
+	}
+	if it := byID[failing.ID]; it.Status != statusFailed || it.Reason == "" {
+		t.Errorf("failed item = %+v", it)
 	}
 }

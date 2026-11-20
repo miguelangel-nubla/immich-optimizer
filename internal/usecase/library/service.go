@@ -56,6 +56,17 @@ type Config struct {
 	Version string
 	// Concurrency is how many assets are worked on at the same time.
 	Concurrency int
+	// ReportFile, when set, is where the HTML report of the run is written.
+	ReportFile string
+	// PublicURL is Immich's address as opened in a browser, for the report's
+	// links.
+	PublicURL string
+	// Sample is how many candidates a dry run converts (without uploading
+	// anything) to estimate the saving; 0 disables it.
+	Sample int
+	// Preview renders a small JPEG of a photo or video for the report.
+	// Optional.
+	Preview func(ctx context.Context, path string) ([]byte, error)
 	// IsMotionPhoto reports whether a downloaded original is a photo with an
 	// embedded video. Optional.
 	IsMotionPhoto func(path string) bool
@@ -63,6 +74,13 @@ type Config struct {
 
 // Entry is an audit log entry.
 type Entry = audit.Entry
+
+// tally is what working on one asset produced: its share of the summary and
+// its row in the report.
+type tally struct {
+	Summary
+	item Item
+}
 
 // Summary counts what a run did.
 type Summary struct {
@@ -142,6 +160,13 @@ func (e *errSkip) Error() string { return e.reason }
 
 func skip(format string, args ...any) error { return &errSkip{reason: fmt.Sprintf(format, args...)} }
 
+// errChanged means the original was modified (by the user, or by Immich
+// still analysing it) while its replacement was under way. The copy is
+// removed and the asset is left for a later run: nothing went wrong.
+type errChanged struct{ what string }
+
+func (e *errChanged) Error() string { return e.what }
+
 // errFatal stops the whole run: continuing could act without a record.
 type errFatal struct{ err error }
 
@@ -167,6 +192,7 @@ func (s *Service) record(e Entry) error {
 // Run makes one pass over the library.
 func (s *Service) Run(ctx context.Context) (Summary, error) {
 	var sum Summary
+	started := time.Now()
 	me, err := s.api.CurrentUserID(ctx)
 	if err != nil {
 		return sum, fmt.Errorf("identifying the API key's user: %w", err)
@@ -192,10 +218,21 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	// error when the run must stop.
 	var mu sync.Mutex
 	var fatalErr error
-	outcome := func(a entity.LibraryAsset, local Summary, err error) {
+	var items []*Item
+	outcome := func(a entity.LibraryAsset, t *tally, err error) {
 		mu.Lock()
 		defer mu.Unlock()
-		sum.add(local)
+		sum.add(t.Summary)
+		it := &t.item
+		it.fill(a)
+		defer func() {
+			// An unfinished copy that was only looked at in a dry run, or
+			// an interrupted asset, still gets a row.
+			if it.Status == "" {
+				it.Status = statusSkipped
+			}
+			items = append(items, it)
+		}()
 		var sk *errSkip
 		var fatal *errFatal
 		switch {
@@ -209,11 +246,13 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 			// will be finished by the next run.
 		case errors.As(err, &sk):
 			sum.Skipped++
+			it.Status, it.Reason = statusSkipped, sk.reason
 			if s.log != nil {
 				s.log.Debugf("Library: skipping %s (%s): %s", a.OriginalFileName, a.ID, sk.reason)
 			}
 		default:
 			sum.Failed++
+			it.Status, it.Reason = statusFailed, err.Error()
 			if s.log != nil {
 				s.log.Errorf("Library: %s (%s) failed: %v", a.OriginalFileName, a.ID, err)
 			}
@@ -242,18 +281,20 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	var pendings []pendingCopy
 	s.forEach(len(assets), stopped, func(i int) {
 		a := assets[i]
-		items, m, err := s.classify(ctx, me, a)
-		local := Summary{Seen: 1}
+		meta, m, err := s.classify(ctx, me, a)
 		if err == nil {
+			// Decided later, in step 2 or 3: only count it as seen here.
 			mu.Lock()
+			sum.Seen++
 			if m != nil {
 				pendings = append(pendings, pendingCopy{a, m})
 			} else {
-				candidates = append(candidates, candidate{a, items})
+				candidates = append(candidates, candidate{a, meta})
 			}
 			mu.Unlock()
+			return
 		}
-		outcome(a, local, err)
+		outcome(a, &tally{Summary: Summary{Seen: 1}}, err)
 	})
 
 	// 2. Unfinished replacements of an earlier run are settled first, one by
@@ -262,8 +303,8 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 		if stopped() {
 			break
 		}
-		var local Summary
-		outcome(p.asset, local, s.resumePending(ctx, p.asset, p.marker, &local))
+		t := &tally{}
+		outcome(p.asset, t, s.resumePending(ctx, p.asset, p.marker, t))
 	}
 
 	// 3. Convert. The limit counts replacements that are done or under way.
@@ -295,13 +336,20 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 		return false
 	}, func(i int) {
 		c := candidates[i]
-		var local Summary
-		err := s.work(ctx, c.asset, c.items, &local)
+		t := &tally{}
+		err := s.work(ctx, c.asset, c.items, t)
 		mu.Lock()
 		inFlight--
 		mu.Unlock()
-		outcome(c.asset, local, err)
+		outcome(c.asset, t, err)
 	})
+	// 4. A dry run converts a sample, without uploading anything, to say
+	// what a real run would save.
+	var estimate *Estimate
+	if s.cfg.DryRun && s.cfg.Sample > 0 && !stopped() {
+		estimate = s.sample(ctx, items)
+	}
+	s.writeReport(me, started, sum, items, estimate)
 	if fatalErr != nil {
 		return sum, fatalErr
 	}
@@ -397,7 +445,7 @@ func (s *Service) classify(ctx context.Context, me string, listed entity.Library
 
 // work reads a candidate in full and replaces it (or, in a dry run, reports
 // that it would).
-func (s *Service) work(ctx context.Context, listed entity.LibraryAsset, items []entity.MetadataItem, sum *Summary) error {
+func (s *Service) work(ctx context.Context, listed entity.LibraryAsset, items []entity.MetadataItem, t *tally) error {
 	old, err := s.api.GetAsset(ctx, listed.ID)
 	if err != nil {
 		return fmt.Errorf("reading asset: %w", err)
@@ -426,17 +474,18 @@ func (s *Service) work(ctx context.Context, listed entity.LibraryAsset, items []
 	}
 
 	if s.cfg.DryRun {
-		sum.WouldReplace++
-		sum.BytesBefore += old.Size
+		t.WouldReplace++
+		t.BytesBefore += old.Size
+		t.item.Status, t.item.Size = statusWouldConvert, old.Size
 		s.infof("Library (dry run): would convert %s (%s)", old.OriginalFileName, old.ID)
 		return s.record(Entry{Event: "would_convert", Asset: old.ID, File: old.OriginalFileName, OriginalBytes: old.Size})
 	}
 	defer s.lockStack(old.StackID)()
-	return s.replace(ctx, old, items, albums, sum)
+	return s.replace(ctx, old, items, albums, t)
 }
 
 // replace converts one asset and swaps it in.
-func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItems []entity.MetadataItem, oldAlbums []entity.LibraryAlbum, sum *Summary) error {
+func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItems []entity.MetadataItem, oldAlbums []entity.LibraryAlbum, t *tally) error {
 	work, err := os.MkdirTemp("", "io-library-*")
 	if err != nil {
 		return fmt.Errorf("creating work folder: %w", err)
@@ -473,7 +522,7 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 	defer res.Release()
 
 	if res.Outcome != entity.OutcomeOptimized || res.Marker == nil {
-		return s.keep(ctx, old, oldItems, sum, "conversion gave no size reduction")
+		return s.keep(ctx, old, oldItems, t, "conversion gave no size reduction")
 	}
 	// Motion photos (a photo with an embedded video). Immich extracts the
 	// video of such an upload into an asset of its own and pairs it with the
@@ -481,11 +530,11 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 	// pairing exists: the copy is paired with the same video.
 	switch {
 	case res.Marker.MotionPhotos == entity.MotionPhotosDropPhoto:
-		return s.keep(ctx, old, oldItems, sum, "motion photo whose task keeps only the video")
+		return s.keep(ctx, old, oldItems, t, "motion photo whose task keeps only the video")
 	case res.Marker.MotionPhotos == entity.MotionPhotosDropVideo && old.LivePhotoVideoID == "":
-		return s.keep(ctx, old, oldItems, sum, "motion photo whose video Immich did not extract: converting it would lose the video")
+		return s.keep(ctx, old, oldItems, t, "motion photo whose video Immich did not extract: converting it would lose the video")
 	case res.Marker.MotionPhotos == "" && s.cfg.IsMotionPhoto != nil && s.cfg.IsMotionPhoto(src):
-		return s.keep(ctx, old, oldItems, sum, "motion photo converted as a whole (motion_photos: keep): the result would hide its video")
+		return s.keep(ctx, old, oldItems, t, "motion photo converted as a whole (motion_photos: keep): the result would hide its video")
 	}
 	if err := s.conv.CheckOutput(ctx, in, res); err != nil {
 		return fmt.Errorf("the converted file does not look valid: %w", err)
@@ -568,10 +617,15 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 			rb.Event = "rollback_failed"
 			rb.Detail = fmt.Sprintf("%v; and deleting the new asset failed: %v. The next run will remove it.", err, derr)
 		} else {
-			sum.RolledBack++
+			t.RolledBack++
 		}
 		if rerr := s.record(rb); rerr != nil {
 			return rerr
+		}
+		var changed *errChanged
+		if errors.As(err, &changed) && rb.Event == "rolled_back" {
+			s.infof("Library: %s (%s) changed while it was being replaced; left as it is for a later run", old.OriginalFileName, old.ID)
+			return skip("%s; a later run will convert it", changed.what)
 		}
 		return fmt.Errorf("replacement abandoned, original untouched: %w", err)
 	}
@@ -589,9 +643,12 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 			s.log.Warnf("Library: could not clear the pending mark on %s, the next run will: %v", newID, err)
 		}
 	}
-	sum.Replaced++
-	sum.BytesBefore += res.OriginalSize
-	sum.BytesAfter += res.OutputSize
+	t.Replaced++
+	t.BytesBefore += res.OriginalSize
+	t.BytesAfter += res.OutputSize
+	t.item.Status, t.item.NewID, t.item.Task = statusReplaced, newID, res.Marker.Task
+	t.item.NewFile = res.DeliverName
+	t.item.Size, t.item.NewSize = res.OriginalSize, res.OutputSize
 	s.infof("Library: replaced %s (%s) with %s (%s): %d -> %d bytes; the original is in the trash",
 		old.OriginalFileName, old.ID, res.DeliverName, newID, res.OriginalSize, res.OutputSize)
 	e = entry
@@ -601,7 +658,7 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 
 // keep records on the original that it was looked at and left as it is, so
 // later runs do not download it again.
-func (s *Service) keep(ctx context.Context, old *entity.LibraryAsset, oldItems []entity.MetadataItem, sum *Summary, note string) error {
+func (s *Service) keep(ctx context.Context, old *entity.LibraryAsset, oldItems []entity.MetadataItem, t *tally, note string) error {
 	mi, err := markerItem(&entity.Marker{
 		V: 1, SHA1: old.Checksum, Size: old.Size, Source: string(entity.SourceLibrary),
 		Optimizer: s.cfg.Version, Kept: true, Note: note,
@@ -612,7 +669,8 @@ func (s *Service) keep(ctx context.Context, old *entity.LibraryAsset, oldItems [
 	if err := s.api.PutMetadata(ctx, old.ID, []entity.MetadataItem{mi}); err != nil {
 		return fmt.Errorf("recording that the asset was kept: %w", err)
 	}
-	sum.Kept++
+	t.Kept++
+	t.item.Status, t.item.Reason = statusKept, note
 	s.infof("Library: keeping %s (%s) as it is: %s", old.OriginalFileName, old.ID, note)
 	return s.record(Entry{Event: "kept", Asset: old.ID, File: old.OriginalFileName, Detail: note, OriginalBytes: old.Size})
 }
@@ -673,10 +731,10 @@ func (s *Service) finish(ctx context.Context, old *entity.LibraryAsset, oldAlbum
 		return fmt.Errorf("re-reading the original: %w", err)
 	}
 	if now.IsTrashed {
-		return fmt.Errorf("the original was moved to the trash by someone else meanwhile")
+		return &errChanged{"the original was moved to the trash meanwhile"}
 	}
 	if d := assetDiffs(old, now, false); len(d) > 0 {
-		return fmt.Errorf("the original changed during the replacement: %s", strings.Join(d, "; "))
+		return &errChanged{"the original changed while it was being replaced (" + strings.Join(d, "; ") + ")"}
 	}
 
 	e := entry
@@ -1018,7 +1076,7 @@ func fmtPos(a *entity.LibraryAsset) string {
 // interrupted: if its original is already gone or in the trash the swap had
 // been committed and only the mark is cleared; otherwise the half-made copy
 // is removed and the original is converted afresh when the run reaches it.
-func (s *Service) resumePending(ctx context.Context, pending entity.LibraryAsset, m *entity.Marker, sum *Summary) error {
+func (s *Service) resumePending(ctx context.Context, pending entity.LibraryAsset, m *entity.Marker, t *tally) error {
 	if s.cfg.DryRun {
 		return skip("it is an unfinished replacement of %s (a real run will resolve it)", m.Replaces)
 	}
@@ -1044,14 +1102,16 @@ func (s *Service) resumePending(ctx context.Context, pending entity.LibraryAsset
 		if err := s.api.PutMetadata(ctx, pending.ID, []entity.MetadataItem{mi}); err != nil {
 			return fmt.Errorf("clearing the pending mark: %w", err)
 		}
-		sum.Finalized++
+		t.Finalized++
+		t.item.Status, t.item.Reason = statusFinalized, "replacement of "+m.Replaces+" from an earlier run completed"
 		s.infof("Library: finished the interrupted replacement of %s by %s", m.Replaces, pending.ID)
 		return s.record(Entry{Event: "finalized", Asset: m.Replaces, NewAsset: pending.ID, File: pending.OriginalFileName})
 	}
 	if err := s.api.Delete(ctx, []string{pending.ID}); err != nil {
 		return fmt.Errorf("removing the unfinished copy %s: %w", pending.ID, err)
 	}
-	sum.RolledBack++
+	t.RolledBack++
+	t.item.Status, t.item.Reason = statusRolledBack, "unfinished copy of "+m.Replaces+" from an earlier run removed"
 	s.infof("Library: removed the unfinished copy %s; its original %s is untouched", pending.ID, m.Replaces)
 	return s.record(Entry{Event: "rolled_back", Asset: m.Replaces, NewAsset: pending.ID, File: pending.OriginalFileName,
 		Detail: "unfinished replacement from an earlier run"})

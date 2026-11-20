@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · Immich Optimizer</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2330; --muted: #5d6878; --line: #dfe3ea;
+  --accent: #2f5fd0; --accent-ink: #ffffff; --chip: #eef1f6;
+  --ok: #1b7f4b; --ok-bg: #e3f4ea; --warn: #8a5a00; --warn-bg: #fdf1d6;
+  --bad: #b3261e; --bad-bg: #fbe4e2; --info: #2f5fd0; --info-bg: #e6edfb; --idle: #5d6878; --idle-bg: #eceff4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12161d; --panel: #1b212b; --ink: #e7ebf2; --muted: #9aa5b6; --line: #2c3442;
+    --accent: #7ea2ff; --accent-ink: #0d1422; --chip: #252d3a;
+    --ok: #6fd39c; --ok-bg: #173526; --warn: #f0c060; --warn-bg: #3a2e12;
+    --bad: #ff8f86; --bad-bg: #3d1b19; --info: #9bb6ff; --info-bg: #1c2a4a; --idle: #9aa5b6; --idle-bg: #252d3a;
+  }
+}
+* { box-sizing: border-box; }
+html, body { max-width: 100%; overflow-x: hidden; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 24px; margin: 0 0 4px; }
+h2 { font-size: 17px; margin: 32px 0 10px; }
+p { margin: 6px 0; }
+.muted { color: var(--muted); }
+.banner { margin: 14px 0 0; padding: 10px 14px; border-radius: 8px; background: var(--info-bg); color: var(--info); font-weight: 600; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); gap: 10px; margin-top: 18px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.tile .n { font-size: 24px; font-weight: 650; }
+.tile .l { color: var(--muted); font-size: 13px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 14px; }
+.cols > section, .panel, .tile, .card { min-width: 0; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); white-space: nowrap; user-select: none; }
+th.sort { cursor: pointer; }
+th.sort:hover { color: var(--ink); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr.pick { cursor: pointer; }
+tr.pick:hover td { background: var(--chip); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.s-would_convert, .s-finalized { background: var(--info-bg); color: var(--info); }
+.s-replaced, .r-smaller { background: var(--ok-bg); color: var(--ok); }
+.s-kept, .r-not_smaller { background: var(--warn-bg); color: var(--warn); }
+.s-skipped, .s-rolled_back { background: var(--idle-bg); color: var(--idle); }
+.s-failed, .r-failed { background: var(--bad-bg); color: var(--bad); }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; align-items: center; }
+input[type=search], input[type=url], select, button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+input[type=search] { flex: 1 1 220px; min-width: 0; }
+input[type=url] { flex: 1 1 260px; min-width: 0; }
+button { cursor: pointer; }
+button:disabled { opacity: .45; cursor: default; }
+.pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 10px 12px; flex-wrap: wrap; }
+.scroll { overflow-x: auto; }
+.reason { color: var(--muted); max-width: 46ch; overflow-wrap: anywhere; }
+.file { overflow-wrap: anywhere; }
+#assets td.file { min-width: 14ch; }
+#assets td.reason { min-width: 22ch; }
+#sub { overflow-wrap: anywhere; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.card .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+.card figure { margin: 0; }
+.card img, .card .noimg { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: var(--chip); border-radius: 6px; display: block; }
+.card .noimg { display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+.card figcaption { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.bar { height: 8px; border-radius: 999px; background: var(--chip); overflow: hidden; margin-top: 6px; }
+.bar > span { display: block; height: 100%; background: var(--ok); }
+footer { margin-top: 36px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title"></h1>
+  <p class="muted" id="sub"></p>
+  <div class="banner" id="banner" hidden></div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <h2 id="estimate-h" hidden>Estimated saving</h2>
+  <div class="panel" id="estimate" hidden style="padding:14px"></div>
+
+  <div class="cols">
+    <section>
+      <h2>By outcome</h2>
+      <div class="panel scroll"><table id="by-outcome"></table></div>
+      <p class="muted">Select a row to filter the list below.</p>
+    </section>
+    <section>
+      <h2>By file type</h2>
+      <div class="panel scroll"><table id="by-type"></table></div>
+    </section>
+  </div>
+
+  <h2 id="samples-h" hidden>Converted sample</h2>
+  <p class="muted" id="samples-p" hidden>These files were downloaded and converted to see what a real run would do. Nothing was uploaded or changed in Immich.</p>
+  <div class="cards" id="samples"></div>
+
+  <h2>Assets</h2>
+  <div class="controls">
+    <input type="search" id="q" placeholder="Search file name, reason or id" aria-label="Search">
+    <select id="f-status" aria-label="Outcome"></select>
+    <select id="f-type" aria-label="File type"></select>
+    <button id="clear">Clear filters</button>
+  </div>
+  <div class="controls">
+    <label for="base" class="muted">Immich address for links</label>
+    <input type="url" id="base" placeholder="https://photos.example.com">
+  </div>
+  <div class="panel">
+    <div class="scroll"><table id="assets"></table></div>
+    <div class="pager">
+      <span class="muted" id="count"></span>
+      <button id="prev">Previous</button>
+      <span id="page"></span>
+      <button id="next">Next</button>
+    </div>
+  </div>
+
+  <footer id="foot"></footer>
+</main>
+
+<script>window.REPORT = {{.Data}};</script>
+<script>
+(function () {
+  "use strict";
+  var R = window.REPORT, items = R.items || [];
+  var LABEL = {
+    would_convert: "Would convert", replaced: "Replaced", kept: "Kept", skipped: "Skipped",
+    failed: "Failed", finalized: "Completed", rolled_back: "Undone"
+  };
+  var SAMPLE = { smaller: "Smaller", not_smaller: "Not smaller", failed: "Failed" };
+  var PAGE = 100;
+
+  function el(tag, attrs, kids) {
+    var n = document.createElement(tag);
+    for (var k in attrs || {}) {
+      if (k === "text") n.textContent = attrs[k];
+      else if (k === "class") n.className = attrs[k];
+      else n.setAttribute(k, attrs[k]);
+    }
+    (kids || []).forEach(function (c) { if (c) n.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+    return n;
+  }
+  function $(id) { return document.getElementById(id); }
+  function bytes(n) {
+    if (!n) return "0 B";
+    var u = ["B", "KB", "MB", "GB", "TB"], i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(n < 10 ? 2 : 1)) + " " + u[i];
+  }
+  function pct(before, after) {
+    if (!before) return "";
+    return Math.round((1 - after / before) * 100) + "%";
+  }
+  function badge(cls, text) { return el("span", { class: "badge " + cls, text: text }); }
+
+  // ---- links into Immich
+  var base = "";
+  try { base = localStorage.getItem("io-report-base") || ""; } catch (e) {}
+  if (!base) base = R.public_url || "";
+  $("base").value = base;
+  function link(id, text) {
+    if (!base) return el("span", { text: text });
+    return el("a", { href: base.replace(/\/+$/, "") + "/photos/" + encodeURIComponent(id), target: "_blank", rel: "noopener", text: text });
+  }
+  $("base").addEventListener("change", function () {
+    base = this.value.trim();
+    try { localStorage.setItem("io-report-base", base); } catch (e) {}
+    renderSamples(); renderTable();
+  });
+
+  // ---- header and tiles
+  var s = R.summary;
+  $("title").textContent = R.dry_run ? "Library dry run" : "Library run";
+  $("sub").textContent = new Date(R.generated).toLocaleString() + " · took " + R.duration + " · immich-optimizer " + R.version;
+  if (R.dry_run) {
+    $("banner").hidden = false;
+    $("banner").textContent = "Dry run: nothing was changed in Immich. Set IO_LIBRARY_DRY_RUN=false to convert.";
+  }
+  function tile(n, label) { return el("div", { class: "tile" }, [el("div", { class: "n", text: String(n) }), el("div", { class: "l", text: label })]); }
+  var tiles = [tile(s.seen, "assets looked at")];
+  if (R.dry_run) tiles.push(tile(s.would_replace || 0, "would be converted"));
+  else tiles.push(tile(s.replaced, "replaced"));
+  tiles.push(tile(s.kept, "kept as they are"), tile(s.skipped, "skipped"), tile(s.failed, "failed"));
+  if (R.dry_run) tiles.push(tile(bytes(s.bytes_before), "size of candidates"));
+  else if (s.replaced) tiles.push(tile(bytes(s.bytes_before - s.bytes_after), "saved (" + pct(s.bytes_before, s.bytes_after) + ")"));
+  tiles.forEach(function (t) { $("tiles").appendChild(t); });
+
+  // ---- estimate
+  var E = R.estimate;
+  if (E) {
+    $("estimate-h").hidden = false;
+    var box = $("estimate"); box.hidden = false;
+    var saved = E.candidate_bytes - E.estimated_after;
+    box.appendChild(el("p", {}, [
+      el("strong", { text: "About " + bytes(saved) + " (" + pct(E.candidate_bytes, E.estimated_after) + ")" }),
+      " would be saved: " + bytes(E.candidate_bytes) + " would become about " + bytes(E.estimated_after) + "."
+    ]));
+    var bar = el("div", { class: "bar" }, [el("span", {})]);
+    bar.firstChild.style.width = (E.candidate_bytes ? Math.max(0, Math.min(100, 100 * saved / E.candidate_bytes)) : 0) + "%";
+    box.appendChild(bar);
+    box.appendChild(el("p", { class: "muted", text:
+      "Based on " + E.sampled + " converted sample file(s): " + E.smaller + " got smaller, " + E.not_smaller +
+      " did not (those would be kept), " + E.failed + " failed. Each file type is scaled by its own sample result. " +
+      "A small sample gives a rough figure." }));
+  }
+
+  // ---- breakdowns
+  function head(cols) {
+    return el("thead", {}, [el("tr", {}, cols.map(function (c) { return el("th", { class: c.num ? "num" : "", text: c.t }); }))]);
+  }
+  var byOutcome = {}, byType = {};
+  items.forEach(function (it) {
+    var k = it.status + "\u0000" + (it.reason && it.status !== "failed" ? it.reason : "");
+    var o = byOutcome[k] || (byOutcome[k] = { status: it.status, reason: it.status === "failed" ? "" : (it.reason || ""), n: 0, size: 0 });
+    o.n++; o.size += it.size || 0;
+    var ext = it.ext || "(none)";
+    var t = byType[ext] || (byType[ext] = { ext: ext, n: 0, size: 0, act: 0 });
+    t.n++; t.size += it.size || 0;
+    if (it.status === "would_convert" || it.status === "replaced") t.act++;
+  });
+  var filter = { q: "", status: "", type: "", reason: null };
+  var bo = $("by-outcome");
+  bo.appendChild(head([{ t: "Outcome" }, { t: "Why" }, { t: "Assets", num: 1 }, { t: "Size", num: 1 }]));
+  var bob = el("tbody");
+  Object.keys(byOutcome).map(function (k) { return byOutcome[k]; }).sort(function (a, b) { return b.n - a.n; }).forEach(function (o) {
+    var tr = el("tr", { class: "pick", tabindex: "0" }, [
+      el("td", {}, [badge("s-" + o.status, LABEL[o.status] || o.status)]),
+      el("td", { class: "reason", text: o.reason || (o.status === "failed" ? "see each asset" : "") }),
+      el("td", { class: "num", text: String(o.n) }),
+      el("td", { class: "num", text: bytes(o.size) })
+    ]);
+    function pick() {
+      filter.status = o.status; filter.reason = o.status === "failed" ? null : o.reason;
+      $("f-status").value = o.status; page = 0; renderTable();
+      $("assets").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    tr.addEventListener("click", pick);
+    tr.addEventListener("keydown", function (e) { if (e.key === "Enter") pick(); });
+    bob.appendChild(tr);
+  });
+  bo.appendChild(bob);
+
+  var bt = $("by-type");
+  bt.appendChild(head([{ t: "Type" }, { t: "Assets", num: 1 }, { t: R.dry_run ? "Would convert" : "Replaced", num: 1 }, { t: "Size", num: 1 }]));
+  var btb = el("tbody");
+  Object.keys(byType).map(function (k) { return byType[k]; }).sort(function (a, b) { return b.size - a.size; }).forEach(function (t) {
+    var tr = el("tr", { class: "pick", tabindex: "0" }, [
+      el("td", { text: t.ext }), el("td", { class: "num", text: String(t.n) }),
+      el("td", { class: "num", text: String(t.act) }), el("td", { class: "num", text: bytes(t.size) })
+    ]);
+    function pick() { filter.type = t.ext; $("f-type").value = t.ext; page = 0; renderTable(); $("assets").scrollIntoView({ behavior: "smooth", block: "start" }); }
+    tr.addEventListener("click", pick);
+    tr.addEventListener("keydown", function (e) { if (e.key === "Enter") pick(); });
+    btb.appendChild(tr);
+  });
+  bt.appendChild(btb);
+
+  // ---- samples
+  var sampled = items.filter(function (it) { return it.sample; });
+  function renderSamples() {
+    var host = $("samples"); host.textContent = "";
+    if (!sampled.length) return;
+    $("samples-h").hidden = false; $("samples-p").hidden = false;
+    function fig(src, cap) {
+      var pic = src ? el("img", { src: src, alt: cap, loading: "lazy" }) : el("div", { class: "noimg", text: "no preview" });
+      return el("figure", {}, [pic, el("figcaption", { text: cap })]);
+    }
+    sampled.forEach(function (it) {
+      var sm = it.sample, line;
+      if (sm.result === "smaller") line = bytes(it.size) + " → " + bytes(sm.new_size) + " (saves " + pct(it.size, sm.new_size) + ")";
+      else if (sm.result === "not_smaller") line = bytes(it.size) + ": the result is not smaller, the original would be kept";
+      else line = sm.error || "conversion failed";
+      host.appendChild(el("div", { class: "card" }, [
+        el("div", {}, [badge("r-" + sm.result, SAMPLE[sm.result] || sm.result), " ", el("strong", { class: "file" }, [link(it.id, it.file)])]),
+        el("div", { class: "pair" }, [fig(sm.before, "Original"), fig(sm.after, sm.new_name ? "Converted: " + sm.new_name : "Converted")]),
+        el("div", { class: sm.result === "failed" ? "reason" : "", text: line }),
+        sm.task ? el("div", { class: "muted", text: "Task: " + sm.task }) : null
+      ]));
+    });
+  }
+  renderSamples();
+
+  // ---- asset table
+  var cols = [
+    { k: "file", t: "File" }, { k: "ext", t: "Type" }, { k: "date", t: "Date", num: 1 },
+    { k: "size", t: "Size", num: 1 }, { k: "new_size", t: R.dry_run ? "Sample" : "New size", num: 1 },
+    { k: "status", t: "Outcome" }, { k: "reason", t: "Why" }
+  ];
+  var sort = { k: "date", dir: -1 }, page = 0;
+
+  function opt(sel, value, text) { sel.appendChild(el("option", { value: value, text: text })); }
+  opt($("f-status"), "", "All outcomes");
+  Object.keys(LABEL).forEach(function (k) { if (items.some(function (it) { return it.status === k; })) opt($("f-status"), k, LABEL[k]); });
+  opt($("f-type"), "", "All types");
+  Object.keys(byType).sort().forEach(function (k) { opt($("f-type"), k, k); });
+
+  function matches(it) {
+    if (filter.status && it.status !== filter.status) return false;
+    if (filter.reason !== null && (it.reason || "") !== filter.reason) return false;
+    if (filter.type && (it.ext || "(none)") !== filter.type) return false;
+    if (filter.q) {
+      var hay = (it.file + " " + (it.reason || "") + " " + it.id + " " + (it.new_id || "")).toLowerCase();
+      if (hay.indexOf(filter.q) < 0) return false;
+    }
+    return true;
+  }
+  function value(it, k) {
+    if (k === "new_size") return it.new_size || (it.sample && it.sample.new_size) || 0;
+    return it[k] === undefined ? "" : it[k];
+  }
+  function renderTable() {
+    var rows = items.filter(matches);
+    rows.sort(function (a, b) {
+      var x = value(a, sort.k), y = value(b, sort.k);
+      if (x < y) return -sort.dir; if (x > y) return sort.dir; return 0;
+    });
+    var pages = Math.max(1, Math.ceil(rows.length / PAGE));
+    if (page >= pages) page = pages - 1;
+    var tbl = $("assets"); tbl.textContent = "";
+    tbl.appendChild(el("thead", {}, [el("tr", {}, cols.map(function (c) {
+      var th = el("th", { class: "sort" + (c.num ? " num" : ""), tabindex: "0", text: c.t + (sort.k === c.k ? (sort.dir > 0 ? " ▲" : " ▼") : "") });
+      function go() { if (sort.k === c.k) sort.dir = -sort.dir; else { sort.k = c.k; sort.dir = c.num ? -1 : 1; } renderTable(); }
+      th.addEventListener("click", go);
+      th.addEventListener("keydown", function (e) { if (e.key === "Enter") go(); });
+      return th;
+    }))]));
+    var body = el("tbody");
+    rows.slice(page * PAGE, (page + 1) * PAGE).forEach(function (it) {
+      var file = el("td", { class: "file" }, [link(it.new_id || it.id, it.new_id ? (it.new_file || it.file) : it.file)]);
+      if (it.new_id) file.appendChild(el("div", { class: "muted", text: "was " + it.file + " (original in Immich's trash)" }));
+      var ns = value(it, "new_size");
+      body.appendChild(el("tr", {}, [
+        file, el("td", { text: it.ext || "" }), el("td", { class: "num", text: it.date || "" }),
+        el("td", { class: "num", text: bytes(it.size) }),
+        el("td", { class: "num", text: ns ? bytes(ns) + " (−" + pct(it.size, ns) + ")" : "" }),
+        el("td", {}, [badge("s-" + it.status, LABEL[it.status] || it.status)]),
+        el("td", { class: "reason", text: it.reason || "" })
+      ]));
+    });
+    if (!rows.length) body.appendChild(el("tr", {}, [el("td", { colspan: String(cols.length), class: "muted", text: "No assets match." })]));
+    tbl.appendChild(body);
+    $("count").textContent = rows.length + " of " + items.length + " asset(s)";
+    $("page").textContent = "Page " + (page + 1) + " of " + pages;
+    $("prev").disabled = page === 0; $("next").disabled = page >= pages - 1;
+  }
+  $("q").addEventListener("input", function () { filter.q = this.value.trim().toLowerCase(); page = 0; renderTable(); });
+  $("f-status").addEventListener("change", function () { filter.status = this.value; filter.reason = null; page = 0; renderTable(); });
+  $("f-type").addEventListener("change", function () { filter.type = this.value; page = 0; renderTable(); });
+  $("clear").addEventListener("click", function () {
+    filter = { q: "", status: "", type: "", reason: null };
+    $("q").value = ""; $("f-status").value = ""; $("f-type").value = ""; page = 0; renderTable();
+  });
+  $("prev").addEventListener("click", function () { page--; renderTable(); });
+  $("next").addEventListener("click", function () { page++; renderTable(); });
+  renderTable();
+
+  $("foot").textContent = "User " + R.user + ". This page is a snapshot of one run; the audit log is the permanent record.";
+})();
+</script>
+</body>
+</html>

@@ -87,6 +87,33 @@ func (c *Checker) Check(ctx context.Context, original, output string) error {
 	return fmt.Errorf("converted %s is a single flat colour", what)
 }
 
+// Preview returns a small JPEG of a photo, or of the middle frame of a video,
+// for showing it to a person.
+func (c *Checker) Preview(ctx context.Context, path string) ([]byte, error) {
+	tmp, err := os.MkdirTemp("", "io-preview-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	src := path
+	if isVideo(path) {
+		src = filepath.Join(tmp, "frame.png")
+		d, err := videoDuration(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		at := strconv.FormatFloat(d/2, 'f', 3, 64)
+		if _, err := run(ctx, "ffmpeg", "-v", "error", "-y", "-ss", at, "-i", path, "-frames:v", "1", src); err != nil {
+			return nil, err
+		}
+	}
+	out := filepath.Join(tmp, "preview.jpg")
+	if _, err := run(ctx, "vips", "thumbnail", src, out+"[Q=78,strip]", "360"); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(out)
+}
+
 // Flat reports whether the picture is (nearly) one single colour, or empty.
 func Flat(img image.Image) bool {
 	b := img.Bounds()

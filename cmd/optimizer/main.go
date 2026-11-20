@@ -294,6 +294,9 @@ func validateAppConfig(ac *entity.AppConfig) error {
 		if ac.LibraryLimit < 0 {
 			return fmt.Errorf("library_limit must not be negative")
 		}
+		if ac.LibraryDryRunSample < 0 {
+			return fmt.Errorf("library_dry_run_sample must not be negative")
+		}
 		if ac.LibraryConcurrency < 1 {
 			return fmt.Errorf("library_concurrency must be 1 or more")
 		}
@@ -538,6 +541,14 @@ func run(args []string) error {
 	defer cancelLibrary()
 	if hasMode(config.Mode, "library") {
 		takenBefore, _ := parseLibraryDate(config.LibraryTakenBefore)
+		reportFile := config.LibraryReportFile
+		if reportFile == "" {
+			reportFile = filepath.Join(config.UndoneDir, "library-report.html")
+		}
+		publicURL := config.ImmichPublicURL
+		if publicURL == "" {
+			publicURL = config.ImmichURL
+		}
 		svc := library.New(library.Config{
 			DryRun:        config.LibraryDryRun,
 			Limit:         config.LibraryLimit,
@@ -545,6 +556,10 @@ func run(args []string) error {
 			ReadyTimeout:  config.LibraryReadyTimeout,
 			Version:       version,
 			Concurrency:   config.LibraryConcurrency,
+			Sample:        config.LibraryDryRunSample,
+			ReportFile:    reportFile,
+			PublicURL:     publicURL,
+			Preview:       mediacheck.New().Preview,
 			IsMotionPhoto: motionphoto.IsMotionJPEG,
 		}, immich.NewLibraryClient(config.ImmichURL, config.ImmichAPIKey, httpClient), engine, auditLog, logger)
 		if config.LibraryDryRun {

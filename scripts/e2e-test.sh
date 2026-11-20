@@ -55,4 +55,5 @@ E2E_BINARY="$OUT/immich-optimizer" \
 E2E_CONFIG_DIR="$PWD/config" \
 E2E_MEDIA_DIR="$PWD/cmd/optimizer/testdata/media" \
 E2E_ML="${E2E_ML:-}" \
+E2E_REPORT_COPY="${E2E_REPORT_COPY:-}" \
   go test -tags e2e -count=1 -timeout 30m ./e2e/ "$@"

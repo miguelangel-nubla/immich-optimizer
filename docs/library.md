@@ -16,7 +16,26 @@ services:
     restart: "no"                       # it makes one pass and exits
 ```
 
-Everything it changes can be undone from Immich's trash, and nothing is changed until you say so: **it starts as a dry run.** Without `IO_LIBRARY_DRY_RUN=false` it only reports what it would convert.
+Everything it changes can be undone from Immich's trash, and nothing is changed until you say so: **it starts as a dry run.** Without `IO_LIBRARY_DRY_RUN=false` it changes nothing and writes a [report](#the-report) of what it would do.
+
+## The dry run
+
+A dry run goes through the whole library and decides, for every asset, whether it would be converted and, if not, why. It then **downloads and converts a small random sample** of the candidates (20 by default, [`IO_LIBRARY_DRY_RUN_SAMPLE`](configuration.md#library-mode)) to find out what a real run would do: how much smaller the files get, whether any fail, and what the results look like. The converted sample is thrown away. **Nothing is uploaded, marked or moved to the trash.**
+
+Without the sample (`IO_LIBRARY_DRY_RUN_SAMPLE=0`) a dry run downloads nothing and can only say how many assets are candidates.
+
+## The report
+
+Every run, dry or real, writes `library-report.html` to the undone folder ([`IO_LIBRARY_REPORT_FILE`](configuration.md#library-mode)). It is a single file with no outside dependencies: copy it to your computer and open it in a browser.
+
+- **Totals:** assets looked at, would be converted (or replaced), kept, skipped and failed.
+- **Estimated saving** (dry run): the sample's result applied to all candidates, each file type by its own figure. With a small sample it is a rough number.
+- **By outcome and by file type:** how many assets and how many bytes are skipped for which reason. Select a row to filter the list.
+- **Converted sample** (dry run): each sampled file with a preview of the original next to a preview of the conversion, both sizes and the task used.
+- **Every asset** in a table you can search, filter, sort and page through, with the reason it was skipped or the error it failed with.
+- **Links:** each file name opens the asset in Immich. Set [`IO_IMMICH_PUBLIC_URL`](configuration.md#immich) to the address you use in your browser, or type it into the box on the page. For a replaced asset the link goes to the new asset; its original is in Immich's trash.
+
+The report is rewritten by each run and shows that run only. The [audit log](audit-log.md) is the permanent record.
 
 ## What happens to each asset
 
@@ -84,6 +103,7 @@ These assets are left exactly as they are. The reason for each is written to the
 | Already converted, or already looked at | recognised by its [marker](marker.md) |
 | Newer than `IO_LIBRARY_TAKEN_BEFORE` | your own limit |
 | Immich has not finished reading it yet | it is picked up by a later run |
+| It changed while it was being replaced | you edited it, or Immich was still analysing it. The copy is removed and a later run converts it |
 
 ## Live photos, motion photos and edits
 

@@ -51,6 +51,9 @@ type AppConfig struct {
 	// Library mode.
 	LibraryDryRun         bool
 	LibraryLimit          int
+	LibraryDryRunSample   int
+	LibraryReportFile     string
+	ImmichPublicURL       string
 	LibraryConcurrency    int
 	LibraryTakenBefore    string
 	LibraryReadyTimeout   time.Duration
