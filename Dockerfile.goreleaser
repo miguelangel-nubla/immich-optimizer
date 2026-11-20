@@ -102,7 +102,7 @@ EXPOSE 2283
 
 # Add health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD immich-optimizer -version || exit 1
+    CMD immich-optimizer -healthcheck || exit 1
 
 # Switch to non-root user
 USER appuser

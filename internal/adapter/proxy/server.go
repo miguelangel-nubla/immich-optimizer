@@ -35,6 +35,9 @@ import (
 // with immich-upload-optimizer).
 const WaitPath = "/_immich-upload-optimizer/wait"
 
+// HealthPath is answered by the proxy itself: 200 while it takes uploads.
+const HealthPath = "/_immich-optimizer/health"
+
 const (
 	defaultResultTTL   = 30 * time.Minute
 	defaultWaitPoll    = 55 * time.Second
@@ -223,6 +226,20 @@ func (s *Server) Close() error {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == WaitPath {
 		s.continueJob(w, r)
+		return
+	}
+	if r.URL.Path == HealthPath {
+		s.lifecycle.Lock()
+		stopping := s.shuttingDown
+		s.lifecycle.Unlock()
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		if stopping {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, "shutting down\n")
+			return
+		}
+		_, _ = io.WriteString(w, "ok\n")
 		return
 	}
 

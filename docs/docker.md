@@ -60,3 +60,12 @@ services:
 ```
 
 `immich-optimizer -version` reports `dev-<shortsha>`. The binaries of each build are attached to its [Dev workflow run](https://github.com/miguelangel-nubla/immich-optimizer/actions/workflows/dev.yaml) as an artifact (GitHub sign-in required). Dev builds are **unstable**: they may contain unfinished features, break your configuration or change the undone folder format without notice. Do not run them on a library you have no backup of, and pin `:dev-<shortsha>` rather than `:dev` if you need to stay on a build that works. Dev builds never create a GitHub Release and never change `:latest` or the version tags.
+
+## Health check
+
+The image has a Docker health check. It runs `immich-optimizer -healthcheck` inside the container, with the container's own settings:
+
+- **Proxy mode:** it asks the proxy for `/_immich-optimizer/health`, which the proxy answers itself with `200` (and `503` while it is shutting down). It does not ask Immich: an Immich that is down is not a reason to restart the optimizer.
+- **Watcher and library mode** have nothing to ask, so the check only confirms that the container runs.
+
+You can point your own monitoring at the same path on the proxy's port.

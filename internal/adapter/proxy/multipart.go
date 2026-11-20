@@ -56,10 +56,19 @@ type targetPart struct {
 	srcPath     string
 	sha1        string // lowercase hex SHA-1 of the content, as Immich computes it
 	res         *entity.ConvertResult
+	// named says the name came from the form's name field, which then has
+	// to be given the converted file's name too.
+	named bool
 }
 
 // smallFields are non-file form fields read for diagnostics and mtime.
-var smallFields = map[string]bool{"fileModifiedAt": true, "fileCreatedAt": true, "deviceId": true}
+var smallFields = map[string]bool{"fileModifiedAt": true, "fileCreatedAt": true, "deviceId": true, nameField: true}
+
+// nameField is a form field with the asset's file name. Immich prefers it to
+// the name on the file part, and the mobile app's background upload sends
+// it: there the file part carries the name of a temporary export (on iOS
+// something like "59DC...A630_L0_001_1773008161.884566_o_IMG_0992.MOV").
+const nameField = "filename"
 
 // uploadFormKey is the form field Immich's upload carries the file in.
 const uploadFormKey = "assetData"
@@ -123,6 +132,13 @@ func (s *Server) runJob(ctx context.Context, j *job, spec jobSpec) jobResult {
 			case <-ctx.Done():
 				return resultFromError(fmt.Errorf("%w: %w", entity.ErrCanceled, context.Cause(ctx)))
 			}
+		}
+	}
+
+	// The name Immich will use is the one to convert under and to rename.
+	if name := fields[nameField]; name != "" && len(targets) == 1 {
+		if _, base := splitClientFilename(name); base != "" {
+			targets[0].fileName, targets[0].named = base, true
 		}
 	}
 
@@ -210,7 +226,7 @@ func (s *Server) extractTargets(spoolPath, boundary string) (targets []*targetPa
 		var small bytes.Buffer
 		var r io.Reader = part
 		if part.FileName() == "" && smallFields[part.FormName()] {
-			r = io.MultiReader(io.TeeReader(io.LimitReader(part, 256), &small), part)
+			r = io.MultiReader(io.TeeReader(io.LimitReader(part, 1024), &small), part)
 		}
 		if _, err := io.Copy(ph, r); err != nil {
 			return targets, fields, "", fmt.Errorf("%w: reading multipart field %s: %w", errBadRequest, part.FormName(), err)
@@ -435,6 +451,14 @@ func (s *Server) buildOutgoing(spoolPath, boundary string, targets []*targetPart
 		if err != nil {
 			return fail(fmt.Errorf("create multipart part: %w", err))
 		}
+		// Immich takes the asset's name from this field: it must be the
+		// converted file's name, or a JXL would be stored as "IMG_1.HEIC".
+		if part.FileName() == "" && part.FormName() == nameField && len(targets) == 1 && targets[0].named {
+			if _, err := io.WriteString(pw, targets[0].res.DeliverName); err != nil {
+				return fail(fmt.Errorf("write name field: %w", err))
+			}
+			continue
+		}
 		// The client's own asset metadata (e.g. the mobile app's item): add
 		// the marker to it. Immich rejects the same key twice, so the merge
 		// replaces any marker the client sent.
@@ -563,6 +587,9 @@ func (s *Server) upload(ctx context.Context, spec jobSpec, outPath, contentType 
 	for _, k := range hopHeaders {
 		h.Del(k)
 	}
+	// The answer is kept and may be given to another request of the same
+	// user (a retry, a browser waiting): a cookie is not to be handed on.
+	h.Del("Set-Cookie")
 	return jobResult{
 		status:    resp.StatusCode,
 		header:    h,

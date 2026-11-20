@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -71,6 +72,7 @@ func parseConfig(args []string) (*entity.AppConfig, []deprecation, error) {
 	fs := flag.NewFlagSet("immich-optimizer", flag.ContinueOnError)
 	fs.SetOutput(flagOutput)
 	fs.BoolVar(&ac.ShowVersion, "version", false, "Show the current version")
+	fs.BoolVar(&ac.HealthCheck, "healthcheck", false, "Check that a running optimizer answers, and exit")
 	applyLegacyFlags, envErr := registerSettings(fs, v, ac)
 	fs.Usage = func() { printUsage(fs) }
 
@@ -85,7 +87,7 @@ func parseConfig(args []string) (*entity.AppConfig, []deprecation, error) {
 		return nil, nil, envErr
 	}
 
-	if ac.ShowVersion {
+	if ac.HealthCheck {
 		return ac, nil, nil
 	}
 
@@ -139,6 +141,7 @@ func printUsage(fs *flag.FlagSet) {
 		}
 	}
 	fmt.Fprintln(out, "\n  -version\n    \tShow the current version")
+	fmt.Fprintln(out, "  -healthcheck\n    \tCheck that the optimizer running with these settings answers, and exit (used by the Docker image)")
 }
 
 // resolveTasksFile returns the explicit path, or the first existing file of
@@ -458,6 +461,10 @@ func run(args []string) error {
 		return nil
 	}
 
+	if config.HealthCheck {
+		return healthCheck(config)
+	}
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -636,6 +643,34 @@ func run(args []string) error {
 	grace := config.ShutdownTimeout
 	logger.Printf("Shutting down gracefully (waiting up to %s for running jobs)...", grace)
 	shutdown(logger, grace, watcherAdapter, pipelineService, proxyServer)
+	return nil
+}
+
+// healthCheck is what the Docker image's HEALTHCHECK runs, in a second
+// process next to the optimizer. In proxy mode it asks the proxy itself (not
+// Immich: an Immich that is down is not a reason to restart the optimizer).
+// The other modes have nothing to ask: that this ran at all is the answer.
+func healthCheck(config *entity.AppConfig) error {
+	_, runProxy, err := parseModes(config.Mode)
+	if err != nil || !runProxy {
+		return err
+	}
+	host, port, err := net.SplitHostPort(config.BindAddr)
+	if err != nil {
+		return fmt.Errorf("proxy_bind_addr %q: %w", config.BindAddr, err)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + proxy.HealthPath)
+	if err != nil {
+		return fmt.Errorf("the proxy does not answer: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("the proxy answered %d", resp.StatusCode)
+	}
 	return nil
 }
 

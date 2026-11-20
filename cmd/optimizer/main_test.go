@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/proxy"
 	"log"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1085,5 +1089,33 @@ func TestLoadTasksLibraryFilter(t *testing.T) {
 
 	if _, err := load("library_filter: everything\n" + tasks); err == nil || !strings.Contains(err.Error(), "library_filter") {
 		t.Errorf("a filter that is not a mapping was accepted: %v", err)
+	}
+}
+
+func TestHealthCheck(t *testing.T) {
+	// Modes without a proxy have nothing to ask.
+	if err := healthCheck(&entity.AppConfig{Mode: "watcher"}); err != nil {
+		t.Errorf("watcher: %v", err)
+	}
+	asked := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = r.URL.Path
+		if r.URL.Query().Get("x") != "" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	// ":port" is how the bind address is usually written.
+	if err := healthCheck(&entity.AppConfig{Mode: "proxy", BindAddr: ":" + port}); err != nil || asked != proxy.HealthPath {
+		t.Errorf("proxy: %v, asked %q", err, asked)
+	}
+	srv.Close()
+	if err := healthCheck(&entity.AppConfig{Mode: "watcher,proxy", BindAddr: "127.0.0.1:" + port}); err == nil {
+		t.Error("a proxy that does not answer was reported healthy")
+	}
+	// The flag needs none of the other settings to be valid.
+	if ac, _, err := parseConfig([]string{"-healthcheck"}); err != nil || !ac.HealthCheck {
+		t.Errorf("parseConfig: %+v, %v", ac, err)
 	}
 }

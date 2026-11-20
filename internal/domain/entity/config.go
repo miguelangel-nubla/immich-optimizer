@@ -44,6 +44,7 @@ type Config struct {
 
 type AppConfig struct {
 	ShowVersion      bool
+	HealthCheck      bool
 	Mode             string
 	BindAddr         string
 	ProxyAppSync     bool

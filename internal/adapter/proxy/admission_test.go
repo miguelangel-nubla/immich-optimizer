@@ -1,9 +1,13 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -144,6 +148,95 @@ func TestProxyHoldsUploadsWhenTheTempFolderIsFull(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("still refused after the first upload finished: %d", rec.Code)
+		}
+	}
+}
+
+func TestHealthPathIsAnsweredByTheProxyItself(t *testing.T) {
+	up := newUpstream(t)
+	server := newTestServer(t, up.srv.URL, optimizedTo(t, "small"))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, HealthPath, nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "ok\n" || up.count() != 0 {
+		t.Fatalf("health: %d %q, %d request(s) reached Immich", rec.Code, rec.Body.String(), up.count())
+	}
+	server.BeginShutdown()
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, HealthPath, nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("health while shutting down: %d", rec.Code)
+	}
+}
+
+// An upload's answer is kept for retries and for browsers that wait: what
+// Immich meant for one connection or one client must not be in it.
+func TestKeptAnswerCarriesNoCookieOrConnectionHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Set-Cookie", "immich_access_token=secret")
+		w.Header().Set("Keep-Alive", "timeout=5")
+		w.Header().Set("X-Immich-Cid", "abc")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":"asset-1"}`)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, optimizedTo(t, "small"))
+	for i := 0; i < 2; i++ { // the upload, then a retry served from memory
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, uploadReq(t, "a.jpg", "same"))
+		h := rec.Header()
+		if rec.Code != http.StatusCreated || h.Get("Set-Cookie") != "" || h.Get("Keep-Alive") != "" {
+			t.Fatalf("answer %d: status %d, headers %v", i, rec.Code, h)
+		}
+		if h.Get("X-Immich-Cid") != "abc" || h.Get("Content-Type") != "application/json" {
+			t.Fatalf("answer %d lost headers it should keep: %v", i, h)
+		}
+	}
+}
+
+// The mobile app's background upload names the asset in a form field and
+// sends the file under the name of a temporary export. Immich uses the field.
+func TestNameFieldIsTheNameToConvertAndToRename(t *testing.T) {
+	const temp = "59DC5D49-1302-4D2E-BEE2-4F727646A630_L0_001_1773008161.884566_o_IMG_0992.HEIC"
+	for _, fieldFirst := range []bool{true, false} {
+		up := newUpstream(t)
+		var converted string
+		inner := optimizedTo(t, "small")
+		c := &fakeConverter{fn: func(ctx context.Context, in entity.ConvertInput) (*entity.ConvertResult, error) {
+			converted = in.Filename
+			return inner.fn(ctx, in)
+		}}
+		server := newTestServer(t, up.srv.URL, c)
+
+		body := &bytes.Buffer{}
+		mw := multipart.NewWriter(body)
+		if fieldFirst {
+			_ = mw.WriteField("filename", "IMG_0992.HEIC")
+		}
+		fw, _ := mw.CreateFormFile("assetData", temp)
+		_, _ = fw.Write([]byte("photo"))
+		if !fieldFirst {
+			_ = mw.WriteField("filename", "IMG_0992.HEIC")
+		}
+		_ = mw.WriteField("deviceId", "phone-1")
+		_ = mw.Close()
+		req := httptest.NewRequest(http.MethodPost, "/api/assets", body)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body)
+		}
+		if converted != "IMG_0992.HEIC" {
+			t.Errorf("converted under the name %q, want the one in the field", converted)
+		}
+		sent := up.bodies[0]
+		if !strings.Contains(sent, "name=\"filename\"\r\n\r\nIMG_0992.jxl\r\n") {
+			t.Errorf("the name field was not given the converted name (field first: %v):\n%s", fieldFirst, sent)
+		}
+		if !strings.Contains(sent, `filename="IMG_0992.jxl"`) || strings.Contains(sent, "L0_001") || strings.Contains(sent, "HEIC") {
+			t.Errorf("the file part does not carry the converted name alone (field first: %v):\n%s", fieldFirst, sent)
 		}
 	}
 }
