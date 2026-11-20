@@ -62,7 +62,7 @@ Every ✅ row is checked in step 5: if the copy differs from the original in any
 - The copy may belong to more people than the original, never fewer.
 - **Dimensions and orientation are not compared**, because a task may resize, crop or rotate. A video's length may differ by half a second or 2%.
 
-The validity check in step 2 does **not** compare the picture with the original either: a task is free to crop, resize, watermark or compress lossily. It only rejects results that are broken. Library mode therefore converts with whatever your tasks file says, **including lossy tasks**: with a lossy profile, the only way back to the original quality is Immich's trash, for as long as it keeps the file.
+The validity check in step 2 does **not** compare the picture with the original either: a task is free to crop, resize, watermark or re-encode. It only rejects results that are broken. Library mode converts with whatever your tasks file says, and treats every task the same way.
 
 ## What is skipped
 
