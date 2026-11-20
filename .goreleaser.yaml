@@ -57,6 +57,8 @@ dockers:
 docker_manifests:
 
 - name_template: ghcr.io/miguelangel-nubla/{{ .ProjectName }}:latest
+  # Pre-release tags (-beta, -rc) only publish their exact tag.
+  skip_push: auto
   image_templates:
   - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-amd64
   - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-arm64v8
@@ -67,11 +69,15 @@ docker_manifests:
   - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-arm64v8
 
 - name_template: ghcr.io/miguelangel-nubla/{{.ProjectName}}:v{{ .Major }}
+  # Pre-release tags (-beta, -rc) only publish their exact tag.
+  skip_push: auto
   image_templates:
   - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-amd64
   - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-arm64v8
 
 - name_template: ghcr.io/miguelangel-nubla/{{.ProjectName}}:v{{ .Major }}.{{ .Minor }}
+  # Pre-release tags (-beta, -rc) only publish their exact tag.
+  skip_push: auto
   image_templates:
   - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-amd64
   - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-arm64v8
@@ -87,6 +93,10 @@ archives:
   format_overrides:
   - goos: windows
     formats: zip
+
+release:
+  # -beta / -rc tags become GitHub pre-releases instead of "Latest".
+  prerelease: auto
 
 checksum:
   name_template: 'checksums.txt'
