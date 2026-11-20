@@ -69,6 +69,9 @@ type ConvertResult struct {
 	OutputSize   int64
 	// Release removes temporary work files. Never nil; idempotent.
 	Release func()
+	// MotionVideoBytes is the size of the motion-photo video that was
+	// dropped from the input; 0 when the input was not a motion photo.
+	MotionVideoBytes int64
 }
 
 type FailureStage string

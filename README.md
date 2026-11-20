@@ -300,6 +300,21 @@ The undone folder belongs to the conversion engine, so it works the same for eve
 - **Timeouts:** only `IO_TASK_TIMEOUT_SECONDS` (off by default) or shutdown stops a running job. `IO_HTTP_TIMEOUT_SECONDS` only bounds connecting to Immich, an upload that makes no progress at all, and waiting for its response after the upload has been sent, so large but progressing uploads are not cut off.
 - **Shutdown:** on `SIGTERM` the optimizer stops accepting new work and lets running jobs finish for `IO_SHUTDOWN_TIMEOUT_SECONDS`. After that, running tasks (including child processes such as HandBrake or ffmpeg) are killed. Proxy clients then get `503` with `Retry-After`, watcher files stay in the watch directory and are processed at the next start, and nothing is saved to undone. The default of 8s fits Docker's default 10s stop timeout. If you convert videos, raise both, for example `stop_grace_period: 15m` with `IO_SHUTDOWN_TIMEOUT_SECONDS=880`.
 
+## 📸 Motion photos
+
+Android motion photos are a JPEG with a short video appended to the same file. The policy is **keep the photo, drop the video**:
+
+- Before any task runs, the optimizer removes the embedded video from JPEG motion photos (Google `MotionPhoto` and the older `MicroVideo` format) and switches the motion flag off in the photo's metadata, so Immich does not look for a video that is gone. Tasks only ever see the still photo.
+- The log says so for each file: `Motion photo IMG_1234.jpg (proxy): keeping the photo, dropping the embedded video (2.1 MB)`.
+- If the task gives no size reduction on the still, the still is uploaded anyway, since it is already smaller than the input.
+- If conversion fails, the **untouched original, video included**, is saved to the undone folder.
+- HEIC motion photos (Samsung) are handled by the `profile1` `heic2jxl.sh` task the same way: the photo is converted and the video is dropped.
+- A file is only cut when an MP4 really starts where the metadata says the video is. Otherwise it is converted as it is.
+
+Older Samsung JPEGs that store the video in a Samsung-specific trailer without the standard motion-photo metadata are not detected.
+
+This applies to every source (watcher and proxy). Apple Live Photos are different: they are two separate files and both are processed normally.
+
 ## 📋 Optimization Profiles
 
 The optimizer includes three pre-configured profiles:

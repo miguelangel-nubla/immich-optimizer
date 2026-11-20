@@ -24,6 +24,7 @@ import (
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/filesystem"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/httpclient"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/immich"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/motionphoto"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/processor"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/proxy"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/undone"
@@ -430,6 +431,16 @@ func run(args []string) error {
 		MaxConcurrent: config.MaxConcurrentRequests,
 		TaskTimeout:   time.Duration(config.TaskTimeoutSeconds) * time.Second,
 		SaveUnmatched: config.UndoneUnmatched,
+		StripMotionPhoto: func(src, dst string) (int64, bool, error) {
+			info, err := motionphoto.StripJPEG(src, dst)
+			if errors.Is(err, motionphoto.ErrNotMotionPhoto) {
+				return 0, false, nil
+			}
+			if err != nil {
+				return 0, false, err
+			}
+			return info.VideoBytes, true, nil
+		},
 	}, processorAdapter, undoneStore, logger)
 
 	httpTimeout := time.Duration(config.HTTPTimeoutSeconds) * time.Second

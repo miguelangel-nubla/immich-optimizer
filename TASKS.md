@@ -71,6 +71,10 @@ When a file is uploaded, the optimizer:
 
 4. If successful and the output is smaller, the optimizer uploads the processed file to Immich under the original name with the new extension. If the output is not smaller, the original is uploaded unchanged. An empty output counts as a failure.
 
+## Motion photos
+
+For JPEG motion photos the embedded video is removed before your command runs, so `{{.src_folder}}/{{.name}}.{{.extension}}` is the still photo only. See "Motion photos" in the README.
+
 ## Docker Setup
 
 If using Docker, remember to mount a folder containing the `tasks.yaml` configuration file inside the container in order to be able to load it:

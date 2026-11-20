@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -27,6 +28,11 @@ type Config struct {
 	TaskTimeout time.Duration
 	// SaveUnmatched saves files with no matching task to undone.
 	SaveUnmatched bool
+	// StripMotionPhoto, when set, implements "keep the photo, drop the
+	// video" for motion photos: it writes the still of src to dst and
+	// returns the size of the removed video, or ok=false (writing nothing)
+	// when src is not a motion photo. The tasks then only see the still.
+	StripMotionPhoto func(src, dst string) (videoBytes int64, ok bool, err error)
 }
 
 type Engine struct {
@@ -90,10 +96,18 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 	if e.cfg.TaskTimeout > 0 {
 		pctx, cancel = context.WithTimeoutCause(ctx, e.cfg.TaskTimeout, entity.ErrTaskTimeout)
 	}
-	res, procErr := e.proc.Process(pctx, in.Path, e.cfg.Tasks)
+	still := e.stripMotionPhoto(in)
+	procPath := in.Path
+	if still != nil {
+		procPath = still.path
+	}
+	res, procErr := e.proc.Process(pctx, procPath, e.cfg.Tasks)
 	timedOut := errors.Is(context.Cause(pctx), entity.ErrTaskTimeout)
 	cancel()
 	<-e.sem
+	if still != nil && (procErr != nil || res == nil) {
+		still.remove()
+	}
 
 	if procErr != nil {
 		if ctx.Err() != nil {
@@ -123,6 +137,9 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 			if cleanup != nil {
 				cleanup()
 			}
+			if still != nil {
+				still.remove()
+			}
 		})
 	}
 
@@ -138,6 +155,15 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 		return nil, e.fail(in, entity.Failure{Stage: entity.StageConvert, Err: emptyErr, At: e.now()}, true)
 	}
 
+	// With a motion photo the tasks saw only the still; report sizes against
+	// the real input.
+	originalSize := res.OriginalSize
+	var videoBytes int64
+	if still != nil {
+		originalSize = still.originalSize
+		videoBytes = still.videoBytes
+	}
+
 	inExt := filepath.Ext(in.Filename)
 	if res.ProcessedSize < res.OriginalSize {
 		outExt := filepath.Ext(res.ProcessedFilename)
@@ -151,13 +177,35 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 			Outcome:      entity.OutcomeOptimized,
 			DeliverPath:  res.ProcessedFilePath,
 			DeliverName:  utils.TrimSuffixCaseInsensitive(in.Filename, inExt) + outExt,
-			OriginalSize: res.OriginalSize,
+			OriginalSize: originalSize,
 			OutputSize:   res.ProcessedSize,
 			Release:      release,
+
+			MotionVideoBytes: videoBytes,
 		}
 		e.infof("Optimized %s (%s): %s -> %s", in.Filename, in.Source,
 			utils.HumanReadableSize(r.OriginalSize), utils.HumanReadableSize(r.OutputSize))
 		return r, nil
+	}
+
+	// Conversion gave no gain on a motion photo: deliver the still, which is
+	// already smaller than the input.
+	if still != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		e.infof("No size reduction for the still of %s (%s), delivering it without the motion video (%s -> %s)",
+			in.Filename, in.Source, utils.HumanReadableSize(originalSize), utils.HumanReadableSize(res.OriginalSize))
+		return &entity.ConvertResult{
+			Outcome:      entity.OutcomeOptimized,
+			DeliverPath:  still.path,
+			DeliverName:  in.Filename,
+			OriginalSize: originalSize,
+			OutputSize:   res.OriginalSize,
+			Release:      still.remove,
+
+			MotionVideoBytes: videoBytes,
+		}, nil
 	}
 
 	// Conversion succeeded but gave no gain: deliver the original. The
@@ -173,6 +221,54 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 		OutputSize:   res.OriginalSize,
 		Release:      func() {},
 	}, nil
+}
+
+// motionStill is the temporary still extracted from a motion photo.
+type motionStill struct {
+	path         string
+	originalSize int64
+	videoBytes   int64
+	once         sync.Once
+}
+
+func (m *motionStill) remove() {
+	m.once.Do(func() { os.RemoveAll(filepath.Dir(m.path)) })
+}
+
+// stripMotionPhoto returns the still of a JPEG motion photo, or nil when the
+// input is not one. A stripping error is not fatal: the file is converted as
+// it is, which is what happened before this policy existed.
+func (e *Engine) stripMotionPhoto(in entity.ConvertInput) *motionStill {
+	if e.cfg.StripMotionPhoto == nil {
+		return nil
+	}
+	switch utils.NormalizeExtension(filepath.Ext(in.Filename)) {
+	case "jpg", "jpeg":
+	default:
+		return nil
+	}
+	st, err := os.Stat(in.Path)
+	if err != nil {
+		return nil
+	}
+	dir, err := os.MkdirTemp("", "io-motion-*")
+	if err != nil {
+		e.warnf("Motion photo check skipped for %s: %v", in.Filename, err)
+		return nil
+	}
+	// Keep the input's extension: it selects the task.
+	path := filepath.Join(dir, "still"+filepath.Ext(in.Filename))
+	videoBytes, ok, err := e.cfg.StripMotionPhoto(in.Path, path)
+	if err != nil || !ok {
+		os.RemoveAll(dir)
+		if err != nil {
+			e.warnf("Motion photo check failed for %s, converting it as it is: %v", in.Filename, err)
+		}
+		return nil
+	}
+	e.infof("Motion photo %s (%s): keeping the photo, dropping the embedded video (%s)",
+		in.Filename, in.Source, utils.HumanReadableSize(videoBytes))
+	return &motionStill{path: path, originalSize: st.Size(), videoBytes: videoBytes}
 }
 
 // SaveUndone records a failure that happened after conversion.
@@ -232,6 +328,12 @@ func (e *Engine) logFailure(in entity.ConvertInput, f entity.Failure, rec *entit
 		e.log.Errorf("%s failed for %s (%s): %s; could NOT save to undone: %v", stage, in.Filename, in.Source, reason, saveErr)
 	default:
 		e.log.Printf("%s failed for %s (%s): %s; saved to %s (seen %dx)", stage, in.Filename, in.Source, reason, rec.Dir, rec.Occurrences)
+	}
+}
+
+func (e *Engine) warnf(format string, args ...any) {
+	if e.log != nil {
+		e.log.Warnf(format, args...)
 	}
 }
 
