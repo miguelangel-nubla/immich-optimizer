@@ -31,7 +31,21 @@ type Marker struct {
 	MotionPhotos string `json:"motion_photos,omitempty"`
 	// Optimizer is the immich-optimizer version that did the conversion.
 	Optimizer string `json:"optimizer,omitempty"`
+	// Replaces is the id of the asset this one replaced (library mode).
+	Replaces string `json:"replaces,omitempty"`
+	// State is MarkerStatePending while a library replacement is in
+	// progress, and empty once the asset is final.
+	State string `json:"state,omitempty"`
+	// Kept is set on an original that library mode looked at and left as it
+	// is, because converting it gave no size reduction.
+	Kept bool `json:"kept,omitempty"`
+	// Note says why an asset was kept.
+	Note string `json:"note,omitempty"`
 }
+
+// MarkerStatePending marks a converted asset whose original has not been
+// moved to the trash yet.
+const MarkerStatePending = "pending"
 
 type metadataItem struct {
 	Key   string          `json:"key"`
@@ -76,4 +90,10 @@ type Upload struct {
 	ModTime time.Time
 	// Marker is written into the asset's metadata when set.
 	Marker *Marker
+}
+
+// MetadataItem is one key/value pair of Immich asset metadata.
+type MetadataItem struct {
+	Key   string          `json:"key"`
+	Value json.RawMessage `json:"value"`
 }

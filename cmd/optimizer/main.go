@@ -32,6 +32,7 @@ import (
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
 	customlogger "github.com/miguelangel-nubla/immich-optimizer/internal/logger"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/usecase/convert"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/usecase/library"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/usecase/pipeline"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/utils"
 )
@@ -76,6 +77,8 @@ func parseConfig(args []string) (*entity.AppConfig, []deprecation, error) {
 	v.SetDefault("watch_dir", "/watch")
 	v.SetDefault("undone_dir", "/undone")
 	v.SetDefault("undone_unmatched", true)
+	v.SetDefault("library_dry_run", true)
+	v.SetDefault("library_ready_timeout_seconds", 600)
 	v.SetDefault("tasks_file", "")
 	v.SetDefault("log_level", "info")
 	v.SetDefault("max_concurrent_requests", 10)
@@ -98,6 +101,11 @@ func parseConfig(args []string) (*entity.AppConfig, []deprecation, error) {
 	fs.StringVar(&ac.WatchDir, "watch_dir", v.GetString("watch_dir"), "Directory to watch for new files")
 	fs.StringVar(&ac.UndoneDir, "undone_dir", v.GetString("undone_dir"), "Directory where inputs that failed conversion are saved (all modes)")
 	fs.BoolVar(&ac.UndoneUnmatched, "undone_unmatched", v.GetBool("undone_unmatched"), "Save files with no matching task to the undone directory")
+	fs.BoolVar(&ac.LibraryDryRun, "library_dry_run", v.GetBool("library_dry_run"), "Library mode: only report what would be converted, change nothing")
+	fs.StringVar(&ac.LibraryLogFile, "library_log_file", v.GetString("library_log_file"), "Library mode: persistent log of every step (default: library-log.jsonl in the undone directory)")
+	fs.IntVar(&ac.LibraryLimit, "library_limit", v.GetInt("library_limit"), "Library mode: stop after this many replacements (0 = no limit)")
+	fs.StringVar(&ac.LibraryTakenBefore, "library_taken_before", v.GetString("library_taken_before"), "Library mode: only assets whose file date is before this day (YYYY-MM-DD)")
+	fs.IntVar(&ac.LibraryReadyTimeoutSeconds, "library_ready_timeout_seconds", v.GetInt("library_ready_timeout_seconds"), "Library mode: how long to wait for Immich to finish reading a converted asset, in seconds")
 	fs.StringVar(&ac.ConfigFile, "tasks_file", v.GetString("tasks_file"), "Path to the tasks file (default ./tasks.yaml, else "+defaultTasksFile+")")
 	fs.StringVar(&ac.LogLevel, "log_level", v.GetString("log_level"), "Log level (debug, info, warn, error)")
 	fs.IntVar(&ac.MaxConcurrentRequests, "max_concurrent_requests", v.GetInt("max_concurrent_requests"), "Maximum number of concurrent conversions, shared by all modes")
@@ -248,8 +256,11 @@ func parseModes(modeStr string) (runWatcher bool, runProxy bool, err error) {
 		case "proxy":
 			runProxy = true
 			recognizedCount++
+		case "library":
+			// Reported by hasMode: it does not change the two flags above.
+			recognizedCount++
 		default:
-			return false, false, fmt.Errorf("unrecognized operating mode %q (supported modes: watcher, proxy)", m)
+			return false, false, fmt.Errorf("unrecognized operating mode %q (supported modes: watcher, proxy, library)", m)
 		}
 	}
 
@@ -258,6 +269,29 @@ func parseModes(modeStr string) (runWatcher bool, runProxy bool, err error) {
 	}
 
 	return runWatcher, runProxy, nil
+}
+
+// hasMode reports whether the comma-separated mode list contains mode.
+func hasMode(modeStr, mode string) bool {
+	for _, m := range strings.Split(strings.ToLower(modeStr), ",") {
+		if strings.TrimSpace(m) == mode {
+			return true
+		}
+	}
+	return false
+}
+
+// parseLibraryDate parses IO_LIBRARY_TAKEN_BEFORE.
+func parseLibraryDate(s string) (time.Time, error) {
+	if strings.TrimSpace(s) == "" {
+		return time.Time{}, nil
+	}
+	for _, layout := range []string{"2006-01-02", time.RFC3339} {
+		if t, err := time.Parse(layout, strings.TrimSpace(s)); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("library_taken_before must be a date like 2022-12-31, got %q", s)
 }
 
 func validateAppConfig(ac *entity.AppConfig) error {
@@ -298,6 +332,18 @@ func validateAppConfig(ac *entity.AppConfig) error {
 	}
 	if parsedURL.Host == "" {
 		return fmt.Errorf("immich_url must include a valid host")
+	}
+
+	if hasMode(ac.Mode, "library") {
+		if len(strings.TrimSpace(ac.ImmichAPIKey)) < 10 {
+			return fmt.Errorf("library mode needs an Immich API key (-immich_api_key)")
+		}
+		if _, err := parseLibraryDate(ac.LibraryTakenBefore); err != nil {
+			return err
+		}
+		if ac.LibraryLimit < 0 {
+			return fmt.Errorf("library_limit must not be negative")
+		}
 	}
 
 	if runWatcher {
@@ -400,6 +446,19 @@ func initTask(task *entity.Task) error {
 	tmpl, err := template.New("command").Option("missingkey=error").Parse(task.Command)
 	if err != nil {
 		return fmt.Errorf("task %s unable to parse command: %v", task.Name, err)
+	}
+	if task.Verify != "" {
+		vt, err := template.New("verify").Option("missingkey=error").Parse(task.Verify)
+		if err != nil {
+			return fmt.Errorf("task %s unable to parse verify command: %v", task.Name, err)
+		}
+		verifyValues := map[string]string{"output": "/out", "tmp_folder": "/tmp_folder"}
+		for k, v := range values {
+			verifyValues[k] = v
+		}
+		if err := vt.Execute(io.Discard, verifyValues); err != nil {
+			return fmt.Errorf("task %s unable to execute template for verify command: %v", task.Name, err)
+		}
 	}
 	if strings.Contains(task.Command, ".folder}}") && !strings.Contains(task.Command, "_folder}}") {
 		return fmt.Errorf("task %s uses {{.folder}}, which immich-upload-optimizer provided: use {{.src_folder}} for the input and {{.dst_folder}} for the output", task.Name)
@@ -512,8 +571,67 @@ func run(args []string) error {
 		}
 	}
 
-	// Wait for interrupt
-	<-sigChan
+	// Library mode makes one pass over the existing library. When it is the
+	// only mode, the process ends with it.
+	var libraryDone chan error
+	libraryCtx, cancelLibrary := context.WithCancel(context.Background())
+	defer cancelLibrary()
+	if hasMode(config.Mode, "library") {
+		logFile := config.LibraryLogFile
+		if logFile == "" {
+			logFile = filepath.Join(config.UndoneDir, "library-log.jsonl")
+		}
+		journal, err := library.OpenJournal(logFile)
+		if err != nil {
+			return err
+		}
+		defer journal.Close()
+		takenBefore, _ := parseLibraryDate(config.LibraryTakenBefore)
+		svc := library.New(library.Config{
+			DryRun:       config.LibraryDryRun,
+			Limit:        config.LibraryLimit,
+			TakenBefore:  takenBefore,
+			ReadyTimeout: time.Duration(config.LibraryReadyTimeoutSeconds) * time.Second,
+			Version:      version,
+		}, immich.NewLibraryClient(config.ImmichURL, config.ImmichAPIKey, httpClient), engine, journal, logger)
+		if config.LibraryDryRun {
+			logger.Printf("Library mode: DRY RUN, nothing will be changed (set IO_LIBRARY_DRY_RUN=false to convert). Log: %s", logFile)
+		} else {
+			logger.Printf("Library mode: converting existing assets; originals go to Immich's trash. Log: %s", logFile)
+		}
+		libraryDone = make(chan error, 1)
+		go func() {
+			_, err := svc.Run(libraryCtx)
+			libraryDone <- err
+		}()
+	}
+
+	// Wait for interrupt, or for the library pass when nothing else runs.
+	select {
+	case <-sigChan:
+	case err := <-libraryDone:
+		if !runWatcher && !runProxy {
+			if err != nil && !errors.Is(err, context.Canceled) {
+				return fmt.Errorf("library mode: %w", err)
+			}
+			return nil
+		}
+		if err != nil {
+			logger.Errorf("Library mode stopped: %v", err)
+		}
+		<-sigChan
+		libraryDone = nil
+	}
+	cancelLibrary()
+	if libraryDone != nil {
+		// Let the asset in flight be rolled back cleanly. If this times out
+		// the next run finds the unfinished copy and resolves it.
+		select {
+		case <-libraryDone:
+		case <-time.After(time.Duration(config.ShutdownTimeoutSeconds) * time.Second):
+			logger.Warnf("Library mode did not stop in time; the next run will resolve the asset that was in progress")
+		}
+	}
 
 	grace := time.Duration(config.ShutdownTimeoutSeconds) * time.Second
 	logger.Printf("Shutting down gracefully (waiting up to %s for running jobs)...", grace)

@@ -13,6 +13,7 @@ type Source string
 const (
 	SourceWatcher Source = "watcher"
 	SourceProxy   Source = "proxy"
+	SourceLibrary Source = "library"
 )
 
 // ConvertInput describes one file handed to the conversion engine by a source.
@@ -33,6 +34,10 @@ type ConvertInput struct {
 	// SHA1 is an optional precomputed lowercase hex SHA-1 of the content,
 	// the same digest Immich stores as the asset checksum.
 	SHA1 string
+	// SkipUndone tells the engine not to save the input to undone when the
+	// conversion fails. Library mode sets it: the original is still safe in
+	// Immich, so a copy would only waste space.
+	SkipUndone bool
 	// Details are diagnostic key/values recorded in each failure of the undone
 	// metadata.json.
 	// They must NEVER contain secrets or authentication headers.
@@ -118,6 +123,7 @@ var (
 	ErrShuttingDown = errors.New("shutting down")
 	ErrEmptyOutput  = errors.New("task produced empty output")
 	ErrEmptyInput   = errors.New("input file is empty")
+	ErrNoVerify     = errors.New("task has no verify command")
 )
 
 // ConversionError is returned by the engine for no-task and conversion

@@ -9,6 +9,7 @@ A file optimization service that automatically processes and uploads media files
 
 ## ✨ Features
 
+- **📚 Library Mode**: Converts the assets already in Immich, verified and with the original kept in the trash (`IO_MODE=library`)
 - **📁 File Watching**: Automatically monitors directories for new media files (`IO_MODE=watcher`)
 - **🌐 HTTP Reverse Proxy Mode**: Intercepts upload requests on-the-fly to optimize media uploads (`IO_MODE=proxy`)
 - **⚡ Concurrent Modes**: Combine modes by comma-separating them (e.g., `IO_MODE=watcher,proxy`)
@@ -109,6 +110,72 @@ What works well today:
 - **Watcher mode for phones**: sync the phone's camera folder to the watch folder with a one-way sync tool (Syncthing send-only, FolderSync upload-only), and deselect every album in the app's backup settings. The app is then a viewer only.
 
 Every converted asset carries a [provenance marker](#-provenance-marker) with the checksum of its original, so a later fix can recognise assets that are already uploaded.
+
+## 📚 Library mode (convert an existing library)
+
+Proxy and watcher mode only handle new uploads. Library mode (`IO_MODE=library`) goes through the assets **already in Immich** and replaces each one with its converted copy. It needs an API key and works for that key's user only: run it once per user.
+
+```yaml
+services:
+  immich-optimizer-library:
+    image: ghcr.io/miguelangel-nubla/immich-optimizer:latest
+    environment:
+      - IO_MODE=library
+      - IO_IMMICH_URL=http://immich-server:2283
+      - IO_IMMICH_API_KEY=your-api-key
+      # - IO_LIBRARY_DRY_RUN=false      # the default is a dry run that changes nothing
+    volumes:
+      - ./undone:/undone                # the log is written here
+    restart: "no"                       # it makes one pass and exits
+```
+
+**It starts as a dry run.** Without `IO_LIBRARY_DRY_RUN=false` it only reports what it would convert.
+
+### What happens to each asset
+
+Immich has no "replace this file", so the optimizer does it in a fixed order that never leaves you without your photo:
+
+1. Download the original and check it against Immich's checksum.
+2. Convert it, then run the task's **`verify`** command, which must prove the result (for the lossless JPEG task: rebuild the JPEG from the JXL and compare it byte for byte).
+3. Upload the converted file as a new asset.
+4. Carry everything over: albums, shared links, stack position, favorite, archive state, description, rating, date and location edits, tags, people (named faces) and the mobile app's own metadata.
+5. Compare the new asset with the original, field by field.
+6. **Only if everything matches**, move the original to Immich's **trash**.
+
+If anything fails or differs before step 6, the new asset is deleted again and the original is left exactly as it was. Because the original goes to the trash, you can restore it from Immich for as long as your trash keeps it (30 days by default). The space is freed when the trash is emptied.
+
+### What it leaves alone
+
+- Assets whose task has no `verify` command, or is a passthrough. In the bundled profiles only `lossless` has verify commands, for JPEG and PNG.
+- Assets that do not get smaller. They are marked so later runs skip them.
+- Live photos and motion photos, assets with edits made in Immich, and assets with comments or likes in a shared album (those cannot be carried over).
+- Locked-folder assets (not visible to an API key), external libraries, the trash, and other users' assets.
+
+### Things to know before running it
+
+- **The official mobile app will upload the originals again** for photos that are still on a phone with backup enabled, because the server no longer has a file with the checksum the app looks for. Use `IO_LIBRARY_TAKEN_BEFORE` to limit the run to photos that are no longer on your phone. See [Proxy mode limitations](#-proxy-mode-limitations).
+- **Each converted asset gets a new id and upload date in Immich**, and Immich generates its thumbnails again (and runs face detection and search indexing if machine learning is on). Links to the old asset id stop working.
+- Faces that Immich detected but that are not assigned to a person are detected again rather than copied. A face you removed by hand may come back.
+- It works through one asset at a time and waits for Immich to finish reading each new file, so a large library takes a long time. A run can be stopped at any point and started again: it continues where it left off.
+- Machine-learning-assigned people were only tested with faces created through the API, not with Immich's own face detection running.
+
+### The log
+
+Every step is appended to `library-log.jsonl` in the undone folder (change it with `IO_LIBRARY_LOG_FILE`), one JSON object per line, and written to disk before the next step starts. It records which asset was converted with which task, both checksums and sizes, the id of the new asset, and why anything was skipped, kept or rolled back. If the log cannot be written, the run stops before changing anything.
+
+```json
+{"time":"2026-11-20T12:28:41Z","run":"20261120T122839Z","event":"replaced","asset":"2f908a71-…","file":"IMG_1234.jpg","new_asset":"552cdf2a-…","original_bytes":29293,"converted_bytes":21961,"original_sha1":"6ea53f87…","converted_sha1":"1df45779…","task":"jpeg-xl"}
+```
+
+### Settings
+
+| Variable | Description | Default |
+|---|---|---|
+| `IO_LIBRARY_DRY_RUN` | Only report what would be converted | `true` |
+| `IO_LIBRARY_TAKEN_BEFORE` | Only assets dated before this day (`YYYY-MM-DD`) | - |
+| `IO_LIBRARY_LIMIT` | Stop after this many replacements (`0` = no limit) | `0` |
+| `IO_LIBRARY_LOG_FILE` | Path of the persistent log | `<undone dir>/library-log.jsonl` |
+| `IO_LIBRARY_READY_TIMEOUT_SECONDS` | How long to wait for Immich to finish reading a converted asset | `600` |
 
 ## 🏷️ Provenance marker
 
@@ -265,7 +332,7 @@ services:
 
 | Variable | Mode | Description | Default |
 |----------|------|-------------|---------|
-| `IO_MODE` | All | Operating mode: `watcher`, `proxy` (comma-separated for multiple) | `watcher` |
+| `IO_MODE` | All | Operating mode: `watcher`, `proxy`, `library` (comma-separated for multiple). See [Library mode](#-library-mode-convert-an-existing-library) for its own settings | `watcher` |
 | `IO_IMMICH_URL` | All | Immich server URL (required) | - |
 | `IO_TASKS_FILE` | All | Path to tasks configuration file | `./tasks.yaml` if it exists (and is not inside the watch directory), else `/etc/immich-optimizer/config/tasks.yaml` |
 | `IO_LOG_LEVEL` | All | Log level filtering (`debug`, `info`, `warn`, `error`) | `info` |
@@ -529,6 +596,10 @@ immich-optimizer -immich_url http://... -immich_api_key ...
 # Set log level for Docker container
 docker run -e IO_LOG_LEVEL=debug ghcr.io/miguelangel-nubla/immich-optimizer:latest
 ```
+
+### End-to-end tests
+
+`scripts/e2e-test.sh [image]` starts a throwaway Immich with Docker Compose and runs the optimizer against it in library, proxy and watcher mode: a full library replacement with everything carried over, the dry run, verify failures, interrupted runs, the date filter, proxy uploads with the marker and the undone folder, and watcher uploads. It builds the optimizer from this checkout and mounts it over the image's binary. CI runs it on every push.
 
 ### Testing the bundled profiles
 

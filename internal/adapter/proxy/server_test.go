@@ -971,3 +971,5 @@ func TestProxyUndoneSaveFailureNotCached(t *testing.T) {
 		t.Fatalf("failure saved to undone should stay cacheable")
 	}
 }
+
+func (m *mockProcessor) Verify(context.Context, entity.Task, string, string) error { return nil }

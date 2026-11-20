@@ -18,3 +18,16 @@ type Converter interface {
 	// watcher's upload stage).
 	SaveUndone(in entity.ConvertInput, f entity.Failure) (*entity.UndoneRecord, error)
 }
+
+// VerifyingConverter is a Converter that can also prove its results. Library
+// mode needs it: it only replaces an asset whose conversion was verified.
+type VerifyingConverter interface {
+	Converter
+	// Verify runs the verify command of the task that produced res, proving
+	// that res is a faithful conversion of in. It returns an error wrapping
+	// entity.ErrNoVerify when that task has none.
+	Verify(ctx context.Context, in entity.ConvertInput, res *entity.ConvertResult) error
+	// Verifiable reports whether a file with this name would be converted by
+	// a task that has a verify command. When it would not, reason says why.
+	Verifiable(filename string) (ok bool, reason string)
+}

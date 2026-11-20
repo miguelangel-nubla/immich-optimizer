@@ -71,6 +71,19 @@ When a file is uploaded, the optimizer:
 
 4. If successful and the output is smaller, the optimizer uploads the processed file to Immich under the original name with the new extension. If the output is not smaller, the original is uploaded unchanged. An empty output counts as a failure.
 
+## Verify command
+
+A task can have a `verify` command that proves its output is a faithful conversion of its input. It must exit with status 0 when the output is good. Library mode only replaces an existing asset when the task that converted it has a verify command and it succeeds; proxy and watcher mode do not use it.
+
+```yaml
+  - name: jpeg-xl
+    command: cjxl --lossless_jpeg=1 -d 0 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
+    verify: djxl "{{.output}}" "{{.tmp_folder}}/rebuilt.jpg" && cmp "{{.tmp_folder}}/rebuilt.jpg" "{{.src_folder}}/{{.name}}.{{.extension}}"
+    extensions: [jpg, jpeg]
+```
+
+In a verify command, `{{.src_folder}}/{{.name}}.{{.extension}}` is the original, `{{.output}}` is the converted file and `{{.tmp_folder}}` is an empty scratch folder.
+
 ## Motion photos
 
 `motion_photos` controls what a task command receives when the file is a motion photo (a photo with an embedded video): `keep` (the file as it is, the default), `drop_video` (only the photo) or `drop_photo` (only the video, as `.mp4`). Set it at the top level as the default and on a task to override it:

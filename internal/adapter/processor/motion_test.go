@@ -110,3 +110,30 @@ func TestMotionPhotosSettingIgnoredForOrdinaryFiles(t *testing.T) {
 		res.Cleanup()
 	}
 }
+
+func TestVerifyCommand(t *testing.T) {
+	dir := t.TempDir()
+	original := filepath.Join(dir, "photo one.jpg")
+	output := filepath.Join(dir, "out.bin")
+	if err := os.WriteFile(original, []byte("same"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(output, []byte("same"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := NewLocalProcessor(nil, dir)
+	// The command sees the original, the output and an empty scratch folder.
+	task := entity.Task{Name: "t", Verify: `cp "{{.output}}" "{{.tmp_folder}}/copy" && cmp "{{.tmp_folder}}/copy" "{{.src_folder}}/{{.name}}.{{.extension}}"`}
+	if err := p.Verify(context.Background(), task, original, output); err != nil {
+		t.Fatalf("matching files: %v", err)
+	}
+	if err := os.WriteFile(output, []byte("different"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Verify(context.Background(), task, original, output); err == nil {
+		t.Error("differing files passed the verify command")
+	}
+	if err := p.Verify(context.Background(), entity.Task{Name: "t", Verify: `echo {{.nope}}`}, original, output); err == nil {
+		t.Error("an unknown placeholder must be an error")
+	}
+}

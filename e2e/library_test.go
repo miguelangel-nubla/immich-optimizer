@@ -1,0 +1,369 @@
+//go:build e2e
+
+package e2e
+
+import (
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// richOriginal uploads photo.jpg and gives it everything library mode has to
+// carry over: favorite, archive, description, rating, a tag, a named face, an
+// album, an individual shared link and a place in a stack as its primary.
+type rich struct {
+	a        asset
+	albumID  string
+	tagID    string
+	personID string
+	linkID   string
+	stackID  string
+	other    asset // the second member of the stack
+}
+
+func richOriginal(t *testing.T, u *user) rich {
+	t.Helper()
+	var r rich
+	r.a = u.add(t, "photo.jpg", map[string]string{"isFavorite": "true"})
+	id := r.a.ID
+
+	must(t, u.key, http.MethodPut, "/assets/"+id, map[string]any{"description": "holiday", "rating": 4, "visibility": "archive"}, nil)
+
+	var tag, person, album, link, stack struct {
+		ID string `json:"id"`
+	}
+	must(t, u.key, http.MethodPost, "/tags", map[string]any{"name": "trip"}, &tag)
+	must(t, u.key, http.MethodPut, "/tags/assets", map[string]any{"assetIds": []string{id}, "tagIds": []string{tag.ID}}, nil)
+	must(t, u.key, http.MethodPost, "/people", map[string]any{"name": "Alice"}, &person)
+	if s := call(t, u.key, http.MethodPost, "/faces", map[string]any{"assetId": id, "personId": person.ID,
+		"x": 100, "y": 80, "width": 120, "height": 120, "imageWidth": 640, "imageHeight": 480}, nil); s >= 300 {
+		t.Fatalf("creating face: status %d", s)
+	}
+	must(t, u.key, http.MethodPost, "/albums", map[string]any{"albumName": "Album", "assetIds": []string{id}}, &album)
+	must(t, u.key, http.MethodPost, "/shared-links", map[string]any{"type": "INDIVIDUAL", "assetIds": []string{id}}, &link)
+	r.other = u.add(t, "photo.png", nil)
+	must(t, u.key, http.MethodPost, "/stacks", map[string]any{"assetIds": []string{id, r.other.ID}}, &stack)
+
+	r.albumID, r.tagID, r.personID, r.linkID, r.stackID = album.ID, tag.ID, person.ID, link.ID, stack.ID
+	r.a = u.asset(t, id)
+	if r.a.Visibility != "archive" || r.a.ExifInfo.Description != "holiday" || len(r.a.Tags) != 1 || len(r.a.People) != 1 || r.a.Stack == nil {
+		t.Fatalf("test setup incomplete: %+v", r.a)
+	}
+	return r
+}
+
+func TestLibraryReplacesAssetAndCarriesEverythingOver(t *testing.T) {
+	u := newUser(t)
+	r := richOriginal(t, u)
+	logDir := sharedDir(t)
+
+	// A dry run (the default) reports and changes nothing.
+	code, out, log := runLibrary(t, u, logDir, nil)
+	if code != 0 {
+		t.Fatalf("dry run exited %d:\n%s", code, out)
+	}
+	if !contains(events(log, r.a.ID), "would_convert") {
+		t.Errorf("dry run did not log would_convert: %v", events(log, ""))
+	}
+	if n := len(u.live(t)); n != 2 { // the photo and its stack partner
+		t.Fatalf("dry run changed the library: %d live assets", n)
+	}
+	if u.asset(t, r.a.ID).IsTrashed || u.marker(t, r.a.ID) != nil {
+		t.Fatal("dry run touched the original")
+	}
+
+	// The real run.
+	code, out, log = runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	if code != 0 {
+		t.Fatalf("library run exited %d:\n%s", code, out)
+	}
+	var newID string
+	for _, e := range log {
+		if e["event"] == "replaced" && e["asset"] == r.a.ID {
+			newID, _ = e["new_asset"].(string)
+		}
+	}
+	if newID == "" {
+		t.Fatalf("no replacement logged for the photo:\n%s\nlog events: %v", out, events(log, ""))
+	}
+
+	old, n := u.asset(t, r.a.ID), u.asset(t, newID)
+	if !old.IsTrashed {
+		t.Error("the original is not in the trash")
+	}
+	if n.IsTrashed || n.OriginalFileName != "photo.jxl" || n.OriginalMimeType != "image/jxl" {
+		t.Errorf("converted asset: %+v", n)
+	}
+	if n.ExifInfo.Size >= r.a.ExifInfo.Size {
+		t.Errorf("converted file is not smaller: %d >= %d", n.ExifInfo.Size, r.a.ExifInfo.Size)
+	}
+	// Everything the original had.
+	if !n.IsFavorite || n.Visibility != "archive" || n.ExifInfo.Description != "holiday" ||
+		n.ExifInfo.Rating == nil || *n.ExifInfo.Rating != 4 {
+		t.Errorf("edited fields not carried over: %+v", n)
+	}
+	if n.FileCreatedAt != r.a.FileCreatedAt || n.LocalDateTime != r.a.LocalDateTime {
+		t.Errorf("dates differ: %s/%s vs %s/%s", n.FileCreatedAt, n.LocalDateTime, r.a.FileCreatedAt, r.a.LocalDateTime)
+	}
+	if n.ExifInfo.DateTimeOriginal == nil || r.a.ExifInfo.DateTimeOriginal == nil || *n.ExifInfo.DateTimeOriginal != *r.a.ExifInfo.DateTimeOriginal {
+		t.Error("date taken differs")
+	}
+	if n.ExifInfo.Latitude == nil || n.ExifInfo.Width == nil || *n.ExifInfo.Width != 640 || n.ExifInfo.Model == nil || *n.ExifInfo.Model != "Fixture" {
+		t.Errorf("metadata read from the file differs: %+v", n.ExifInfo)
+	}
+	if len(n.Tags) != 1 || n.Tags[0].ID != r.tagID {
+		t.Errorf("tags = %+v", n.Tags)
+	}
+	if len(n.People) != 1 || n.People[0].ID != r.personID {
+		t.Errorf("people = %+v", n.People)
+	}
+	if !contains(u.albumsOf(t, newID), r.albumID) {
+		t.Error("not in the album")
+	}
+	if !contains(u.linkAssets(t, r.linkID), newID) {
+		t.Error("not in the shared link")
+	}
+	if n.Stack == nil || n.Stack.ID != r.stackID || n.Stack.PrimaryAssetID != newID {
+		t.Errorf("stack = %+v, want primary of %s", n.Stack, r.stackID)
+	}
+
+	// The marker records where it came from and is no longer pending.
+	m := u.marker(t, newID)
+	if m == nil || m["replaces"] != r.a.ID || m["sha1"] != hexChecksum(t, r.a.Checksum) || m["source"] != "library" || m["state"] != nil {
+		t.Errorf("marker = %v", m)
+	}
+
+	// The log tells the whole story, in order.
+	ev := strings.Join(events(log, r.a.ID), " ")
+	if !strings.Contains(ev, "converted uploaded verified replaced") {
+		t.Errorf("log events for the photo: %s", ev)
+	}
+
+	// The PNG in the same stack was converted too (pixel-compared).
+	if !contains(events(log, r.other.ID), "replaced") {
+		t.Errorf("PNG not replaced: %v", events(log, r.other.ID))
+	}
+
+	// A second run finds nothing left to do.
+	code, out, log2 := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	if code != 0 {
+		t.Fatalf("second run exited %d:\n%s", code, out)
+	}
+	for _, e := range log2[len(log):] {
+		if e["event"] == "replaced" || e["event"] == "uploaded" || e["event"] == "failed" {
+			t.Errorf("second run did something: %v", e)
+		}
+	}
+
+	// Second chance: the original can be restored from Immich's trash.
+	must(t, u.key, http.MethodPost, "/trash/restore/assets", map[string]any{"ids": []string{r.a.ID}}, nil)
+	if back := u.asset(t, r.a.ID); back.IsTrashed || back.Checksum != r.a.Checksum {
+		t.Errorf("restored original: %+v", back)
+	}
+	// ...and a run after that neither converts it again nor harms either copy.
+	code, out, _ = runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	if code != 0 {
+		t.Fatalf("run after restore exited %d:\n%s", code, out)
+	}
+	if u.asset(t, r.a.ID).IsTrashed || u.asset(t, newID).IsTrashed {
+		t.Error("run after restore trashed something")
+	}
+}
+
+func TestLibraryLeavesOtherAssetsAlone(t *testing.T) {
+	u := newUser(t)
+	heic := u.add(t, "photo.heic", nil) // passed through by the lossless profile
+	clip := u.add(t, "clip.mp4", nil)   // no lossless video task
+	motion := u.add(t, "motion.jpg", nil)
+
+	// A photo with a comment from another user in a shared album.
+	other := newUser(t)
+	commented := u.add(t, "live.jpg", nil)
+	var album struct {
+		ID string `json:"id"`
+	}
+	must(t, u.key, http.MethodPost, "/albums", map[string]any{"albumName": "Shared", "assetIds": []string{commented.ID},
+		"albumUsers": []map[string]string{{"userId": other.id, "role": "editor"}}}, &album)
+	must(t, other.key, http.MethodPost, "/activities", map[string]any{"albumId": album.ID, "assetId": commented.ID, "type": "comment", "comment": "nice"}, nil)
+
+	before := len(u.live(t))
+	logDir := sharedDir(t)
+	code, out, log := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	if code != 0 {
+		t.Fatalf("library run exited %d:\n%s", code, out)
+	}
+	for _, a := range []asset{heic, clip, commented, motion} {
+		now := u.asset(t, a.ID)
+		if now.IsTrashed || now.Checksum != a.Checksum {
+			t.Errorf("%s was changed", a.OriginalFileName)
+		}
+		if contains(events(log, a.ID), "uploaded") {
+			t.Errorf("%s: something was uploaded: %v", a.OriginalFileName, events(log, a.ID))
+		}
+	}
+	// Immich itself splits an uploaded motion photo into a photo and a linked
+	// video, so library mode sees it as a live photo and leaves it alone.
+	if n := len(u.live(t)); n != before {
+		t.Errorf("%d live assets, want %d", n, before)
+	}
+	// The other user's library is untouched and unseen.
+	if n := len(other.live(t)); n != 0 {
+		t.Errorf("other user has %d assets", n)
+	}
+}
+
+func TestLibraryVerifyFailureChangesNothing(t *testing.T) {
+	u := newUser(t)
+	a := u.add(t, "photo.jpg", nil)
+
+	// A profile whose verify command always fails.
+	cfg := sharedDir(t)
+	tasks := `tasks:
+  - name: jpeg-xl
+    command: cjxl --lossless_jpeg=1 -d 0 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
+    verify: 'echo "pretend the rebuilt file differs" && false'
+    extensions: [jpg]
+`
+	if err := os.WriteFile(filepath.Join(cfg, "tasks.yaml"), []byte(tasks), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logDir := sharedDir(t)
+	code, out, log := runLibrary(t, u, logDir,
+		map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_TASKS_FILE": "/custom/tasks.yaml"}, cfg+":/custom:ro")
+	if code != 0 {
+		t.Fatalf("library run exited %d:\n%s", code, out)
+	}
+	ev := events(log, a.ID)
+	if !contains(ev, "failed") || contains(ev, "uploaded") || contains(ev, "replaced") {
+		t.Errorf("events = %v", ev)
+	}
+	now := u.asset(t, a.ID)
+	if now.IsTrashed || now.Checksum != a.Checksum || len(u.live(t)) != 1 || u.marker(t, a.ID) != nil {
+		t.Error("a failed verify changed the library")
+	}
+
+	// A task without any verify command is not even attempted.
+	if err := os.WriteFile(filepath.Join(cfg, "tasks.yaml"), []byte(strings.Replace(tasks, "    verify: 'echo \"pretend the rebuilt file differs\" && false'\n", "", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, log2 := runLibrary(t, u, logDir,
+		map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_TASKS_FILE": "/custom/tasks.yaml"}, cfg+":/custom:ro")
+	if code != 0 {
+		t.Fatalf("library run exited %d:\n%s", code, out)
+	}
+	if ev := events(log2[len(log):], a.ID); len(ev) != 0 {
+		t.Errorf("task without verify was used: %v", ev)
+	}
+	if u.asset(t, a.ID).IsTrashed {
+		t.Error("original trashed without a verify command")
+	}
+}
+
+// convertSample produces the exact bytes the lossless profile makes from a
+// sample, using the image's own cjxl.
+func convertSample(t *testing.T, sample string) string {
+	t.Helper()
+	dir := sharedDir(t)
+	out, err := exec.Command("docker", "run", "--rm", "-v", mediaDir+":/m:ro", "-v", dir+":/o", "--entrypoint", "cjxl", image,
+		"--lossless_jpeg=1", "-d", "0", "/m/"+sample, "/o/converted.jxl").CombinedOutput()
+	if err != nil {
+		t.Fatalf("cjxl: %v\n%s", err, out)
+	}
+	return filepath.Join(dir, "converted.jxl")
+}
+
+func TestLibraryFinishesAnInterruptedReplacement(t *testing.T) {
+	jxl := convertSample(t, "photo.jpg")
+
+	t.Run("interrupted before the original was trashed", func(t *testing.T) {
+		u := newUser(t)
+		a := u.add(t, "photo.jpg", nil)
+		// What a crashed run leaves behind: the converted copy, marked pending.
+		status, out := u.upload(t, immichURL, jxl, "photo.jxl", map[string]string{
+			"metadata": `[{"key":"immich-optimizer","value":{"v":1,"sha1":"` + hexChecksum(t, a.Checksum) + `","task":"jpeg-xl","source":"library","replaces":"` + a.ID + `","state":"pending"}}]`})
+		if status != http.StatusCreated {
+			t.Fatalf("seeding the pending copy: %d %s", status, out["_body"])
+		}
+		pending := u.waitReady(t, out["id"])
+
+		code, logs, log := runLibrary(t, u, sharedDir(t), map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+		if code != 0 {
+			t.Fatalf("library run exited %d:\n%s", code, logs)
+		}
+		// Depending on which of the two the run reaches first, the pending
+		// copy is completed, or removed and made again. Either way exactly
+		// one finished converted asset remains and the original is trashed.
+		_ = pending
+		if !u.asset(t, a.ID).IsTrashed {
+			t.Errorf("original not trashed; events: %v", events(log, ""))
+		}
+		live := u.live(t)
+		if len(live) != 1 {
+			t.Fatalf("%d live assets, want 1", len(live))
+		}
+		if m := u.marker(t, live[0].ID); m == nil || m["state"] != nil || m["replaces"] != a.ID {
+			t.Errorf("marker = %v", m)
+		}
+		if live[0].OriginalFileName != "photo.jxl" {
+			t.Errorf("live asset is %s", live[0].OriginalFileName)
+		}
+	})
+
+	t.Run("interrupted after the original was trashed", func(t *testing.T) {
+		u := newUser(t)
+		a := u.add(t, "photo.jpg", nil)
+		status, out := u.upload(t, immichURL, jxl, "photo.jxl", map[string]string{
+			"metadata": `[{"key":"immich-optimizer","value":{"v":1,"task":"jpeg-xl","source":"library","replaces":"` + a.ID + `","state":"pending"}}]`})
+		if status != http.StatusCreated {
+			t.Fatalf("seeding the pending copy: %d %s", status, out["_body"])
+		}
+		pending := u.waitReady(t, out["id"])
+		must(t, u.key, http.MethodDelete, "/assets", map[string]any{"ids": []string{a.ID}, "force": false}, nil)
+
+		code, logs, log := runLibrary(t, u, sharedDir(t), map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+		if code != 0 {
+			t.Fatalf("library run exited %d:\n%s", code, logs)
+		}
+		if !contains(events(log, a.ID), "finalized") {
+			t.Errorf("events = %v", events(log, ""))
+		}
+		if m := u.marker(t, pending.ID); m == nil || m["state"] != nil {
+			t.Errorf("marker = %v", m)
+		}
+		if u.asset(t, pending.ID).IsTrashed || !u.asset(t, a.ID).IsTrashed {
+			t.Error("assets changed while finalizing")
+		}
+	})
+}
+
+func TestLibraryDateFilterAndLimit(t *testing.T) {
+	u := newUser(t)
+	// plain.jpg has no date inside, so Immich uses the given file date;
+	// photo.jpg says 2021 in its metadata.
+	oldPhoto := u.add(t, "plain.jpg", map[string]string{"fileCreatedAt": "2015-01-01T10:00:00.000Z"})
+	newPhoto := u.add(t, "photo.jpg", nil)
+
+	logDir := sharedDir(t)
+	code, out, _ := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_LIBRARY_TAKEN_BEFORE": "2020-01-01"})
+	if code != 0 {
+		t.Fatalf("library run exited %d:\n%s", code, out)
+	}
+	if !u.asset(t, oldPhoto.ID).IsTrashed {
+		t.Error("the old photo was not converted")
+	}
+	if u.asset(t, newPhoto.ID).IsTrashed {
+		t.Error("a photo newer than the date was converted")
+	}
+
+	// A bad date stops the optimizer at startup instead of converting everything.
+	code, out, _ = runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_LIBRARY_TAKEN_BEFORE": "last year"})
+	if code == 0 || !strings.Contains(out, "library_taken_before") {
+		t.Errorf("bad date accepted (exit %d):\n%s", code, out)
+	}
+	if u.asset(t, newPhoto.ID).IsTrashed {
+		t.Error("a bad date converted the rest")
+	}
+}

@@ -778,3 +778,52 @@ func TestLoadTasksRejectsLegacyFolderPlaceholder(t *testing.T) {
 		}
 	}
 }
+
+func TestLibraryModeConfig(t *testing.T) {
+	base := []string{"-mode", "library", "-immich_url", "http://immich:2283", "-undone_dir", t.TempDir(), "-tasks_file", "../../config/lossless/tasks.yaml"}
+
+	// Dry run is the default: a first start must never change a library.
+	cfg, _, err := parseConfig(append(base, "-immich_api_key", "0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LibraryDryRun || cfg.LibraryLimit != 0 || cfg.LibraryReadyTimeoutSeconds != 600 {
+		t.Errorf("library defaults: %+v", cfg)
+	}
+
+	if _, _, err := parseConfig(base); err == nil {
+		t.Error("library mode without an API key must be refused")
+	}
+	if _, _, err := parseConfig(append(base, "-immich_api_key", "0123456789abcdef", "-library_taken_before", "last year")); err == nil {
+		t.Error("a bad date must be refused")
+	}
+	if _, _, err := parseConfig(append(base, "-immich_api_key", "0123456789abcdef", "-library_limit", "-1")); err == nil {
+		t.Error("a negative limit must be refused")
+	}
+	if d, err := parseLibraryDate("2022-12-31"); err != nil || d.Year() != 2022 {
+		t.Errorf("parseLibraryDate: %v %v", d, err)
+	}
+	if !hasMode("watcher, Library", "library") || hasMode("watcher,proxy", "library") {
+		t.Error("hasMode")
+	}
+}
+
+func TestBundledLosslessProfileHasVerifyCommands(t *testing.T) {
+	cfg, err := loadTasks("../../config/lossless/tasks.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified := map[string]bool{}
+	for _, task := range cfg.Tasks {
+		if task.Verify != "" {
+			for _, e := range task.Extensions {
+				verified[e] = true
+			}
+		}
+	}
+	for _, e := range []string{"jpg", "jpeg", "png"} {
+		if !verified[e] {
+			t.Errorf("lossless profile has no verify command for .%s", e)
+		}
+	}
+}

@@ -45,7 +45,7 @@ type Engine struct {
 	now    func() time.Time
 }
 
-var _ port.Converter = (*Engine)(nil)
+var _ port.VerifyingConverter = (*Engine)(nil)
 
 func New(cfg Config, proc port.MediaProcessor, undone port.UndoneStore, log *logger.Logger) *Engine {
 	if cfg.MaxConcurrent <= 0 {
@@ -220,6 +220,50 @@ func originalSHA1(in entity.ConvertInput) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// Verifiable reports whether filename's first matching task converts the file
+// and can prove its result. Later matching tasks are fallbacks; if one of
+// them produces the output instead, Verify decides at that point.
+func (e *Engine) Verifiable(filename string) (bool, string) {
+	ext := utils.NormalizeExtension(filepath.Ext(filename))
+	for _, t := range e.cfg.Tasks {
+		match := false
+		for _, te := range t.Extensions {
+			if utils.NormalizeExtension(te) == ext {
+				match = true
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		if strings.TrimSpace(t.Command) == "" {
+			return false, "its task (" + t.Name + ") passes files through unchanged"
+		}
+		if strings.TrimSpace(t.Verify) == "" {
+			return false, "its task (" + t.Name + ") has no verify command"
+		}
+		return true, ""
+	}
+	return false, "no task handles this file type"
+}
+
+// Verify runs the verify command of the task that produced res.
+func (e *Engine) Verify(ctx context.Context, in entity.ConvertInput, res *entity.ConvertResult) error {
+	if res == nil || res.Marker == nil {
+		return fmt.Errorf("%w: nothing was converted", entity.ErrNoVerify)
+	}
+	for _, t := range e.cfg.Tasks {
+		if t.Name != res.Marker.Task {
+			continue
+		}
+		if strings.TrimSpace(t.Verify) == "" {
+			return fmt.Errorf("%w: %s", entity.ErrNoVerify, t.Name)
+		}
+		return e.proc.Verify(ctx, t, in.Path, res.DeliverPath)
+	}
+	return fmt.Errorf("%w: task %q not found", entity.ErrNoVerify, res.Marker.Task)
+}
+
 // SaveUndone records a failure that happened after conversion.
 func (e *Engine) SaveUndone(in entity.ConvertInput, f entity.Failure) (*entity.UndoneRecord, error) {
 	if f.At.IsZero() {
@@ -242,6 +286,7 @@ func (e *Engine) save(in entity.ConvertInput, f entity.Failure) (*entity.UndoneR
 
 func (e *Engine) fail(in entity.ConvertInput, f entity.Failure, save bool) error {
 	ce := &entity.ConversionError{Filename: in.Filename, Failure: f}
+	save = save && !in.SkipUndone
 	if save {
 		ce.Undone, ce.UndoneErr = e.save(in, f)
 	}

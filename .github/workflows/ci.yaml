@@ -132,3 +132,31 @@ jobs:
 
       - name: Integration tests
         run: scripts/integration-test.sh immich-optimizer:custom-ci
+
+  # End-to-end: a real Immich (Docker Compose) with the optimizer image built
+  # from this commit, in library, proxy and watcher mode.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Vet end-to-end tests
+        run: go vet -tags e2e ./e2e/
+
+      - name: Build image
+        run: |
+          ctx="$(mktemp -d)"
+          cp -R config docker LICENSE "$ctx/"
+          CGO_ENABLED=0 go build -o "$ctx/immich-optimizer" ./cmd/optimizer
+          docker build -f Dockerfile.goreleaser -t immich-optimizer:ci "$ctx"
+
+      - name: End-to-end tests
+        run: scripts/e2e-test.sh immich-optimizer:ci -v

@@ -1,0 +1,36 @@
+# A throwaway Immich for the end-to-end tests (scripts/e2e-test.sh).
+# Machine learning is off: the tests create people and faces through the API.
+name: io-e2e
+services:
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-v3.4.2}
+    volumes: [library:/data]
+    environment:
+      DB_PASSWORD: postgres
+      DB_USERNAME: postgres
+      DB_DATABASE_NAME: immich
+      DB_HOSTNAME: database
+      REDIS_HOSTNAME: redis
+      IMMICH_MACHINE_LEARNING_ENABLED: "false"
+    ports: ['127.0.0.1:${E2E_PORT:-12383}:2283']
+    depends_on:
+      database: {condition: service_healthy}
+      redis: {condition: service_started}
+    restart: on-failure
+  redis:
+    image: docker.io/valkey/valkey:9
+  database:
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: immich
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    volumes: [pgdata:/var/lib/postgresql/data]
+    shm_size: 128mb
+    healthcheck:
+      test: pg_isready -U postgres -d immich
+      interval: 3s
+      timeout: 3s
+      retries: 40
+volumes: {library: {}, pgdata: {}}
