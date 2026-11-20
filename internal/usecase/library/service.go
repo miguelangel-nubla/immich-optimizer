@@ -465,7 +465,7 @@ func (s *Service) finish(ctx context.Context, old *entity.LibraryAsset, oldAlbum
 		return err
 	}
 	if cur.Checksum != convertedSHA1 {
-		return fmt.Errorf("Immich stored different bytes than were uploaded (%s != %s)", cur.Checksum, convertedSHA1)
+		return fmt.Errorf("stored bytes differ from the uploaded ones (%s != %s)", cur.Checksum, convertedSHA1)
 	}
 
 	oldLinks, err := s.api.SharedLinkIDs(ctx, old.ID)
@@ -539,7 +539,7 @@ func (s *Service) waitReady(ctx context.Context, id string) (*entity.LibraryAsse
 			return a, nil
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("Immich did not finish reading the new asset within %s", s.cfg.ReadyTimeout)
+			return nil, fmt.Errorf("timed out after %s waiting for Immich to finish reading the new asset", s.cfg.ReadyTimeout)
 		}
 		if err := sleep(ctx, s.cfg.PollInterval); err != nil {
 			return nil, err

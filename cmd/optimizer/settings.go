@@ -148,17 +148,6 @@ var envSettings = func() []envSetting {
 	return out
 }()
 
-// hiddenFlags are the deprecated flag names: accepted, not shown in -help.
-var hiddenFlags = func() map[string]bool {
-	m := map[string]bool{}
-	for _, s := range settings {
-		for _, f := range s.LegacyFlags {
-			m[f] = true
-		}
-	}
-	return m
-}()
-
 // plainHelp is the help text without the Markdown code marks.
 func (s setting) plainHelp() string { return strings.ReplaceAll(s.Help, "`", "") }
 

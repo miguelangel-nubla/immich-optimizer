@@ -257,13 +257,15 @@ func (fp *fileProcessor) copySourceFile() (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to create temp file: %w", err)
 	}
-	defer tempFile.Close()
 
-	if _, err = fp.originalFile.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("unable to seek beginning of temp file: %w", err)
+	if _, err = fp.originalFile.Seek(0, io.SeekStart); err == nil {
+		_, err = io.Copy(tempFile, fp.originalFile)
 	}
-
-	if _, err = io.Copy(tempFile, fp.originalFile); err != nil {
+	// A failed close can mean the copy is not complete on disk.
+	if cerr := tempFile.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
 		return nil, fmt.Errorf("unable to write temp file: %w", err)
 	}
 
@@ -291,7 +293,7 @@ func (fp *fileProcessor) motionPhotoSource(setting string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to create temp file: %w", err)
 	}
-	tempFile.Close()
+	_ = tempFile.Close()
 	if err := os.Remove(tempFile.Name()); err != nil {
 		return nil, fmt.Errorf("unable to prepare temp file: %w", err)
 	}
@@ -324,9 +326,12 @@ func (fp *fileProcessor) copyPassthroughResult(tempFile *os.File) error {
 	if err != nil {
 		return fmt.Errorf("unable to create passthrough output file: %w", err)
 	}
-	defer dst.Close()
 
-	if _, err := io.Copy(dst, src); err != nil {
+	_, err = io.Copy(dst, src)
+	if cerr := dst.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
 		return fmt.Errorf("unable to copy passthrough output file: %w", err)
 	}
 

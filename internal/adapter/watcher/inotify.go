@@ -157,7 +157,8 @@ func (fw *inotifyWatcher) addDirectoryWatch(path string) error {
 }
 
 func (fw *inotifyWatcher) processExistingFilesRecursive(dir string) {
-	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	// The callback never returns an error, so neither does the walk.
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			fw.logger.Printf("Error walking directory %s: %v", path, err)
 			return nil

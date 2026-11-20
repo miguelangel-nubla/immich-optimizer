@@ -49,6 +49,11 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
   snapshot:
     runs-on: ubuntu-latest
     timeout-minutes: 20

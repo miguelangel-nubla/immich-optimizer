@@ -904,7 +904,7 @@ func TestDocsLinksAndSettingNames(t *testing.T) {
 	files, _ := filepath.Glob("../../docs/*.md")
 	files = append(files, "../../README.md")
 	headingRe := regexp.MustCompile(`(?m)^#+\s+(.*)$`)
-	strip := regexp.MustCompile("[^\\p{L}\\p{N}\\- _]")
+	strip := regexp.MustCompile(`[^\p{L}\p{N}\- _]`)
 	anchors := func(path string) map[string]bool {
 		data, _ := os.ReadFile(path)
 		out := map[string]bool{}

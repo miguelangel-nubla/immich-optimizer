@@ -43,15 +43,6 @@ type job struct {
 	finishedAt time.Time     // guarded by jobManager.mu
 }
 
-func (j *job) isDone() bool {
-	select {
-	case <-j.done:
-		return true
-	default:
-		return false
-	}
-}
-
 type jobManager struct {
 	mu      sync.Mutex
 	byID    map[string]*job // async jobs, for /wait lookups

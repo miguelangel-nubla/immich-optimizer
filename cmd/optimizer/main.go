@@ -574,7 +574,10 @@ func run(args []string) error {
 		// Let the asset in flight be rolled back cleanly. If this times out
 		// the next run finds the unfinished copy and resolves it.
 		select {
-		case <-libraryDone:
+		case err := <-libraryDone:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				logger.Errorf("Library mode stopped: %v", err)
+			}
 		case <-time.After(config.ShutdownTimeout):
 			logger.Warnf("Library mode did not stop in time; the next run will resolve the asset that was in progress")
 		}

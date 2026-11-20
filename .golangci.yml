@@ -1,0 +1,28 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Closing a file that was only read, removing a temporary file and
+      # printing help cannot fail in a way anything could act on. Files that
+      # were written have their Close checked by hand.
+      exclude-functions:
+        - (*os.File).Close
+        - (io.Closer).Close
+        - (*io.PipeReader).Close
+        - (*io.PipeWriter).Close
+        - (*net/http.Response).Close
+        - os.Remove
+        - os.RemoveAll
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - golang.org/x/sys/unix.Close
+        - golang.org/x/sys/unix.InotifyRmWatch
+        - (*github.com/miguelangel-nubla/immich-optimizer/internal/audit.Log).Close
+    staticcheck:
+      checks: ["all", "-QF1001", "-ST1000", "-ST1003"]
+  exclusions:
+    rules:
+      # Test code may ignore errors of setup and cleanup calls.
+      - path: _test\.go
+        linters: [errcheck]

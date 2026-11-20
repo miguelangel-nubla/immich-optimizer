@@ -18,10 +18,7 @@ func IsTempFile(filePath string) bool {
 	case ".tmp", ".temp", ".part", ".crdownload", ".tacitpart", ".pending":
 		return true
 	}
-	if strings.HasPrefix(ext, ".syncthing") {
-		return true
-	}
-	return false
+	return strings.HasPrefix(ext, ".syncthing")
 }
 
 // IsUndoneArtifact reports whether path looks like a file written by the
