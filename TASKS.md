@@ -73,7 +73,7 @@ When a file is uploaded, the optimizer:
 
 ## Motion photos
 
-For JPEG motion photos the embedded video is removed before your command runs, so `{{.src_folder}}/{{.name}}.{{.extension}}` is the still photo only. See "Motion photos" in the README.
+By default (`motion_photos: drop_video`, a top-level key of this file) the embedded video of JPEG motion photos is removed before your command runs, so `{{.src_folder}}/{{.name}}.{{.extension}}` is the still photo only. Set `motion_photos: keep` to receive motion photos unchanged. Commands can read the policy from the `IO_MOTION_PHOTOS` environment variable. See "Motion photos" in the README.
 
 ## Docker Setup
 

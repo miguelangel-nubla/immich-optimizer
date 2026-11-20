@@ -688,3 +688,31 @@ func TestDeprecationWarningShownAtErrorLevel(t *testing.T) {
 		t.Fatalf("deprecation warning must be printed regardless of log level, got %q", out)
 	}
 }
+
+func TestLoadTasksMotionPhotosPolicy(t *testing.T) {
+	cases := []struct {
+		yaml, want string
+		wantErr    bool
+	}{
+		{"tasks: []\n", entity.MotionPhotosDropVideo, false},
+		{"motion_photos: drop_video\ntasks: []\n", entity.MotionPhotosDropVideo, false},
+		{"motion_photos: keep\ntasks: []\n", entity.MotionPhotosKeep, false},
+		{"motion_photos: sometimes\ntasks: []\n", "", true},
+	}
+	for _, c := range cases {
+		p := filepath.Join(t.TempDir(), "tasks.yaml")
+		if err := os.WriteFile(p, []byte(c.yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loadTasks(p)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("%q: expected an error", c.yaml)
+			}
+			continue
+		}
+		if err != nil || cfg.MotionPhotos != c.want {
+			t.Errorf("%q: got %v, %v; want %q", c.yaml, cfg, err, c.want)
+		}
+	}
+}

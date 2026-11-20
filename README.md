@@ -302,7 +302,18 @@ The undone folder belongs to the conversion engine, so it works the same for eve
 
 ## 📸 Motion photos
 
-Android motion photos are a JPEG with a short video appended to the same file. The policy is **keep the photo, drop the video**:
+Android motion photos are a JPEG with a short video appended to the same file. The default policy is **keep the photo, drop the video**. You control it at the top level of your `tasks.yaml`:
+
+```yaml
+motion_photos: drop_video   # default: keep the photo, drop the video
+# motion_photos: keep       # hand motion photos to the tasks unchanged
+tasks:
+  - ...
+```
+
+With `keep`, the optimizer does not touch motion photos and your tasks decide what happens. Be aware that most encoders then either drop the video without notice (lossy tasks) or hide it inside the output where Immich cannot play it (`cjxl --lossless_jpeg=1`). To really keep a motion photo intact, give it a passthrough task. Task commands can read the policy from the `IO_MOTION_PHOTOS` environment variable.
+
+With the default `drop_video`:
 
 - Before any task runs, the optimizer removes the embedded video from JPEG motion photos (Google `MotionPhoto` and the older `MicroVideo` format) and switches the motion flag off in the photo's metadata, so Immich does not look for a video that is gone. Tasks only ever see the still photo.
 - The log says so for each file: `Motion photo IMG_1234.jpg (proxy): keeping the photo, dropping the embedded video (2.1 MB)`.
