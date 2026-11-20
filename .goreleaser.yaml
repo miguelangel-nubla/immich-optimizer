@@ -12,77 +12,32 @@ builds:
   goarch:
   - amd64
   - arm64
-  ignore:
-  - goos: windows
-    goarch: arm64
-dockers:
-
-- goos: linux
-  goarch: amd64
-  image_templates:
-  - "ghcr.io/miguelangel-nubla/{{.ProjectName}}:{{ .Tag }}-amd64"
-  dockerfile: 'Dockerfile.goreleaser'
-  use: buildx
-  build_flag_templates:
-  - "--pull"
-  - "--platform=linux/amd64"
-  - "--label=org.opencontainers.image.created={{.Date}}"
-  - "--label=org.opencontainers.image.title={{.ProjectName}}"
-  - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-  - "--label=org.opencontainers.image.version={{.Version}}"
-  - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
-  - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+# One multi-platform image per release, built and pushed in one step.
+# A pre-release tag (-beta, -rc) only publishes its own tag: "latest" and the
+# series tags move on stable releases only (empty tags are ignored).
+dockers_v2:
+- images:
+  - "ghcr.io/miguelangel-nubla/{{ .ProjectName }}"
+  tags:
+  - "{{ .Tag }}"
+  - "{{ if not .Prerelease }}latest{{ end }}"
+  - "{{ if not .Prerelease }}v{{ .Major }}{{ end }}"
+  - "{{ if not .Prerelease }}v{{ .Major }}.{{ .Minor }}{{ end }}"
+  dockerfile: Dockerfile.goreleaser
+  platforms:
+  - linux/amd64
+  - linux/arm64
   extra_files:
   - config
   - docker
   - LICENSE
-
-- goos: linux
-  goarch: arm64
-  image_templates:
-  - "ghcr.io/miguelangel-nubla/{{.ProjectName}}:{{ .Tag }}-arm64v8"
-  dockerfile: 'Dockerfile.goreleaser'
-  use: buildx
-  build_flag_templates:
-  - "--pull"
-  - "--platform=linux/arm64/v8"
-  - "--label=org.opencontainers.image.created={{.Date}}"
-  - "--label=org.opencontainers.image.title={{.ProjectName}}"
-  - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-  - "--label=org.opencontainers.image.version={{.Version}}"
-  - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
-  - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
-  extra_files:
-  - config
-  - docker
-  - LICENSE
-docker_manifests:
-
-- name_template: ghcr.io/miguelangel-nubla/{{ .ProjectName }}:latest
-  # Pre-release tags (-beta, -rc) only publish their exact tag.
-  skip_push: auto
-  image_templates:
-  - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-amd64
-  - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-arm64v8
-
-- name_template: ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}
-  image_templates:
-  - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-amd64
-  - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-arm64v8
-
-- name_template: ghcr.io/miguelangel-nubla/{{.ProjectName}}:v{{ .Major }}
-  # Pre-release tags (-beta, -rc) only publish their exact tag.
-  skip_push: auto
-  image_templates:
-  - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-amd64
-  - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-arm64v8
-
-- name_template: ghcr.io/miguelangel-nubla/{{.ProjectName}}:v{{ .Major }}.{{ .Minor }}
-  # Pre-release tags (-beta, -rc) only publish their exact tag.
-  skip_push: auto
-  image_templates:
-  - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-amd64
-  - ghcr.io/miguelangel-nubla/{{ .ProjectName }}:{{ .Tag }}-arm64v8
+  labels:
+    org.opencontainers.image.created: "{{ .Date }}"
+    org.opencontainers.image.title: "{{ .ProjectName }}"
+    org.opencontainers.image.revision: "{{ .FullCommit }}"
+    org.opencontainers.image.version: "{{ .Version }}"
+    org.opencontainers.image.url: "https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+    org.opencontainers.image.source: "https://github.com/miguelangel-nubla/{{ .ProjectName }}"
 archives:
 
 - files:

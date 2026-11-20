@@ -77,8 +77,10 @@ RUN mkdir -p /etc/immich-optimizer/config \
 COPY --chown=appuser:appuser config/lossless /etc/immich-optimizer/config
 COPY --chown=appuser:appuser config /etc/immich-optimizer/bundled-configs
 
-# Copy binary
-COPY --chown=appuser:appuser immich-optimizer /usr/local/bin/
+# Copy the binary built for this platform. The build context holds one per
+# platform, as <os>/<arch>/immich-optimizer (see scripts/build-image.sh).
+ARG TARGETPLATFORM
+COPY --chown=appuser:appuser $TARGETPLATFORM/immich-optimizer /usr/local/bin/
 RUN chmod +x /usr/local/bin/immich-optimizer
 
 # Add metadata labels

@@ -96,16 +96,10 @@ jobs:
             *) echo "::error::unexpected snapshot version '$version'"; exit 1 ;;
           esac
           repo="ghcr.io/${IMAGE_OWNER}/immich-optimizer"
-          mapfile -t images < <(jq -r '.[] | select(.type == "Docker Image") | .name' dist/artifacts.json)
-          if [ "${#images[@]}" -ne 2 ]; then
-            echo "::error::expected 2 per-arch images, got: ${images[*]:-none}"
-            exit 1
-          fi
+          images=("$repo:$version-amd64" "$repo:$version-arm64")
           for img in "${images[@]}"; do
-            case "$img" in
-              "$repo:$version"-*) docker push "$img" ;;
-              *) echo "::error::refusing to push unexpected image $img"; exit 1 ;;
-            esac
+            docker image inspect "$img" >/dev/null || { echo "::error::$img was not built"; exit 1; }
+            docker push "$img"
           done
           docker buildx imagetools create \
             --tag "$repo:$version" \

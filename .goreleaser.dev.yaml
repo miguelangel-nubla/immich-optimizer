@@ -1,9 +1,10 @@
 # Dev builds (pushes to the "dev" branch), used only by .github/workflows/dev.yaml.
 #
 # Always run with --snapshot: GoReleaser then publishes nothing (no GitHub
-# Release, no tags, no registry push). The workflow pushes the per-arch images
-# built here and assembles the :dev and :dev-<shortsha> manifests itself, so
-# :latest and the semver tags of .goreleaser.yaml can never be touched.
+# Release, no tags, no registry push) and builds one local image per platform,
+# tagged dev-<shortsha>-amd64 and dev-<shortsha>-arm64. The workflow pushes
+# those and assembles the :dev and :dev-<shortsha> manifests itself, so
+# :latest and the version tags of .goreleaser.yaml can never be touched.
 #
 # Keep "builds" in sync with .goreleaser.yaml.
 version: 2
@@ -23,46 +24,27 @@ builds:
 snapshot:
   version_template: "dev-{{ .ShortCommit }}"
 
-dockers:
-- goos: linux
-  goarch: amd64
-  image_templates:
-  - "ghcr.io/{{ .Env.IMAGE_OWNER }}/{{ .ProjectName }}:dev-{{ .ShortCommit }}-amd64"
-  dockerfile: 'Dockerfile.goreleaser'
-  use: buildx
-  build_flag_templates:
-  - "--pull"
-  - "--platform=linux/amd64"
-  - "--label=org.opencontainers.image.created={{.Date}}"
-  - "--label=org.opencontainers.image.title={{.ProjectName}}"
-  - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-  - "--label=org.opencontainers.image.version={{.Version}}"
-  - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
-  - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+dockers_v2:
+- images:
+  - "ghcr.io/{{ .Env.IMAGE_OWNER }}/{{ .ProjectName }}"
+  tags:
+  - "dev-{{ .ShortCommit }}"
+  dockerfile: Dockerfile.goreleaser
+  platforms:
+  - linux/amd64
+  - linux/arm64
+  sbom: false
   extra_files:
   - config
   - docker
   - LICENSE
-
-- goos: linux
-  goarch: arm64
-  image_templates:
-  - "ghcr.io/{{ .Env.IMAGE_OWNER }}/{{ .ProjectName }}:dev-{{ .ShortCommit }}-arm64v8"
-  dockerfile: 'Dockerfile.goreleaser'
-  use: buildx
-  build_flag_templates:
-  - "--pull"
-  - "--platform=linux/arm64/v8"
-  - "--label=org.opencontainers.image.created={{.Date}}"
-  - "--label=org.opencontainers.image.title={{.ProjectName}}"
-  - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-  - "--label=org.opencontainers.image.version={{.Version}}"
-  - "--label=org.opencontainers.image.url=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
-  - "--label=org.opencontainers.image.source=https://github.com/miguelangel-nubla/{{ .ProjectName }}"
-  extra_files:
-  - config
-  - docker
-  - LICENSE
+  labels:
+    org.opencontainers.image.created: "{{ .Date }}"
+    org.opencontainers.image.title: "{{ .ProjectName }}"
+    org.opencontainers.image.revision: "{{ .FullCommit }}"
+    org.opencontainers.image.version: "{{ .Version }}"
+    org.opencontainers.image.url: "https://github.com/miguelangel-nubla/{{ .ProjectName }}"
+    org.opencontainers.image.source: "https://github.com/miguelangel-nubla/{{ .ProjectName }}"
 
 archives:
 - files:

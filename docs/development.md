@@ -24,11 +24,12 @@ A new source of files only needs to hand each file to the engine (`port.Converte
 ```bash
 go build -o immich-optimizer ./cmd/optimizer
 go test -race ./...
+scripts/build-image.sh            # builds immich-optimizer:local from this checkout
 ```
 
 Three kinds of tests run in CI on every push:
 
-- **Unit tests** (`go test ./...`), including library mode against a fake Immich for every failure and resume path.
+- **Unit tests** (`go test ./...`), including library mode against a fake Immich for every failure and resume path, and the watcher on real inotify (Linux only). CI also runs `golangci-lint`.
 - **Profile tests**, inside the Docker image with the real tools. `scripts/integration-test.sh [image]` runs every bundled profile's real commands on the sample files in `cmd/optimizer/testdata/media` inside the Docker image (default: the published `:dev` image) and checks the results: outputs decode, dates, GPS and Apple Live Photo identifiers survive, motion photos lose their video and their motion flag, a portrait video stays portrait, and the lossless profile is really lossless. It uses this checkout's `config/`, so a profile change can be tested without rebuilding the image. CI runs it on every push against an image built from the commit.
 
 The samples are synthetic, and the GPU video task only runs where `/dev/dri/renderD128` exists.

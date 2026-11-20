@@ -106,11 +106,7 @@ jobs:
         run: go vet -tags integration ./cmd/optimizer
 
       - name: Build image
-        run: |
-          ctx="$(mktemp -d)"
-          cp -R config docker LICENSE "$ctx/"
-          CGO_ENABLED=0 go build -o "$ctx/immich-optimizer" ./cmd/optimizer
-          docker build -f Dockerfile.goreleaser -t immich-optimizer:ci "$ctx"
+        run: scripts/build-image.sh immich-optimizer:ci
 
       - name: Integration tests
         run: scripts/integration-test.sh immich-optimizer:ci
@@ -157,11 +153,7 @@ jobs:
         run: go vet -tags e2e ./e2e/
 
       - name: Build image
-        run: |
-          ctx="$(mktemp -d)"
-          cp -R config docker LICENSE "$ctx/"
-          CGO_ENABLED=0 go build -o "$ctx/immich-optimizer" ./cmd/optimizer
-          docker build -f Dockerfile.goreleaser -t immich-optimizer:ci "$ctx"
+        run: scripts/build-image.sh immich-optimizer:ci
 
       - name: End-to-end tests
         # With Immich's machine learning, so the face-recognition test runs too.
