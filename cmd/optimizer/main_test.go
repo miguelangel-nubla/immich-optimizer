@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	customlogger "github.com/miguelangel-nubla/immich-optimizer/internal/logger"
 )
 
