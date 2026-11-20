@@ -158,3 +158,39 @@ jobs:
       - name: End-to-end tests
         # With Immich's machine learning, so the face-recognition test runs too.
         run: E2E_ML=1 scripts/e2e-test.sh immich-optimizer:ci -v
+
+  # The real Immich Android app in an emulator, backing up through the proxy.
+  e2e-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Allow the emulator to use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install the emulator and a system image
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "emulator" "platform-tools" "system-images;android-36;google_apis;x86_64" >/dev/null
+
+      - name: Build image
+        run: scripts/build-image.sh immich-optimizer:ci
+
+      - name: Android app tests
+        run: E2E_ANDROID=1 scripts/e2e-test.sh immich-optimizer:ci -v -run TestAndroid
+
+      - name: Emulator log
+        if: failure()
+        run: tail -n 100 "${TMPDIR:-/tmp}/io-android/emulator.log" || true

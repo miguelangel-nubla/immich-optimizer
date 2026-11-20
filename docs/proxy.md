@@ -51,7 +51,7 @@ Every converted asset carries a [provenance marker](marker.md) with the checksum
 
 ## Experimental: making the mobile app see converted photos as backed up
 
-`IO_PROXY_EXPERIMENTAL_APP_SYNC=true` is an attempt to remove the limitation above. It is off by default and has **not been confirmed on a real phone yet**.
+`IO_PROXY_EXPERIMENTAL_APP_SYNC=true` is an attempt to remove the limitation above. It is off by default. It is tested with the real Android app in an emulator (Immich app v3.4.2): without it the app sends every converted photo again each time it looks for things to back up, with it the app counts them as backed up and uploads each one once. It has not been tried on iOS.
 
 **How it works.** The app keeps its own list of what is on the server, filled from Immich's sync, and treats a photo as backed up when that list has an entry with the photo's checksum. Every converted asset carries a [marker](marker.md) with the checksum of its original, and the marker is part of the same sync. When a marker passes through the proxy, the proxy adds one hidden entry with the original's checksum to the answer. The app finds its match and stops uploading the photo.
 
@@ -59,6 +59,7 @@ Every converted asset carries a [provenance marker](marker.md) with the checksum
 - The real asset's entry is not changed.
 - The hidden entry is never shown, and it disappears from the phone when the converted asset is deleted.
 - Requests the app makes about a hidden entry are answered with the real asset.
+- The hidden entry reaches the phone with the app's next sync, not at the moment of the upload. The app syncs when it is opened and before every backup round, so a photo is not uploaded twice, but the app's backup page can show it as remaining until then.
 
 **What to know before trying it**
 

@@ -154,7 +154,9 @@ func newUser(t *testing.T) *user {
 	var created struct {
 		ID string `json:"id"`
 	}
-	must(t, admin(t), http.MethodPost, "/admin/users", map[string]any{"email": email, "password": password, "name": "E2E " + email}, &created)
+	must(t, admin(t), http.MethodPost, "/admin/users", map[string]any{"email": email, "password": password, "name": "E2E " + email,
+		// Otherwise the mobile app stops at a "change password" page.
+		"shouldChangePassword": false}, &created)
 	token := [2]string{"Authorization", "Bearer " + login(t, email)}
 	var key struct {
 		Secret string `json:"secret"`

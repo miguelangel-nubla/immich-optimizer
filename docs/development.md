@@ -37,6 +37,13 @@ The samples are synthetic, and the GPU video task only runs where `/dev/dri/rend
 
 `E2E_ML=1 scripts/e2e-test.sh` also starts Immich's machine learning and runs the test that needs real face detection: three photos of the same face are recognised by Immich, the person is named, library mode converts them, and each copy must end up with that person exactly once after Immich has processed the new files. It downloads the machine-learning image and a model, so it takes a few minutes longer. CI runs it this way.
 
+`E2E_ANDROID=1 scripts/e2e-test.sh` also boots an Android emulator, installs the real Immich app and drives it: it logs in through the proxy, backs up an album and reads the app's own database to see what the app considers backed up. This is the test for the [experimental app sync](proxy.md#experimental-making-the-mobile-app-see-converted-photos-as-backed-up), with it off and on. Add `-run TestAndroid` to run only this.
+
+- It needs an Android SDK in `ANDROID_HOME` with the emulator and one system image: `sdkmanager "emulator" "platform-tools" "system-images;android-36;google_apis;arm64-v8a"` (`x86_64` instead of `arm64-v8a` on Intel/AMD, where it also needs KVM). The `google_apis` image is required, not `playstore`: reading the app's database takes root.
+- `scripts/android-emulator.sh up` creates the device in a temporary folder, boots it without a window and installs the app (downloaded once from Immich's releases, `IMMICH_APP_VERSION` picks the version); `down` stops and deletes it. The test script does both by itself; an emulator that is already up is reused and left running, which saves the boot when running the test repeatedly.
+- The device is only for these tests: every photo on it is deleted and the app's data is cleared before each case.
+- The app is driven through Android's accessibility tree by the labels of its buttons, so a new app version that renames them needs the test updated.
+
 ## Changing a setting
 
 Edit the table in [`cmd/optimizer/settings.go`](../cmd/optimizer/settings.go), then regenerate the reference:
