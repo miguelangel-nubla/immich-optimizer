@@ -527,6 +527,61 @@ func TestAndroidAppBackup(t *testing.T) {
 			t.Fatalf("Immich has %d assets, want %d", len(live), len(photos))
 		}
 	})
+
+	// Library mode converts what is already in Immich and moves the
+	// originals to the trash. A phone that still has those photos would
+	// upload them again once the trash is emptied, unless it learns the
+	// originals' checksums from the conversions.
+	t.Run("library mode on photos that are still on the phone", func(t *testing.T) {
+		u := newUser(t)
+		undone := sharedDir(t)
+		// The photos are in Immich already, as uploaded before there was a proxy.
+		var originals []string
+		for _, s := range photos {
+			originals = append(originals, u.add(t, s, nil).ID)
+		}
+		name, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy", "IO_PROXY_EXPERIMENTAL_APP_SYNC": "true"}, true, undone+":/undone")
+		p := setUpPhone(t, proxy, u, photos)
+		eventuallyRestarting(t, p, 3*time.Minute, "the app to find its photos in Immich", func() bool {
+			return p.queryInt(sqlRemote) == len(photos) && p.queryInt(sqlNotBackedUp) == 0
+		})
+
+		logDir := sharedDir(t)
+		code, out, log := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+		if code != 0 {
+			t.Fatalf("library run exited %d:\n%s", code, out)
+		}
+		for _, id := range originals {
+			if replacedBy(log, id) == "" {
+				t.Fatalf("library mode did not convert %s:\n%s", id, out)
+			}
+		}
+		// The conversions bring hidden entries, next to the originals that
+		// are still in the trash.
+		eventuallyRestarting(t, p, 3*time.Minute, "the hidden entries of the conversions to reach the app", func() bool {
+			return p.queryInt(sqlHidden+" and deleted_at is null") == len(photos)
+		})
+
+		// The trash is emptied: the originals' own entries go, the hidden
+		// ones stay, and the phone has nothing to upload.
+		must(t, u.key, http.MethodDelete, "/assets", map[string]any{"ids": originals, "force": true}, nil)
+		eventuallyRestarting(t, p, 3*time.Minute, "the app to forget the deleted originals", func() bool {
+			return p.queryInt(sqlRemote) == len(photos) && p.queryInt("select count(*) from remote_asset_entity where library_id is null and deleted_at is not null") == 0
+		})
+		for i := 0; i < 2; i++ {
+			p.restart()
+			time.Sleep(15 * time.Second)
+		}
+		if n := p.queryInt(sqlNotBackedUp); n != 0 {
+			t.Fatalf("the app has %d photo(s) to back up after the originals left the trash, want 0", n)
+		}
+		if n := received(t, name); n != 0 {
+			t.Fatalf("the app uploaded %d photo(s) again after library mode converted them", n)
+		}
+		if live := u.live(t); len(live) != len(photos) {
+			t.Fatalf("Immich has %d assets, want the %d conversions", len(live), len(photos))
+		}
+	})
 }
 
 // eventuallyRestarting is eventually for things the app only does when it

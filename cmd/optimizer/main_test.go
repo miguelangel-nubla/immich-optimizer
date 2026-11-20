@@ -798,14 +798,8 @@ func TestLibraryModeConfig(t *testing.T) {
 	if _, _, err := parseConfig(base); err == nil {
 		t.Error("library mode without an API key must be refused")
 	}
-	if _, _, err := parseConfig(append(base, "-immich_api_key", "0123456789abcdef", "-library_taken_before", "last year")); err == nil {
-		t.Error("a bad date must be refused")
-	}
 	if _, _, err := parseConfig(append(base, "-immich_api_key", "0123456789abcdef", "-library_limit", "-1")); err == nil {
 		t.Error("a negative limit must be refused")
-	}
-	if d, err := parseLibraryDate("2022-12-31"); err != nil || d.Year() != 2022 {
-		t.Errorf("parseLibraryDate: %v %v", d, err)
 	}
 	if !hasMode("watcher, Library", "library") || hasMode("watcher,proxy", "library") {
 		t.Error("hasMode")
@@ -1034,14 +1028,14 @@ func TestRepeatLibrary(t *testing.T) {
 	}
 }
 
-func TestLibraryAgeAndIntervalSettings(t *testing.T) {
+func TestLibraryIntervalSetting(t *testing.T) {
 	base := []string{"-mode", "library", "-immich_url", "http://immich:2283", "-immich_api_key", "0123456789abcdef",
 		"-undone_dir", t.TempDir(), "-tasks_file", "../../config/lossless/tasks.yaml"}
-	ac, _, err := parseConfig(append(base, "-library_older_than", "2160h", "-library_interval", "24h"))
-	if err != nil || ac.LibraryOlderThan != 90*24*time.Hour || ac.LibraryInterval != 24*time.Hour {
+	ac, _, err := parseConfig(append(base, "-library_interval", "24h"))
+	if err != nil || ac.LibraryInterval != 24*time.Hour {
 		t.Fatalf("%+v, %v", ac, err)
 	}
-	for _, bad := range [][]string{{"-library_older_than", "-1h"}, {"-library_interval", "-1h"}, {"-library_interval", "90"}} {
+	for _, bad := range [][]string{{"-library_interval", "-1h"}, {"-library_interval", "90"}, {"-library_taken_before", "2020-01-01"}, {"-library_older_than", "24h"}} {
 		if _, _, err := parseConfig(append(append([]string(nil), base...), bad...)); err == nil {
 			t.Errorf("%v was accepted", bad)
 		}

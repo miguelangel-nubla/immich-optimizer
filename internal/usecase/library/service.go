@@ -44,12 +44,6 @@ type Config struct {
 	DryRun bool
 	// Limit stops the run after this many replacements; 0 means no limit.
 	Limit int
-	// TakenBefore, when set, restricts the run to assets whose file date is
-	// older.
-	TakenBefore time.Time
-	// OlderThan, when set, restricts the run to assets whose file date is at
-	// least this long ago, counted from the start of the run.
-	OlderThan time.Duration
 	// ReadyTimeout is how long to wait for Immich to finish reading a newly
 	// uploaded asset before giving up on it.
 	ReadyTimeout time.Duration
@@ -336,28 +330,19 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	// already converted is a second copy of it: a phone uploads its photo
 	// again once the original has left Immich's trash. It is not converted a
 	// second time (Immich would refuse the identical result); it goes to the
-	// trash. Everything else that is too new is left for a later run.
-	notBefore := s.cfg.TakenBefore
-	if s.cfg.OlderThan > 0 {
-		if limit := started.Add(-s.cfg.OlderThan); notBefore.IsZero() || limit.Before(notBefore) {
-			notBefore = limit
-		}
-	}
+	// trash.
 	rest := candidates[:0]
 	for _, c := range candidates {
 		if stopped() {
 			break
 		}
 		convertedID, second := convertedFrom[strings.ToLower(c.asset.Checksum)]
-		switch {
-		case second && c.asset.Checksum != "":
+		if second && c.asset.Checksum != "" {
 			t := &tally{}
 			outcome(c.asset, t, s.secondCopy(ctx, c.asset, convertedID, t))
-		case !notBefore.IsZero() && !c.asset.FileCreatedAt.Before(notBefore):
-			outcome(c.asset, &tally{}, skip("it is newer than the configured date or age"))
-		default:
-			rest = append(rest, c)
+			continue
 		}
+		rest = append(rest, c)
 	}
 	candidates = rest
 

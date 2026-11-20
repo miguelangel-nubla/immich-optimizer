@@ -56,9 +56,7 @@ type AppConfig struct {
 	LibraryReportFile     string
 	ImmichPublicURL       string
 	LibraryConcurrency    int
-	LibraryTakenBefore    string
 	LibraryReadyTimeout   time.Duration
-	LibraryOlderThan      time.Duration
 	LibraryInterval       time.Duration
 	ConfigFile            string
 	MaxConcurrentRequests int

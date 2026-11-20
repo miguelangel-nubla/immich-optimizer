@@ -13,7 +13,7 @@ services:
       # - IO_LIBRARY_DRY_RUN=false      # the default is a dry run that changes nothing
     volumes:
       - ./undone:/undone                # the log is written here
-    restart: "no"                       # it makes one pass and exits (see Phones for running it on a schedule)
+    restart: "no"                       # it makes one pass and exits (or runs on a schedule, see below)
 ```
 
 Everything it changes can be undone from Immich's trash, and nothing is changed until you say so: **it starts as a dry run.** Without `IO_LIBRARY_DRY_RUN=false` it changes nothing and writes a [report](#the-report) of what it would do.
@@ -101,7 +101,6 @@ These assets are left exactly as they are. The reason for each is written to the
 | In the trash, hidden, or offline | not part of the visible library |
 | Belongs to another user or a partner | each user runs library mode with their own key |
 | Already converted, or already looked at | recognised by its [marker](marker.md) |
-| Newer than `IO_LIBRARY_TAKEN_BEFORE` or `IO_LIBRARY_OLDER_THAN` | your own limit |
 | A second copy of a converted original that has something of its own 📝 | see [Second copies](#second-copies-of-converted-originals) |
 | Immich has not finished reading it yet | it is picked up by a later run |
 | It changed while it was being replaced | you edited it, or Immich was still analysing it. The copy is removed and a later run converts it |
@@ -116,33 +115,34 @@ Library mode recognises such a file without converting it again. Every converted
 - **Nothing is remembered between runs.** The lookup is built from the markers on every run.
 - **It is left alone when it has something the converted asset lacks**: it is a favorite, has a description, a rating, tags or edits, or is in an album, stack or shared link the converted asset is not in. The report says which, so you can merge the two by hand.
 - **A dry run** only reports it (`would_trash_second_copy`).
-- Age limits do not apply to second copies: they are duplicates at any age.
 
 ## Phones
 
-The official mobile app decides what to back up by checksum, so a phone with backup on and library mode pull in opposite directions:
+The official mobile app decides what to back up by checksum: a photo counts as backed up while the server has a file with the same checksum, in the timeline or in the trash. A converted file has another checksum.
 
-1. Library mode converts a photo and moves the original to the trash. The app still finds the original's checksum there and stays quiet.
+**With the proxy's app sync, a phone is not affected.** When the phone reaches Immich through [proxy mode](proxy.md) with the [experimental app sync](proxy.md#experimental-making-the-mobile-app-see-converted-photos-as-backed-up) on, it learns the original's checksum from each conversion's [marker](marker.md), whether the proxy or library mode made the conversion. Photos that are still on the phone are converted like any other and are not uploaded again. This is tested with the real Android app in an emulator: library mode converts photos the phone has, the trash is emptied, and the app uploads nothing.
+
+**Without it**, a photo that is still on a phone with backup on comes back:
+
+1. Library mode converts the photo and moves the original to the trash. The app still finds the original's checksum there and stays quiet.
 2. Immich empties the trash (30 days by default). The checksum is gone, and the app uploads the photo again.
 3. The next library run finds the [second copy](#second-copies-of-converted-originals) and moves it to the trash, which starts at 1 again.
 
-So a photo that is still on a phone is uploaded about once per trash period, and its original spends most of the time in the trash, where it still takes space. Two settings make this work well:
+Nothing is lost, but such a photo saves no space: its original is in the trash most of the time.
 
-- **`IO_LIBRARY_OLDER_THAN`** limits a run to photos that have probably left the phone, such as `2160h` for 90 days. This fits people who use the app's "Free up space". Photos that are no longer on any phone get the full saving, with no re-upload.
-- **`IO_LIBRARY_INTERVAL`** keeps library mode running, such as `24h`: one run, then another that long after it ends. A second copy is then visible in the timeline for a day at most. Use it with `restart: unless-stopped` instead of `restart: "no"`.
+## Running it on a schedule
+
+`IO_LIBRARY_INTERVAL` keeps library mode running: one run, then another that long after it ends, such as `24h`. Use it with `restart: unless-stopped` instead of `restart: "no"`.
 
 ```yaml
     environment:
       - IO_MODE=library
       - IO_LIBRARY_DRY_RUN=false
-      - IO_LIBRARY_OLDER_THAN=2160h   # 90 days
       - IO_LIBRARY_INTERVAL=24h
     restart: unless-stopped
 ```
 
-Durations are written as hours (`h`), minutes (`m`) and seconds (`s`); there is no unit for days. A run that fails does not end the schedule: the next one starts after the interval and finishes whatever was left.
-
-For new uploads from a phone, [proxy mode](proxy.md) with the experimental app sync is the other way to deal with the checksum.
+Durations are written as hours (`h`), minutes (`m`) and seconds (`s`). A run that fails does not end the schedule: the next one starts after the interval and finishes whatever was left.
 
 ## Live photos, motion photos and edits
 
@@ -151,7 +151,7 @@ For new uploads from a phone, [proxy mode](proxy.md) with the experimental app s
 
 ## Things to know before running it
 
-- **The official mobile app will upload the originals again** for photos that are still on a phone with backup enabled, once the original has left Immich's trash. Library mode cleans those up, but see [Phones](#phones) for how to set it up so it rarely happens.
+- **A phone that still has the photos uploads them again** once the originals have left Immich's trash, unless it reaches Immich through the proxy with app sync on. See [Phones](#phones).
 - **Android: turn off "Sync remote deletions" in the Immich app** (Settings → Advanced, marked experimental, off by default) before a real run. With it on, the app deletes a photo from the phone when the same photo is moved to the trash on the server, which is exactly what library mode does with each original.
 - **Space is freed when Immich empties its trash**, not at once. Until then the original also counts against a user's storage quota.
 - It waits for Immich to finish reading each new file, so a large library takes a long time. By default it works on one asset at a time; [`IO_LIBRARY_CONCURRENCY`](configuration.md#library-mode) raises that, at the cost of more load on Immich. A run can be stopped at any point and started again: it continues where it left off, and finishes or undoes whatever was in progress.

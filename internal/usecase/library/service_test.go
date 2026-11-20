@@ -796,14 +796,12 @@ func TestSkips(t *testing.T) {
 		h.im.activity["shared-1/"+a.ID] = 2
 	})
 	mk("done.jpg", func(a *fakeAsset) { a.metadata[entity.MarkerKey] = json.RawMessage(`{"v":1,"task":"jpeg-xl"}`) })
-	mk("new.jpg", func(a *fakeAsset) { a.FileCreatedAt = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC) })
-	h.cfg.TakenBefore = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	sum, err := h.run()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sum.Skipped != 10 || sum.Replaced != 0 || sum.Failed != 0 || len(h.im.calls) != 0 {
+	if sum.Skipped != 9 || sum.Replaced != 0 || sum.Failed != 0 || len(h.im.calls) != 0 {
 		t.Errorf("summary = %+v, calls %v", sum, h.im.calls)
 	}
 }
@@ -1305,11 +1303,6 @@ func TestSecondCopyOfAConvertedOriginalGoesToTheTrash(t *testing.T) {
 	old, conv := convertOne(t, h, data)
 	old.deleted = true // the trash was emptied
 	again := h.im.add("IMG_1.jpg", data)
-	other := h.im.add("IMG_2.jpg", photo(2))
-	other.FileCreatedAt = time.Now()
-	// Too new to be converted; a second copy is dealt with at any age.
-	again.FileCreatedAt = time.Now()
-	h.cfg.OlderThan = 24 * time.Hour
 
 	// A dry run only says so.
 	h.cfg.DryRun = true
@@ -1323,14 +1316,14 @@ func TestSecondCopyOfAConvertedOriginalGoesToTheTrash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sum.SecondCopies != 1 || sum.Replaced != 0 || sum.Failed != 0 || sum.Skipped != 2 {
+	if sum.SecondCopies != 1 || sum.Replaced != 0 || sum.Failed != 0 || sum.Skipped != 1 {
 		t.Errorf("summary = %+v", sum)
 	}
 	if len(h.im.calls) != 1 || h.im.calls[0] != "trash:"+again.ID {
 		t.Errorf("calls = %v, want only the second copy trashed", h.im.calls)
 	}
-	if !again.IsTrashed || conv.IsTrashed || other.IsTrashed {
-		t.Errorf("trashed: second copy %v, converted %v, other %v", again.IsTrashed, conv.IsTrashed, other.IsTrashed)
+	if !again.IsTrashed || conv.IsTrashed {
+		t.Errorf("trashed: second copy %v, converted %v", again.IsTrashed, conv.IsTrashed)
 	}
 	ev := h.events()
 	if index(ev, "second_copy_trashed") < 0 || index(ev, "would_trash_second_copy") < 0 {
@@ -1387,25 +1380,5 @@ func TestSecondCopyInTheSameAlbumGoesToTheTrash(t *testing.T) {
 	again.albums, again.IsFavorite = []string{"album-1"}, true
 	if sum, err := h.run(); err != nil || sum.SecondCopies != 1 || !again.IsTrashed {
 		t.Fatalf("%+v, %v", sum, err)
-	}
-}
-
-func TestOlderThan(t *testing.T) {
-	h := newHarness(t)
-	old := h.im.add("old.jpg", photo(1)) // dated 2020
-	recent := h.im.add("recent.jpg", photo(2))
-	recent.FileCreatedAt = time.Now().Add(-10 * 24 * time.Hour)
-	h.cfg.OlderThan = 90 * 24 * time.Hour
-	sum, err := h.run()
-	if err != nil || sum.Replaced != 1 || sum.Skipped != 1 || !old.IsTrashed || recent.IsTrashed {
-		t.Fatalf("%+v, %v", sum, err)
-	}
-	// Together with a date, the stricter of the two counts.
-	h2 := newHarness(t)
-	h2.im.add("a.jpg", photo(1))
-	h2.cfg.OlderThan = 90 * 24 * time.Hour
-	h2.cfg.TakenBefore = time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
-	if sum, err := h2.run(); err != nil || sum.Replaced != 0 || sum.Skipped != 1 {
-		t.Fatalf("with a date too: %+v, %v", sum, err)
 	}
 }

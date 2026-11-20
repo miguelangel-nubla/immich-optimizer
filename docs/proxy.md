@@ -61,6 +61,7 @@ Every converted asset carries a [provenance marker](marker.md) with the checksum
 - **It arrives at once.** Immich tells the app about a finished upload over a websocket, and the proxy adds the hidden entry there too, so the app's backup page counts the photo as backed up right away.
 - **It follows its asset.** It is in the trash while the converted asset is, and it is deleted from the phone when the converted asset is deleted for good or loses its marker. The app then treats the photo as it treats any photo whose server copy was trashed or deleted.
 - Requests the app makes about a hidden entry are answered with the real asset.
+- **It covers [library mode](library.md#phones) too.** Assets that library mode converted carry the same marker, so the phone does not upload their originals again after they leave the trash.
 
 **What to know before trying it**
 

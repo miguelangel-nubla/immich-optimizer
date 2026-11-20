@@ -361,32 +361,18 @@ func TestLibraryFinishesAnInterruptedReplacement(t *testing.T) {
 	})
 }
 
-func TestLibraryDateFilterAndLimit(t *testing.T) {
+func TestLibraryLimit(t *testing.T) {
 	u := newUser(t)
-	// plain.jpg has no date inside, so Immich uses the given file date;
-	// photo.jpg says 2021 in its metadata.
-	oldPhoto := u.add(t, "plain.jpg", map[string]string{"fileCreatedAt": "2015-01-01T10:00:00.000Z"})
-	newPhoto := u.add(t, "photo.jpg", nil)
+	a := u.add(t, "plain.jpg", nil)
+	b := u.add(t, "photo.jpg", nil)
 
 	logDir := sharedDir(t)
-	code, out, _ := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_LIBRARY_TAKEN_BEFORE": "2020-01-01"})
+	code, out, _ := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_LIBRARY_LIMIT": "1"})
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
 	}
-	if !u.asset(t, oldPhoto.ID).IsTrashed {
-		t.Error("the old photo was not converted")
-	}
-	if u.asset(t, newPhoto.ID).IsTrashed {
-		t.Error("a photo newer than the date was converted")
-	}
-
-	// A bad date stops the optimizer at startup instead of converting everything.
-	code, out, _ = runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_LIBRARY_TAKEN_BEFORE": "last year"})
-	if code == 0 || !strings.Contains(out, "library_taken_before") {
-		t.Errorf("bad date accepted (exit %d):\n%s", code, out)
-	}
-	if u.asset(t, newPhoto.ID).IsTrashed {
-		t.Error("a bad date converted the rest")
+	if u.asset(t, a.ID).IsTrashed == u.asset(t, b.ID).IsTrashed {
+		t.Errorf("with a limit of 1, exactly one of the two photos must be converted:\n%s", out)
 	}
 }
 
@@ -669,9 +655,9 @@ func TestLibrarySecondCopiesAndSchedule(t *testing.T) {
 		t.Errorf("the dry run did not report the second copy: %v", events(log, again.ID))
 	}
 
-	// A real run, limited to old photos: the second copy goes to the trash
-	// whatever the limit, without being converted again.
-	code, out, log = runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_LIBRARY_OLDER_THAN": "1h"})
+	// A real run: the second copy goes to the trash, without being
+	// converted again.
+	code, out, log = runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
 	}

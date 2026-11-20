@@ -67,8 +67,6 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 | Environment variable | Flag | Default | Description |
 |---|---|---|---|
 | `IO_LIBRARY_DRY_RUN` | `-library_dry_run` | `true` | Only report what would be converted and change nothing |
-| `IO_LIBRARY_TAKEN_BEFORE` | `-library_taken_before` |  | Only convert assets dated before this day (`YYYY-MM-DD`) |
-| `IO_LIBRARY_OLDER_THAN` | `-library_older_than` | `0` | Only convert assets dated at least this long ago, such as `2160h` for 90 days; `0` means any age. A [duration](#durations) |
 | `IO_LIBRARY_INTERVAL` | `-library_interval` | `0` | Run again this long after each run ends, such as `24h`; `0` runs once and exits. A [duration](#durations) |
 | `IO_LIBRARY_LIMIT` | `-library_limit` | `0` | Stop after this many replacements; `0` means no limit |
 | `IO_LIBRARY_DRY_RUN_SAMPLE` | `-library_dry_run_sample` | `20` | In a dry run, how many candidates are downloaded and converted (nothing is uploaded) to estimate the saving and show before/after previews; `0` turns it off |

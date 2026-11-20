@@ -231,19 +231,6 @@ func hasMode(modeStr, mode string) bool {
 	return false
 }
 
-// parseLibraryDate parses IO_LIBRARY_TAKEN_BEFORE.
-func parseLibraryDate(s string) (time.Time, error) {
-	if strings.TrimSpace(s) == "" {
-		return time.Time{}, nil
-	}
-	for _, layout := range []string{"2006-01-02", time.RFC3339} {
-		if t, err := time.Parse(layout, strings.TrimSpace(s)); err == nil {
-			return t, nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("library_taken_before must be a date like 2022-12-31, got %q", s)
-}
-
 func validateAppConfig(ac *entity.AppConfig) error {
 	runWatcher, _, err := parseModes(ac.Mode)
 	if err != nil {
@@ -288,17 +275,11 @@ func validateAppConfig(ac *entity.AppConfig) error {
 		if len(strings.TrimSpace(ac.ImmichAPIKey)) < 10 {
 			return fmt.Errorf("library mode needs an Immich API key (-immich_api_key)")
 		}
-		if _, err := parseLibraryDate(ac.LibraryTakenBefore); err != nil {
-			return err
-		}
 		if ac.LibraryLimit < 0 {
 			return fmt.Errorf("library_limit must not be negative")
 		}
 		if ac.LibraryDryRunSample < 0 {
 			return fmt.Errorf("library_dry_run_sample must not be negative")
-		}
-		if ac.LibraryOlderThan < 0 {
-			return fmt.Errorf("library_older_than must not be negative")
 		}
 		if ac.LibraryInterval < 0 {
 			return fmt.Errorf("library_interval must not be negative")
@@ -550,7 +531,6 @@ func run(args []string) error {
 	libraryCtx, cancelLibrary := context.WithCancel(context.Background())
 	defer cancelLibrary()
 	if hasMode(config.Mode, "library") {
-		takenBefore, _ := parseLibraryDate(config.LibraryTakenBefore)
 		reportFile := config.LibraryReportFile
 		if reportFile == "" {
 			reportFile = filepath.Join(config.UndoneDir, "library-report.html")
@@ -562,8 +542,6 @@ func run(args []string) error {
 		svc := library.New(library.Config{
 			DryRun:        config.LibraryDryRun,
 			Limit:         config.LibraryLimit,
-			TakenBefore:   takenBefore,
-			OlderThan:     config.LibraryOlderThan,
 			ReadyTimeout:  config.LibraryReadyTimeout,
 			Version:       version,
 			Concurrency:   config.LibraryConcurrency,
