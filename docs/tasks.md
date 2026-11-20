@@ -37,7 +37,7 @@ tasks:
 - An unknown placeholder stops the optimizer at startup with an error.
 - The output's extension is taken from the file the command wrote.
 - The last 4 KiB of a failed command's output is saved with the file in the undone folder.
-- A command that runs longer than [`IO_TASKS_TIMEOUT_SECONDS`](configuration.md#tasks) is killed together with everything it started.
+- A command that runs longer than [`IO_TASKS_TIMEOUT`](configuration.md#tasks) is killed together with everything it started.
 
 ## Bundled profiles
 

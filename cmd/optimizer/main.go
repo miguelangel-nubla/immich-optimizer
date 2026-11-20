@@ -68,11 +68,18 @@ func parseConfig(args []string) (*entity.AppConfig, []deprecation, error) {
 	fs := flag.NewFlagSet("immich-optimizer", flag.ContinueOnError)
 	fs.SetOutput(flagOutput)
 	fs.BoolVar(&ac.ShowVersion, "version", false, "Show the current version")
-	applyLegacyFlags := registerSettings(fs, v, ac)
+	applyLegacyFlags, envErr := registerSettings(fs, v, ac)
 	fs.Usage = func() { printUsage(fs) }
 
 	if err := fs.Parse(args); err != nil {
 		return nil, nil, err
+	}
+
+	if ac.ShowVersion {
+		return ac, nil, nil
+	}
+	if envErr != nil {
+		return nil, nil, envErr
 	}
 
 	if ac.ShowVersion {
@@ -115,10 +122,9 @@ func printUsage(fs *flag.FlagSet) {
 				continue
 			}
 			line := fmt.Sprintf("  -%s  [%s]\n    \t%s", st.Name, st.Env(), st.plainHelp())
-			if strings.HasSuffix(st.Name, "_seconds") {
-				line += ", in seconds"
-			}
 			switch d := st.Default.(type) {
+			case time.Duration:
+				line += fmt.Sprintf(" (a duration such as 90s or 15m; default %s)", shortDuration(d))
 			case string:
 				if d != "" {
 					line += fmt.Sprintf(" (default %q)", d)
@@ -250,17 +256,17 @@ func validateAppConfig(ac *entity.AppConfig) error {
 	if ac.MaxConcurrentRequests <= 0 {
 		return fmt.Errorf("max_concurrent_requests must be greater than 0")
 	}
-	if ac.HTTPTimeoutSeconds <= 0 {
-		return fmt.Errorf("http_timeout_seconds must be greater than 0")
+	if ac.ImmichTimeout <= 0 {
+		return fmt.Errorf("immich_timeout must be greater than 0")
 	}
 	if ac.InotifyBufferSize <= 0 {
 		return fmt.Errorf("inotify_buffer_size must be greater than 0")
 	}
-	if ac.TaskTimeoutSeconds < 0 {
-		return fmt.Errorf("task_timeout_seconds must be 0 (no limit) or greater")
+	if ac.TasksTimeout < 0 {
+		return fmt.Errorf("tasks_timeout must be 0 (no limit) or greater")
 	}
-	if ac.ShutdownTimeoutSeconds < 0 {
-		return fmt.Errorf("shutdown_timeout_seconds must be 0 or greater")
+	if ac.ShutdownTimeout < 0 {
+		return fmt.Errorf("shutdown_timeout must be 0 or greater")
 	}
 	if ac.UndoneDir == "" {
 		return fmt.Errorf("undone_dir must not be empty")
@@ -453,14 +459,14 @@ func run(args []string) error {
 	engine := convert.New(convert.Config{
 		Tasks:         config.Tasks.Tasks,
 		MaxConcurrent: config.MaxConcurrentRequests,
-		TaskTimeout:   time.Duration(config.TaskTimeoutSeconds) * time.Second,
+		TaskTimeout:   config.TasksTimeout,
 		SaveUnmatched: config.UndoneUnmatched,
 		Version:       version,
 		Audit:         auditLog,
 		Checker:       mediacheck.New(),
 	}, processorAdapter, undoneStore, logger)
 
-	httpTimeout := time.Duration(config.HTTPTimeoutSeconds) * time.Second
+	httpTimeout := config.ImmichTimeout
 	httpClient := httpclient.New(httpclient.Options{
 		DialTimeout:           httpTimeout,
 		TLSHandshakeTimeout:   httpclient.DefaultTLSHandshakeTimeout,
@@ -528,7 +534,7 @@ func run(args []string) error {
 			DryRun:       config.LibraryDryRun,
 			Limit:        config.LibraryLimit,
 			TakenBefore:  takenBefore,
-			ReadyTimeout: time.Duration(config.LibraryReadyTimeoutSeconds) * time.Second,
+			ReadyTimeout: config.LibraryReadyTimeout,
 			Version:      version,
 		}, immich.NewLibraryClient(config.ImmichURL, config.ImmichAPIKey, httpClient), engine, auditLog, logger)
 		if config.LibraryDryRun {
@@ -565,12 +571,12 @@ func run(args []string) error {
 		// the next run finds the unfinished copy and resolves it.
 		select {
 		case <-libraryDone:
-		case <-time.After(time.Duration(config.ShutdownTimeoutSeconds) * time.Second):
+		case <-time.After(config.ShutdownTimeout):
 			logger.Warnf("Library mode did not stop in time; the next run will resolve the asset that was in progress")
 		}
 	}
 
-	grace := time.Duration(config.ShutdownTimeoutSeconds) * time.Second
+	grace := config.ShutdownTimeout
 	logger.Printf("Shutting down gracefully (waiting up to %s for running jobs)...", grace)
 	shutdown(logger, grace, watcherAdapter, pipelineService, proxyServer)
 	return nil

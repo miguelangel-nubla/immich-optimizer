@@ -1,5 +1,7 @@
 package entity
 
+import "time"
+
 type Task struct {
 	Name       string   `mapstructure:"name"`
 	Extensions []string `mapstructure:"extensions"`
@@ -47,16 +49,16 @@ type AppConfig struct {
 	UndoneUnmatched  bool
 	AuditLogFile     string
 	// Library mode.
-	LibraryDryRun              bool
-	LibraryLimit               int
-	LibraryTakenBefore         string
-	LibraryReadyTimeoutSeconds int
-	ConfigFile                 string
-	MaxConcurrentRequests      int
-	HTTPTimeoutSeconds         int
-	TaskTimeoutSeconds         int
-	ShutdownTimeoutSeconds     int
-	InotifyBufferSize          int
-	LogLevel                   string
-	Tasks                      *Config
+	LibraryDryRun         bool
+	LibraryLimit          int
+	LibraryTakenBefore    string
+	LibraryReadyTimeout   time.Duration
+	ConfigFile            string
+	MaxConcurrentRequests int
+	ImmichTimeout         time.Duration
+	TasksTimeout          time.Duration
+	ShutdownTimeout       time.Duration
+	InotifyBufferSize     int
+	LogLevel              string
+	Tasks                 *Config
 }

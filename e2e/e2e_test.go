@@ -386,7 +386,7 @@ func dockerArgs(env map[string]string, mounts ...string) []string {
 // its output and the parsed log file.
 func runLibrary(t *testing.T, u *user, logDir string, env map[string]string, mounts ...string) (int, string, []map[string]any) {
 	t.Helper()
-	all := map[string]string{"IO_MODE": "library", "IO_IMMICH_API_KEY": u.keyS, "IO_LIBRARY_READY_TIMEOUT_SECONDS": "120"}
+	all := map[string]string{"IO_MODE": "library", "IO_IMMICH_API_KEY": u.keyS, "IO_LIBRARY_READY_TIMEOUT": "2m"}
 	for k, v := range env {
 		all[k] = v
 	}

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	customlogger "github.com/miguelangel-nubla/immich-optimizer/internal/logger"
@@ -41,7 +42,7 @@ func TestParseConfigTuningFlags(t *testing.T) {
 		"-immich_url", "http://immich.example",
 		"-tasks_file", tasksFile,
 		"-tasks_concurrency", "3",
-		"-immich_timeout_seconds", "45",
+		"-immich_timeout", "45s",
 		"-watcher_inotify_buffer_size", "4096",
 	})
 	if err != nil {
@@ -53,8 +54,8 @@ func TestParseConfigTuningFlags(t *testing.T) {
 	if cfg.MaxConcurrentRequests != 3 {
 		t.Fatalf("expected max concurrent requests 3, got %d", cfg.MaxConcurrentRequests)
 	}
-	if cfg.HTTPTimeoutSeconds != 45 {
-		t.Fatalf("expected HTTP timeout 45, got %d", cfg.HTTPTimeoutSeconds)
+	if cfg.ImmichTimeout != 45*time.Second {
+		t.Fatalf("expected HTTP timeout 45, got %s", cfg.ImmichTimeout)
 	}
 	if cfg.InotifyBufferSize != 4096 {
 		t.Fatalf("expected inotify buffer size 4096, got %d", cfg.InotifyBufferSize)
@@ -84,7 +85,7 @@ func TestParseConfigRejectsInvalidHTTPTimeoutSeconds(t *testing.T) {
 		"-mode", "proxy",
 		"-immich_url", "http://immich.example",
 		"-tasks_file", tasksFile,
-		"-immich_timeout_seconds", "0",
+		"-immich_timeout", "0",
 	})
 	if err == nil {
 		t.Fatalf("expected invalid http_timeout_seconds to fail")
@@ -295,9 +296,9 @@ func TestEnvIOPrefix(t *testing.T) {
 		"IO_TASKS_FILE":                  tasks,
 		"IO_LOG_LEVEL":                   "debug",
 		"IO_TASKS_CONCURRENCY":           "4",
-		"IO_IMMICH_TIMEOUT_SECONDS":      "33",
-		"IO_TASKS_TIMEOUT_SECONDS":       "600",
-		"IO_SHUTDOWN_TIMEOUT_SECONDS":    "20",
+		"IO_IMMICH_TIMEOUT":              "33s",
+		"IO_TASKS_TIMEOUT":               "10m",
+		"IO_SHUTDOWN_TIMEOUT":            "20s",
 		"IO_UNDONE_DIR":                  undoneDir,
 		"IO_UNDONE_UNMATCHED":            "false",
 		"IO_PROXY_BIND_ADDR":             ":9999",
@@ -326,9 +327,9 @@ func TestEnvIOPrefix(t *testing.T) {
 		{"tasks", cfg.ConfigFile, tasks},
 		{"log", cfg.LogLevel, "debug"},
 		{"max", cfg.MaxConcurrentRequests, 4},
-		{"http", cfg.HTTPTimeoutSeconds, 33},
-		{"task timeout", cfg.TaskTimeoutSeconds, 600},
-		{"shutdown", cfg.ShutdownTimeoutSeconds, 20},
+		{"http", int(cfg.ImmichTimeout.Seconds()), 33},
+		{"task timeout", int(cfg.TasksTimeout.Seconds()), 600},
+		{"shutdown", int(cfg.ShutdownTimeout.Seconds()), 20},
 		{"undone", cfg.UndoneDir, undoneDir},
 		{"undone unmatched", cfg.UndoneUnmatched, false},
 		{"bind", cfg.BindAddr, ":9999"},
@@ -520,7 +521,7 @@ func TestDefaultBindAddr2283(t *testing.T) {
 	if cfg.BindAddr != ":2283" {
 		t.Fatalf("default bind addr = %q, want :2283", cfg.BindAddr)
 	}
-	if !cfg.UndoneUnmatched || cfg.TaskTimeoutSeconds != 0 || cfg.ShutdownTimeoutSeconds != 8 {
+	if !cfg.UndoneUnmatched || cfg.TasksTimeout != 0 || cfg.ShutdownTimeout != 8*time.Second {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -609,7 +610,7 @@ func TestUndoneInsideWatchRejected(t *testing.T) {
 
 func TestNegativeTaskTimeoutRejected(t *testing.T) {
 	clearConfigEnv(t)
-	for _, flagName := range []string{"-tasks_timeout_seconds", "-shutdown_timeout_seconds"} {
+	for _, flagName := range []string{"-tasks_timeout", "-shutdown_timeout"} {
 		_, _, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-immich_url", "http://immich.example", flagName, "-1"))
 		if err == nil {
 			t.Fatalf("%s=-1 should be rejected", flagName)
@@ -788,7 +789,7 @@ func TestLibraryModeConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.LibraryDryRun || cfg.LibraryLimit != 0 || cfg.LibraryReadyTimeoutSeconds != 600 {
+	if !cfg.LibraryDryRun || cfg.LibraryLimit != 0 || cfg.LibraryReadyTimeout != 10*time.Minute {
 		t.Errorf("library defaults: %+v", cfg)
 	}
 
@@ -951,5 +952,56 @@ func TestDocsLinksAndSettingNames(t *testing.T) {
 				t.Errorf("%s mentions %s, which is not a setting", f, name)
 			}
 		}
+	}
+}
+
+func TestDurationSettings(t *testing.T) {
+	base := []string{"-mode", "proxy", "-immich_url", "http://immich:2283", "-undone_dir", t.TempDir(), "-tasks_file", "../../config/lossless/tasks.yaml"}
+	lookup := osLookup
+	defer func() { osLookup = lookup }()
+	env := map[string]string{}
+	osLookup = func(k string) (string, bool) { v, ok := env[k]; return v, ok }
+	parse := func(args ...string) (*entity.AppConfig, error) {
+		for k := range env {
+			t.Setenv(k, env[k])
+		}
+		cfg, _, err := parseConfig(append(append([]string{}, base...), args...))
+		return cfg, err
+	}
+
+	// Go's duration format, on flags and in the environment; "0" is zero.
+	env["IO_TASKS_TIMEOUT"], env["IO_SHUTDOWN_TIMEOUT"] = "1h30m", "0"
+	cfg, err := parse("-immich_timeout", "45s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TasksTimeout != 90*time.Minute || cfg.ShutdownTimeout != 0 || cfg.ImmichTimeout != 45*time.Second || cfg.LibraryReadyTimeout != 10*time.Minute {
+		t.Errorf("durations = %v %v %v %v", cfg.TasksTimeout, cfg.ShutdownTimeout, cfg.ImmichTimeout, cfg.LibraryReadyTimeout)
+	}
+	// A flag wins over the environment.
+	if cfg, err = parse("-tasks_timeout", "5m"); err != nil || cfg.TasksTimeout != 5*time.Minute {
+		t.Errorf("flag did not win: %v %v", cfg, err)
+	}
+
+	// A bare number is not a duration.
+	if _, err := parse("-immich_timeout", "120"); err == nil {
+		t.Error("a bare number was accepted on a flag")
+	}
+	env["IO_TASKS_TIMEOUT"] = "600"
+	if _, err := parse(); err == nil || !strings.Contains(err.Error(), "IO_TASKS_TIMEOUT") {
+		t.Errorf("a bare number was accepted in the environment: %v", err)
+	}
+	delete(env, "IO_TASKS_TIMEOUT")
+	t.Setenv("IO_TASKS_TIMEOUT", "")
+
+	// The old names still mean whole seconds.
+	env["IUO_HTTP_TIMEOUT_SECONDS"] = "33"
+	if cfg, err = parse(); err != nil || cfg.ImmichTimeout != 33*time.Second {
+		t.Errorf("legacy env: %v %v", cfg, err)
+	}
+	delete(env, "IUO_HTTP_TIMEOUT_SECONDS")
+	t.Setenv("IUO_HTTP_TIMEOUT_SECONDS", "")
+	if cfg, err = parse("-http_timeout_seconds", "50"); err != nil || cfg.ImmichTimeout != 50*time.Second {
+		t.Errorf("legacy flag: %v %v", cfg, err)
 	}
 }

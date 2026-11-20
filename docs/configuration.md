@@ -18,7 +18,7 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 |---|---|---|---|
 | `IO_MODE` | `-mode` | `watcher` | What to run: `watcher`, `proxy`, `library`, or several separated by commas |
 | `IO_LOG_LEVEL` | `-log_level` | `info` | How much to log: `debug`, `info`, `warn` or `error` |
-| `IO_SHUTDOWN_TIMEOUT_SECONDS` | `-shutdown_timeout_seconds` | `8` | On shutdown, how long running jobs get to finish before they are cancelled. In seconds |
+| `IO_SHUTDOWN_TIMEOUT` | `-shutdown_timeout` | `8s` | On shutdown, how long running jobs get to finish before they are cancelled. A [duration](#durations) |
 
 ### Immich
 
@@ -27,7 +27,7 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 | `IO_IMMICH_URL` | `-immich_url` |  | Address of the Immich server, for example `http://immich-server:2283`. Required |
 | `IO_IMMICH_API_KEY` | `-immich_api_key` |  | Immich API key. Required in watcher and library mode; not used by proxy mode |
 | `IO_IMMICH_API_KEY_FILE` | `-immich_api_key_file` |  | File that contains the API key, for example a Docker secret. Wins over `immich_api_key` |
-| `IO_IMMICH_TIMEOUT_SECONDS` | `-immich_timeout_seconds` | `120` | Timeout for connecting to Immich, for an upload that stops making progress, and for Immich's answer after an upload. It does not limit how long an upload may take in total. In seconds |
+| `IO_IMMICH_TIMEOUT` | `-immich_timeout` | `2m` | How long to wait when connecting to Immich, for an upload that stops making progress, and for Immich's answer after an upload. It does not limit how long an upload may take in total. A [duration](#durations) |
 
 ### Tasks
 
@@ -35,7 +35,7 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 |---|---|---|---|
 | `IO_TASKS_FILE` | `-tasks_file` | `./tasks.yaml`, else `/etc/immich-optimizer/config/tasks.yaml` | The tasks file: which command converts which file type |
 | `IO_TASKS_CONCURRENCY` | `-tasks_concurrency` | `10` | How many files are converted at the same time, counted across all modes |
-| `IO_TASKS_TIMEOUT_SECONDS` | `-tasks_timeout_seconds` | `0` | Longest time one file may take to convert; `0` means no limit. In seconds |
+| `IO_TASKS_TIMEOUT` | `-tasks_timeout` | `0` | Longest time one file may take to convert; `0` means no limit. A [duration](#durations) |
 
 ### Undone folder and audit log
 
@@ -67,13 +67,17 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 | `IO_LIBRARY_DRY_RUN` | `-library_dry_run` | `true` | Only report what would be converted and change nothing |
 | `IO_LIBRARY_TAKEN_BEFORE` | `-library_taken_before` |  | Only convert assets dated before this day (`YYYY-MM-DD`) |
 | `IO_LIBRARY_LIMIT` | `-library_limit` | `0` | Stop after this many replacements; `0` means no limit |
-| `IO_LIBRARY_READY_TIMEOUT_SECONDS` | `-library_ready_timeout_seconds` | `600` | How long to wait for Immich to finish reading a converted asset. In seconds |
+| `IO_LIBRARY_READY_TIMEOUT` | `-library_ready_timeout` | `10m` | How long to wait for Immich to finish reading a converted asset. A [duration](#durations) |
 
 <!-- END SETTINGS -->
 
+## Durations
+
+Settings that hold a length of time take a number with a unit: `90s`, `15m`, `1h30m`. The units are `s`, `m` and `h` (also `ms`). A number without a unit is refused, except `0`.
+
 ## Old names
 
-These names from earlier versions and from `immich-upload-optimizer` still work. Each one in use is listed in a warning at startup; they will be removed in a future release. If both the old and the new name are set, the new one wins.
+These names from earlier versions and from `immich-upload-optimizer` still work. Each one in use is listed in a warning at startup; they will be removed in a future release. Old names of duration settings take whole seconds, as they always did. If both the old and the new name are set, the new one wins.
 
 <!-- BEGIN OLD NAMES: generated, do not edit -->
 
@@ -84,7 +88,7 @@ These names from earlier versions and from `immich-upload-optimizer` still work.
 | `IUO_IMMICH_URL`, `IUO_UPSTREAM`, `-upstream` | `IO_IMMICH_URL`, `-immich_url` |
 | `IUO_IMMICH_API_KEY` | `IO_IMMICH_API_KEY`, `-immich_api_key` |
 | `IUO_IMMICH_API_KEY_FILE` | `IO_IMMICH_API_KEY_FILE`, `-immich_api_key_file` |
-| `IUO_HTTP_TIMEOUT_SECONDS`, `-http_timeout_seconds` | `IO_IMMICH_TIMEOUT_SECONDS`, `-immich_timeout_seconds` |
+| `IUO_HTTP_TIMEOUT_SECONDS`, `-http_timeout_seconds` | `IO_IMMICH_TIMEOUT`, `-immich_timeout` |
 | `IUO_TASKS_FILE` | `IO_TASKS_FILE`, `-tasks_file` |
 | `IUO_MAX_CONCURRENT_REQUESTS`, `-max_concurrent_requests` | `IO_TASKS_CONCURRENCY`, `-tasks_concurrency` |
 | `IUO_WATCHER_UNDONE_DIR`, `IUO_UNDONE_DIR` | `IO_UNDONE_DIR`, `-undone_dir` |

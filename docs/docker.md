@@ -30,9 +30,9 @@ The container runs as user id `1001`, not root. Mounted folders must be writable
 
 ## Stopping and restarting
 
-On `SIGTERM` the optimizer stops taking new work and lets running jobs finish for [`IO_SHUTDOWN_TIMEOUT_SECONDS`](configuration.md#general). After that, running commands and everything they started are killed: proxy clients get `503` and retry, watcher files stay in the watch folder for the next start, and library mode undoes the asset it was working on.
+On `SIGTERM` the optimizer stops taking new work and lets running jobs finish for [`IO_SHUTDOWN_TIMEOUT`](configuration.md#general). After that, running commands and everything they started are killed: proxy clients get `503` and retry, watcher files stay in the watch folder for the next start, and library mode undoes the asset it was working on.
 
-The default of 8 seconds fits Docker's default 10 second stop timeout. If you convert videos, raise both, for example `stop_grace_period: 15m` with `IO_SHUTDOWN_TIMEOUT_SECONDS=880`.
+The default of 8 seconds fits Docker's default 10 second stop timeout. If you convert videos, raise both, for example `stop_grace_period: 15m` with `IO_SHUTDOWN_TIMEOUT=14m40s`.
 
 ## Custom image
 
