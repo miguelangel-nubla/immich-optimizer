@@ -395,9 +395,14 @@ func initTask(task *entity.Task) error {
 		task.Extensions[i] = utils.NormalizeExtension(ext)
 	}
 
-	tmpl, err := template.New("command").Parse(task.Command)
+	// An unknown placeholder is an error instead of the text "<no value>"
+	// ending up in the command.
+	tmpl, err := template.New("command").Option("missingkey=error").Parse(task.Command)
 	if err != nil {
 		return fmt.Errorf("task %s unable to parse command: %v", task.Name, err)
+	}
+	if strings.Contains(task.Command, ".folder}}") && !strings.Contains(task.Command, "_folder}}") {
+		return fmt.Errorf("task %s uses {{.folder}}, which immich-upload-optimizer provided: use {{.src_folder}} for the input and {{.dst_folder}} for the output", task.Name)
 	}
 
 	var cmdLine bytes.Buffer
@@ -449,6 +454,7 @@ func run(args []string) error {
 		MaxConcurrent: config.MaxConcurrentRequests,
 		TaskTimeout:   time.Duration(config.TaskTimeoutSeconds) * time.Second,
 		SaveUnmatched: config.UndoneUnmatched,
+		Version:       version,
 	}, processorAdapter, undoneStore, logger)
 
 	httpTimeout := time.Duration(config.HTTPTimeoutSeconds) * time.Second

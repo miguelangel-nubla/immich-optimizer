@@ -72,6 +72,11 @@ type fileProcessor struct {
 
 	// motionPhotos is the current task's motion photo setting.
 	motionPhotos string
+	// motionSplit is that setting when the input really was split for the
+	// current task, "" otherwise.
+	motionSplit string
+	// taskName is the task that succeeded.
+	taskName string
 }
 
 func (fp *fileProcessor) logf(str string, args ...any) {
@@ -109,7 +114,7 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 		start := time.Now()
 		attempt := entity.TaskAttempt{Task: task.Name, ExitCode: -1}
 
-		cmdTmpl, tmplErr := template.New("command").Parse(task.Command)
+		cmdTmpl, tmplErr := template.New("command").Option("missingkey=error").Parse(task.Command)
 		if tmplErr != nil {
 			attempt.Err = fmt.Sprintf("unable to parse command template: %v", tmplErr)
 			attempt.Duration = time.Since(start)
@@ -132,6 +137,7 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 		}
 		attempt.ExitCode = 0
 		attempts = append(attempts, attempt)
+		fp.taskName = task.Name
 		succeeded = true
 		break
 	}
@@ -199,12 +205,17 @@ func (fp *fileProcessor) run(ctx context.Context, commandTemplate *template.Temp
 	if err != nil {
 		return err
 	}
+	split := tempFile != nil
 	if tempFile == nil {
 		if tempFile, err = fp.copySourceFile(); err != nil {
 			return err
 		}
 	}
 	fp.motionPhotos = motionPhotos
+	fp.motionSplit = ""
+	if split {
+		fp.motionSplit = motionPhotos
+	}
 
 	command, err := fp.buildCommand(commandTemplate, tempFile)
 	if err != nil {
@@ -292,8 +303,10 @@ func (fp *fileProcessor) motionPhotoSource(setting string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to split motion photo: %w", err)
 	}
-	fp.logf("motion photo %s (%s): passing only the %s to the task (photo %s, video %s)",
-		fp.originalFilename, setting, what,
+	// No file name here: the processor only knows a temporary one. The
+	// engine's result line names the file and the setting.
+	fp.logf("motion photo (%s): passing only the %s to the task (photo %s, video %s)",
+		setting, what,
 		utils.HumanReadableSize(info.StillBytes), utils.HumanReadableSize(info.VideoBytes))
 	return tempFile, nil
 }
@@ -412,5 +425,7 @@ func (fp *fileProcessor) processResults() (*entity.ProcessResult, error) {
 		ProcessedFilename: processedFilename,
 		OriginalSize:      fp.originalSize,
 		ProcessedSize:     processedSize,
+		Task:              fp.taskName,
+		MotionPhotos:      fp.motionSplit,
 	}, nil
 }

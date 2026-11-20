@@ -1,45 +1,79 @@
+# Uploads every format Immich accepts without changing it.
+# The lists follow Immich's server/src/utils/mime-types.ts.
 tasks:
   - name: passthrough-images
     command: ""
     extensions:
-      # https://immich.app/docs/features/supported-formats/
       - avif
       - bmp
       - gif
+      - jfif
+      - jpeg
+      - jpg
+      - png
+      - webp
       - heic
       - heif
-      - webp
-      - jpg
-      - jpe
+      - hif
       - insp
+      - jp2
+      - jpe
       - jxl
-      - webp
-      - psd
-      - raw
-      - rw2
+      - mpo
       - svg
       - tif
       - tiff
-      - webp
+      - 3fr
+      - ari
+      - arw
+      - cap
+      - cin
+      - cr2
+      - cr3
+      - crw
+      - dcr
+      - dng
+      - erf
+      - fff
+      - iiq
+      - k25
+      - kdc
+      - mrw
+      - nef
+      - nrw
+      - orf
+      - ori
+      - pef
+      - psd
+      - raf
+      - raw
+      - rw2
+      - rwl
+      - sr2
+      - srf
+      - srw
+      - x3f
 
   - name: passthrough-videos
     command: ""
     extensions:
-      # https://immich.app/docs/features/supported-formats/
       - 3gp
       - 3gpp
       - avi
       - flv
+      - insv
+      - m2t
+      - m2ts
       - m4v
       - mkv
-      - mts
-      - m2ts
-      - m2t
+      - mov
       - mp4
-      - insv
-      - mpg
       - mpe
       - mpeg
-      - mov
+      - mpg
+      - mts
+      - mxf
+      - ts
+      - vob
       - webm
       - wmv

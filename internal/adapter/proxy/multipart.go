@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/immich"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 )
 
@@ -148,6 +149,7 @@ func (s *Server) runJob(ctx context.Context, j *job, spec jobSpec) jobResult {
 		s.logger.Errorf("Proxy job %s: upload to Immich failed: %v", j.id, res.err)
 	} else {
 		s.logger.Printf("Proxy job %s: Immich responded %d", j.id, res.status)
+		s.markDuplicate(ctx, j, spec, targets, res)
 	}
 	return res
 }
@@ -270,11 +272,48 @@ func extractPart(part *multipart.Part, idx int) (*targetPart, error) {
 	return t, nil
 }
 
+// markerOf returns the provenance marker of the request's converted file. A
+// request with several converted files gets none: one asset, one marker.
+func markerOf(targets []*targetPart) *entity.Marker {
+	var m *entity.Marker
+	for _, t := range targets {
+		if t.res != nil && t.res.Marker != nil {
+			if m != nil {
+				return nil
+			}
+			m = t.res.Marker
+		}
+	}
+	return m
+}
+
+// markDuplicate records the marker on the existing asset when Immich answered
+// "duplicate": in that case it ignored the metadata sent with the upload.
+func (s *Server) markDuplicate(ctx context.Context, j *job, spec jobSpec, targets []*targetPart, res jobResult) {
+	marker := markerOf(targets)
+	if marker == nil || res.status != http.StatusOK {
+		return
+	}
+	id := immich.DuplicateAssetID(res.body)
+	if id == "" {
+		return
+	}
+	err := immich.EnsureMarker(ctx, s.client, s.cfg.UpstreamURL.String(), immich.AuthHeaders(spec.header), id, marker)
+	if err != nil {
+		s.logger.Warnf("Proxy job %s: could not record the optimizer marker on existing asset %s: %v", j.id, id, err)
+	}
+}
+
+// maxMetadataField bounds the client's "metadata" form field that is parsed
+// to merge the marker into it.
+const maxMetadataField = 1 << 20
+
 func (s *Server) buildOutgoing(spoolPath, boundary string, targets []*targetPart) (string, string, error) {
 	byIndex := make(map[int]*targetPart, len(targets))
 	for _, t := range targets {
 		byIndex[t.index] = t
 	}
+	marker := markerOf(targets)
 
 	in, err := os.Open(spoolPath)
 	if err != nil {
@@ -312,8 +351,38 @@ func (s *Server) buildOutgoing(spoolPath, boundary string, targets []*targetPart
 		if err != nil {
 			return fail(fmt.Errorf("create multipart part: %w", err))
 		}
+		// The client's own asset metadata (e.g. the mobile app's item): add
+		// the marker to it. Immich rejects the same key twice, so the merge
+		// replaces any marker the client sent.
+		if marker != nil && part.FormName() == "metadata" && part.FileName() == "" {
+			raw, err := io.ReadAll(io.LimitReader(part, maxMetadataField+1))
+			if err != nil {
+				return fail(fmt.Errorf("%w: reading metadata field: %w", errBadRequest, err))
+			}
+			merged, mergeErr := marker.MergeIntoMetadata(strings.TrimSpace(string(raw)))
+			if len(raw) > maxMetadataField || mergeErr != nil {
+				// Not ours to fix: forward it untouched, without a marker.
+				s.logger.Warnf("Not adding the optimizer marker: client metadata field could not be merged (%v)", mergeErr)
+				if _, err := io.Copy(pw, io.MultiReader(bytes.NewReader(raw), part)); err != nil {
+					return fail(fmt.Errorf("copy multipart part: %w", err))
+				}
+			} else if _, err := io.WriteString(pw, merged); err != nil {
+				return fail(fmt.Errorf("write metadata field: %w", err))
+			}
+			marker = nil
+			continue
+		}
 		if _, err := io.Copy(pw, part); err != nil {
 			return fail(fmt.Errorf("copy multipart part: %w", err))
+		}
+	}
+	if marker != nil {
+		merged, err := marker.MergeIntoMetadata("")
+		if err != nil {
+			return fail(fmt.Errorf("encode marker: %w", err))
+		}
+		if err := mw.WriteField("metadata", merged); err != nil {
+			return fail(fmt.Errorf("write metadata field: %w", err))
 		}
 	}
 	if err := mw.Close(); err != nil {

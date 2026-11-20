@@ -67,11 +67,14 @@ type mockUploader struct {
 	failMap  map[string]error
 	uploaded []string
 	calls    int
+	last     entity.Upload
 }
 
-func (m *mockUploader) UploadAssetWithFilename(ctx context.Context, filePath, filename string) error {
+func (m *mockUploader) UploadAsset(ctx context.Context, u entity.Upload) error {
+	filename := u.Filename
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.last = u
 	m.calls++
 	if err, found := m.failMap[filename]; found {
 		return err

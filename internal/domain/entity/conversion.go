@@ -69,6 +69,9 @@ type ConvertResult struct {
 	OutputSize   int64
 	// Release removes temporary work files. Never nil; idempotent.
 	Release func()
+	// Marker is the provenance record to store with the asset. It is nil
+	// when the original itself is delivered (OutcomeUnchanged).
+	Marker *Marker
 }
 
 type FailureStage string

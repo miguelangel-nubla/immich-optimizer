@@ -730,3 +730,51 @@ func TestLoadTasksMotionPhotosPolicy(t *testing.T) {
 		}
 	}
 }
+
+// Every format Immich accepts (server/src/utils/mime-types.ts, v3.4.2) must
+// be handled by every bundled profile; an unmatched upload is rejected.
+func TestBundledProfilesCoverImmichFormats(t *testing.T) {
+	immich := strings.Fields(`
+		avif bmp gif jfif jpeg jpg png webp heic heif hif insp jp2 jpe jxl mpo svg tif tiff
+		3fr ari arw cap cin cr2 cr3 crw dcr dng erf fff iiq k25 kdc mrw nef nrw orf ori pef psd
+		raf raw rw2 rwl sr2 srf srw x3f
+		3gp 3gpp avi flv insv m2t m2ts m4v mkv mov mp4 mpe mpeg mpg mts mxf ts vob webm wmv`)
+	profiles, err := filepath.Glob("../../config/*/tasks.yaml")
+	if err != nil || len(profiles) < 4 {
+		t.Fatalf("bundled profiles not found: %v %v", profiles, err)
+	}
+	for _, p := range profiles {
+		cfg, err := loadTasks(p)
+		if err != nil {
+			t.Errorf("%s: %v", p, err)
+			continue
+		}
+		have := map[string]bool{}
+		for _, task := range cfg.Tasks {
+			for _, e := range task.Extensions {
+				have[e] = true
+			}
+		}
+		for _, e := range immich {
+			if !have[e] {
+				t.Errorf("%s: no task handles .%s", p, e)
+			}
+		}
+	}
+}
+
+func TestLoadTasksRejectsLegacyFolderPlaceholder(t *testing.T) {
+	for _, cmd := range []string{
+		`cjxl {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}.jxl`,
+		`cjxl {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.nmae}}.jxl`,
+	} {
+		p := filepath.Join(t.TempDir(), "tasks.yaml")
+		yaml := "tasks:\n  - name: t\n    command: '" + cmd + "'\n    extensions: [jpg]\n"
+		if err := os.WriteFile(p, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadTasks(p); err == nil {
+			t.Errorf("expected an error for command %q", cmd)
+		}
+	}
+}

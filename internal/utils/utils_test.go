@@ -64,3 +64,18 @@ func TestTrimSuffixCaseInsensitive(t *testing.T) {
 		}
 	}
 }
+
+func TestIsIgnoredFile(t *testing.T) {
+	ignored := []string{"/watch/.DS_Store", "/watch/._IMG_1.jpg", "/watch/a/.IMG_1.jpg.Xy12Ab", "/watch/Thumbs.db", "/watch/desktop.ini"}
+	kept := []string{"/watch/IMG_1.jpg", "/watch/a.b/IMG.2.heic", "/watch/thumbs.jpg"}
+	for _, p := range ignored {
+		if !IsIgnoredFile(p) {
+			t.Errorf("%s should be ignored", p)
+		}
+	}
+	for _, p := range kept {
+		if IsIgnoredFile(p) {
+			t.Errorf("%s should not be ignored", p)
+		}
+	}
+}

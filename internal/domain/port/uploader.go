@@ -1,7 +1,11 @@
 package port
 
-import "context"
+import (
+	"context"
+
+	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
+)
 
 type AssetUploader interface {
-	UploadAssetWithFilename(ctx context.Context, filePath, filename string) error
+	UploadAsset(ctx context.Context, u entity.Upload) error
 }

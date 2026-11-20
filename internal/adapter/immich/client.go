@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/httpclient"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/utils"
@@ -48,17 +49,21 @@ func (e *statusError) Error() string {
 	return fmt.Sprintf("upload failed with status %d: %s", e.statusCode, e.body)
 }
 
-func (c *client) UploadAssetWithFilename(ctx context.Context, filePath, filename string) error {
+func (c *client) UploadAsset(ctx context.Context, u entity.Upload) error {
+	filePath, filename := u.Path, u.Filename
 	stat, err := os.Stat(filePath)
 	if err != nil {
 		return fmt.Errorf("unable to get file info: %w", err)
+	}
+	if u.ModTime.IsZero() {
+		u.ModTime = stat.ModTime()
 	}
 
 	maxRetries := 3
 	backoff := 1 * time.Second
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		err = c.doUpload(ctx, filePath, filename, stat)
+		err = c.doUpload(ctx, u, stat)
 		if err == nil {
 			return nil
 		}
@@ -95,7 +100,16 @@ func (c *client) UploadAssetWithFilename(ctx context.Context, filePath, filename
 	return err
 }
 
-func (c *client) doUpload(ctx context.Context, filePath, filename string, stat os.FileInfo) error {
+func (c *client) doUpload(ctx context.Context, u entity.Upload, stat os.FileInfo) error {
+	filePath, filename := u.Path, u.Filename
+	metadata := ""
+	if u.Marker != nil {
+		var err error
+		if metadata, err = u.Marker.MergeIntoMetadata(""); err != nil {
+			return fmt.Errorf("unable to encode asset metadata: %w", err)
+		}
+	}
+
 	pr, pw := io.Pipe()
 	defer pr.Close()
 	writer := multipart.NewWriter(pw)
@@ -117,12 +131,12 @@ func (c *client) doUpload(ctx context.Context, filePath, filename string, stat o
 		defer file.Close()
 
 		// Add required fields
-		deviceAssetId := fmt.Sprintf("%s-%d", filename, stat.ModTime().Unix())
+		deviceAssetId := fmt.Sprintf("%s-%d", filename, u.ModTime.Unix())
 		deviceId := "immich-optimizer"
 
-		// Convert times to RFC3339 format
-		fileCreatedAt := stat.ModTime().Format("2006-01-02T15:04:05.000Z")
-		fileModifiedAt := stat.ModTime().Format("2006-01-02T15:04:05.000Z")
+		// The dates of the original file, in UTC as the "Z" suffix says.
+		fileCreatedAt := u.ModTime.UTC().Format("2006-01-02T15:04:05.000Z")
+		fileModifiedAt := fileCreatedAt
 
 		if copyErr = writer.WriteField("deviceAssetId", deviceAssetId); copyErr != nil {
 			return
@@ -135,6 +149,12 @@ func (c *client) doUpload(ctx context.Context, filePath, filename string, stat o
 		}
 		if copyErr = writer.WriteField("fileModifiedAt", fileModifiedAt); copyErr != nil {
 			return
+		}
+
+		if metadata != "" {
+			if copyErr = writer.WriteField("metadata", metadata); copyErr != nil {
+				return
+			}
 		}
 
 		var part io.Writer
@@ -172,6 +192,19 @@ func (c *client) doUpload(ctx context.Context, filePath, filename string, stat o
 			statusCode: resp.StatusCode,
 			body:       string(body),
 		}
+	}
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if id := DuplicateAssetID(body); id != "" {
+		c.logger.Printf("Immich already has %s (%s) as asset %s", filename, utils.HumanReadableSize(stat.Size()), id)
+		if u.Marker != nil {
+			auth := http.Header{"X-Api-Key": []string{c.APIKey}}
+			if err := EnsureMarker(ctx, c.httpClient, c.BaseURL, auth, id, u.Marker); err != nil {
+				// The file is safely in Immich; a missing marker is not a failed upload.
+				c.logger.Warnf("Could not record the optimizer marker on existing asset %s: %v", id, err)
+			}
+		}
+		return nil
 	}
 
 	c.logger.Printf("Successfully uploaded %s (%s)", filename, utils.HumanReadableSize(stat.Size()))

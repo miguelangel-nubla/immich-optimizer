@@ -6,7 +6,7 @@ motion_photos: drop_video
 
 tasks:
 - name: jpeg-xl
-  command: cjxl --lossless_jpeg=1 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
+  command: cjxl --lossless_jpeg=1 -d 0 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
   extensions:
   - jpeg
   - jpg
@@ -21,7 +21,7 @@ tasks:
   - exr
 
 - name: caesium
-  command: caesiumclt --keep-dates --exif --quality=0 --output="{{.dst_folder}}" "{{.src_folder}}/{{.name}}.{{.extension}}"
+  command: caesiumclt --keep-dates --exif --lossless --output="{{.dst_folder}}" "{{.src_folder}}/{{.name}}.{{.extension}}"
   extensions:
   - jpeg
   - jpg
@@ -69,3 +69,48 @@ tasks:
   - mov
   - webm
   - wmv
+
+# Every other image format Immich accepts (including camera RAW) is uploaded as it is.
+- name: passthrough-other-images
+  command: ""
+  extensions:
+  - jfif
+  - hif
+  - jp2
+  - jpe
+  - mpo
+  - 3fr
+  - ari
+  - arw
+  - cap
+  - cin
+  - cr2
+  - cr3
+  - crw
+  - dcr
+  - dng
+  - erf
+  - fff
+  - iiq
+  - k25
+  - kdc
+  - mrw
+  - nef
+  - nrw
+  - orf
+  - ori
+  - pef
+  - raf
+  - rwl
+  - sr2
+  - srf
+  - srw
+  - x3f
+
+# Every other video format Immich accepts is uploaded as it is.
+- name: passthrough-other-videos
+  command: ""
+  extensions:
+  - mxf
+  - ts
+  - vob

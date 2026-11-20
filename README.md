@@ -22,7 +22,7 @@ A file optimization service that automatically processes and uploads media files
 - **🚀 Multi-Architecture**: Native support for AMD64 and ARM64
 - **🔒 Secure**: Runs as non-root user with proper file permissions
 - **⚡ Performance**: Concurrent processing with configurable limits
-- **📊 Monitoring**: Built-in health checks and structured logging
+- **📊 Logging**: leveled logs for every file
 - **🐳 Docker Ready**: Production-ready container images
 
 > 💡 **Note on `immich-upload-optimizer` Deprecation**:
@@ -30,29 +30,108 @@ A file optimization service that automatically processes and uploads media files
 
 ## 🔄 Migrating from `immich-upload-optimizer`
 
-If you are migrating from `immich-upload-optimizer` to `immich-optimizer`, update your configuration as follows:
+`immich-optimizer` replaces `immich-upload-optimizer`. It is not a drop-in image swap: go through every point below.
 
-1. **Set Proxy Mode**:
-   Set `IO_MODE=proxy` (or CLI flag `-mode proxy`). The proxy listens on `:2283` by default, the same port as Immich and `immich-upload-optimizer`, so an existing `2283:2283` port mapping keeps working. It runs in its own container, so there is no clash with Immich; set `IO_PROXY_BIND_ADDR` only if you share a network namespace with Immich.
+**Before (immich-upload-optimizer)**
 
-2. **Update Custom `tasks.yaml` Templates**:
-   In `immich-optimizer`, input files and output files are cleanly isolated into separate directories:
-   - Replace `{{.folder}}` with `{{.src_folder}}` for the input file path.
-   - Replace `{{.folder}}` with `{{.dst_folder}}` for the output file path.
-   - Files with no matching task extension are blocked. Add an empty-command task for formats you want to pass through unchanged.
-   
-   *Example:*
+```yaml
+services:
+  immich-upload-optimizer:
+    image: ghcr.io/miguelangel-nubla/immich-upload-optimizer:latest
+    ports:
+      - "2283:2283"
+    environment:
+      - IUO_UPSTREAM=http://immich-server:2283
+    volumes:
+      - ./config:/etc/immich-upload-optimizer/config   # only if you use your own tasks
+    depends_on:
+      - immich-server
+```
+
+**After (immich-optimizer)**
+
+```yaml
+services:
+  immich-optimizer:
+    image: ghcr.io/miguelangel-nubla/immich-optimizer:latest
+    ports:
+      - "2283:2283"
+    environment:
+      - IO_MODE=proxy
+      - IO_IMMICH_URL=http://immich-server:2283
+    volumes:
+      - ./undone:/undone                               # failed uploads are kept here
+      - ./config:/etc/immich-optimizer/config          # only if you use your own tasks
+    depends_on:
+      - immich-server
+    restart: always
+```
+
+What changed:
+
+1. **Image name**: `ghcr.io/miguelangel-nubla/immich-optimizer`.
+2. **Mode**: set `IO_MODE=proxy`. Without it the optimizer starts in watcher mode and asks for an API key. Proxy mode needs no API key: it forwards each client's own credentials.
+3. **Environment variables**: `IUO_UPSTREAM` becomes `IO_IMMICH_URL` and `IUO_LISTEN` becomes `IO_PROXY_BIND_ADDR`. The old names still work for now and print a warning at startup. See [the rename table](#-migrating-environment-variable-rename).
+4. **Port**: unchanged. The proxy listens on `:2283`, so a `2283:2283` mapping keeps working.
+5. **Config folder**: mount your tasks at `/etc/immich-optimizer/config` (was `/etc/immich-upload-optimizer/config`). A mount left at the old path is ignored without any error and the default lossless profile runs instead.
+6. **Undone folder**: mount `/undone`. When a conversion fails, or no task matches, the client still gets an error and nothing is uploaded, and the original is now saved there. See [Failed files](#-failed-files-undone-folder).
+7. **Container user**: the container runs as user id `1001`, not root. Mounted task scripts must be readable and executable by it, and the undone folder must be writable. For GPU devices such as `/dev/dri`, add the device's group with `group_add`.
+8. **Custom `tasks.yaml`**: the input and the output now live in separate folders.
+   - Replace `{{.folder}}` with `{{.src_folder}}` for the input and `{{.dst_folder}}` for the output. A task that still uses `{{.folder}}` stops the optimizer at startup with a message saying so.
+   - A command must leave **exactly one file** in `{{.dst_folder}}`. Tools that used to rewrite the file in place must now write there, and scripts that skip a file must copy it there.
+   - Remove `-new` suffixes and trailing `rm` commands that only existed to work in a single folder.
+
    ```yaml
-   # ❌ Old syntax (immich-upload-optimizer):
+   # Old (immich-upload-optimizer):
    command: cjxl --lossless_jpeg=1 {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}.jxl
 
-   # ✅ New syntax (immich-optimizer):
-   command: cjxl --lossless_jpeg=1 {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.name}}.jxl
+   # New (immich-optimizer):
+   command: cjxl --lossless_jpeg=1 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
    ```
+9. **Motion photos**: the bundled profiles now keep the photo and drop the embedded video. See [Motion photos](#-motion-photos) to change that.
+10. **Long conversions**: a conversion is no longer cut off when the client disconnects or a timeout passes. It finishes and the file is uploaded.
+11. **Error codes**: an unmatched file type answers `415` and a failed conversion answers `502` (both were `500`).
+12. **GPU**: the standard image has no hardware acceleration. Build a [custom image](#-custom-image-gpu-acceleration-ffmpeg-etc) if you used it.
 
-3. **Environment Variable Changes**: see [Migrating: environment variable rename](#-migrating-environment-variable-rename). In short, `IUO_UPSTREAM` / `-upstream` becomes `IO_IMMICH_URL` / `-immich_url`, and `IUO_LISTEN` / `-listen` becomes `IO_PROXY_BIND_ADDR` / `-bind_addr`. The old names keep working for now, with a startup warning.
+If Immich sits behind your own reverse proxy (nginx, Traefik, Caddy), point that proxy at the optimizer, and the optimizer at Immich.
 
-4. **Failed uploads are kept**: when a conversion fails (or no task matches), the client still gets an error and nothing is uploaded, but the original is now also saved to the undone folder. Mount `/undone` in proxy mode too.
+## ⚠️ Proxy mode limitations
+
+Read this before putting the proxy in front of the official Immich mobile app.
+
+- **The mobile app re-uploads converted files.** The app decides that a photo is backed up by comparing the checksum of the file on the phone with the checksums on the server. A converted file has a different checksum, so the app never sees its photo as backed up and uploads it again on every backup run. Each upload is converted again and Immich answers "duplicate", so no second copy is stored when the conversion gives the same bytes every time, but the phone keeps sending the data and the app keeps showing the photo as not backed up.
+- **Lossy and video tasks can create real duplicates** if the encoder does not produce identical bytes for the same input.
+- **This cannot be fixed inside the proxy alone**: Immich offers no way to store a different checksum for an asset.
+
+What works well today:
+
+- **Proxy mode for the web interface, `immich-go` and the Immich CLI.** These upload a file once.
+- **Watcher mode for phones**: sync the phone's camera folder to the watch folder with a one-way sync tool (Syncthing send-only, FolderSync upload-only), and deselect every album in the app's backup settings. The app is then a viewer only.
+
+Every converted asset carries a [provenance marker](#-provenance-marker) with the checksum of its original, so a later fix can recognise assets that are already uploaded.
+
+## 🏷️ Provenance marker
+
+For every file it converts, the optimizer stores a small record in Immich's asset metadata under the key `immich-optimizer`:
+
+```json
+{"v": 1, "sha1": "86e66ce4…", "size": 37993, "task": "jpeg-xl", "source": "proxy", "optimizer": "v0.3.0"}
+```
+
+| Field | Meaning |
+|---|---|
+| `sha1` | SHA-1 of the original file, the checksum Immich would have stored for it |
+| `size` | size of the original in bytes |
+| `task` | the task that produced the uploaded file |
+| `source` | `proxy` or `watcher` |
+| `motion_photos` | `drop_video` or `drop_photo`, only when the original was a motion photo that was split |
+| `optimizer` | the optimizer version |
+
+- It is written with the upload itself, next to any metadata the client sent (the mobile app's own item is kept).
+- Files uploaded unchanged get no marker.
+- When Immich answers "duplicate", the marker is added to the existing asset if it has none.
+- The optimizer keeps no database: this record inside Immich is the only state.
+- Read it with `GET /api/assets/<id>/metadata`.
 
 ## 🔁 Migrating: environment variable rename
 
@@ -260,6 +339,12 @@ Watcher Mode Options:
 
 The deprecated `-upstream` and `-listen` flags are still accepted (hidden from `-help`) and map to `-immich_url` and `-bind_addr`.
 
+## 📁 Watcher mode notes
+
+- **Dates**: the asset's file dates sent to Immich are those of the original file in the watch folder, not of the converted output. Photos without a date in their metadata land on the right day as long as the sync tool preserved the file's modification time.
+- **Ignored files**: hidden files and folders (names starting with a dot, which covers the in-progress files of rsync and Syncthing, `.DS_Store` and macOS `._*` files), `Thumbs.db`, `desktop.ini` and common temporary extensions (`.tmp`, `.part`, `.crdownload`...) are left where they are. They are neither uploaded nor moved to undone.
+- **After a successful upload the source file is deleted** from the watch folder. Use a one-way sync into it.
+
 ## 🛟 Failed files (undone folder)
 
 The undone folder belongs to the conversion engine, so it works the same for every source (watcher, proxy, and future ones). **The original is never uploaded when conversion fails.** Instead it is saved to `IO_UNDONE_DIR` together with a `metadata.json` explaining why.
@@ -331,7 +416,7 @@ tasks:
 - When several tasks match a file, each one gets its input prepared by its own setting.
 - With `drop_video` the motion flag is also switched off in the photo's metadata, so Immich does not look for a video that is gone.
 - With `drop_photo` the input is `{{.name}}.mp4`, so `{{.extension}}` is `mp4` in the command.
-- The log says what was passed: `motion photo IMG_1234.jpg (drop_video): passing only the photo to the task (photo 3.1 MB, video 2.1 MB)`.
+- The log says what happened: `Optimized IMG_1234.jpg (proxy, motion photo: drop_video): 5.2 MB -> 1.9 MB`.
 - If all tasks fail, the **untouched original, video included**, is saved to the undone folder.
 
 Things to know:
@@ -414,7 +499,7 @@ Available in task commands:
 **Connection Refused**
 ```bash
 # Check Immich URL and network connectivity
-curl -I http://your-immich-instance:2283/api/server-info
+curl http://your-immich-instance:2283/api/server/ping
 ```
 
 **Permission Denied**
@@ -467,4 +552,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 - 🐛 [Report Issues](https://github.com/miguelangel-nubla/immich-optimizer/issues)
-- 📖 [Documentation](https://github.com/miguelangel-nubla/immich-optimizer/wiki)

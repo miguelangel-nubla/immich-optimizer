@@ -34,3 +34,19 @@ func IsUndoneArtifact(filePath string) bool {
 	}
 	return strings.HasPrefix(base, UndoneTempPrefix)
 }
+
+// IsIgnoredFile reports whether the watcher must leave path alone: hidden
+// files (which covers the in-progress files of rsync and other sync tools,
+// and macOS resource forks) and operating-system clutter. Such files are
+// neither converted nor moved to undone.
+func IsIgnoredFile(filePath string) bool {
+	base := filepath.Base(filePath)
+	if strings.HasPrefix(base, ".") {
+		return true
+	}
+	switch strings.ToLower(base) {
+	case "thumbs.db", "desktop.ini", "ehthumbs.db":
+		return true
+	}
+	return false
+}

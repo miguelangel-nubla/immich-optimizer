@@ -6,9 +6,14 @@ package convert
 
 import (
 	"context"
+	"crypto/sha1" // #nosec G505 -- content identity matching Immich, not security
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +32,8 @@ type Config struct {
 	TaskTimeout time.Duration
 	// SaveUnmatched saves files with no matching task to undone.
 	SaveUnmatched bool
+	// Version is the optimizer version recorded in provenance markers.
+	Version string
 }
 
 type Engine struct {
@@ -155,7 +162,25 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 			OutputSize:   res.ProcessedSize,
 			Release:      release,
 		}
-		e.infof("Optimized %s (%s): %s -> %s", in.Filename, in.Source,
+		sum, err := originalSHA1(in)
+		if err != nil {
+			release()
+			return nil, e.fail(in, entity.Failure{Stage: entity.StageConvert, Err: fmt.Errorf("hashing the original: %w", err), At: e.now()}, true)
+		}
+		r.Marker = &entity.Marker{
+			V:            1,
+			SHA1:         sum,
+			Size:         res.OriginalSize,
+			Task:         res.Task,
+			Source:       string(in.Source),
+			MotionPhotos: res.MotionPhotos,
+			Optimizer:    e.cfg.Version,
+		}
+		note := ""
+		if res.MotionPhotos != "" {
+			note = ", motion photo: " + res.MotionPhotos
+		}
+		e.infof("Optimized %s (%s%s): %s -> %s", in.Filename, in.Source, note,
 			utils.HumanReadableSize(r.OriginalSize), utils.HumanReadableSize(r.OutputSize))
 		return r, nil
 	}
@@ -173,6 +198,26 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 		OutputSize:   res.OriginalSize,
 		Release:      func() {},
 	}, nil
+}
+
+// originalSHA1 returns the lowercase hex SHA-1 of the input, the checksum
+// Immich would store for it. Sources that already hashed the file pass it in.
+func originalSHA1(in entity.ConvertInput) (string, error) {
+	if len(in.SHA1) == sha1.Size*2 {
+		if _, err := hex.DecodeString(in.SHA1); err == nil {
+			return strings.ToLower(in.SHA1), nil
+		}
+	}
+	f, err := os.Open(in.Path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha1.New() // #nosec G401 -- content identity matching Immich, not security
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // SaveUndone records a failure that happened after conversion.

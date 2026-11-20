@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
@@ -126,8 +127,14 @@ func (s *Service) handleEvent(ctx context.Context, event entity.FileEvent) {
 	}
 	defer s.processing.Delete(path)
 
-	if utils.IsTempFile(path) || utils.IsUndoneArtifact(path) {
+	if utils.IsTempFile(path) || utils.IsUndoneArtifact(path) || utils.IsIgnoredFile(path) {
 		return
+	}
+	// Also skip everything inside hidden folders (.stfolder, .thumbnails...).
+	for _, dir := range strings.Split(filepath.ToSlash(s.relDir(path)), "/") {
+		if strings.HasPrefix(dir, ".") {
+			return
+		}
 	}
 
 	// Files still queued when shutdown starts are left in the watch directory
@@ -181,7 +188,15 @@ func (s *Service) handleEvent(ctx context.Context, event entity.FileEvent) {
 	}
 	defer res.Release()
 
-	if err := s.uploader.UploadAssetWithFilename(ctx, res.DeliverPath, res.DeliverName); err != nil {
+	upload := entity.Upload{
+		Path:     res.DeliverPath,
+		Filename: res.DeliverName,
+		// The asset's dates come from the original file, not from the
+		// freshly written conversion output.
+		ModTime: info.ModTime(),
+		Marker:  res.Marker,
+	}
+	if err := s.uploader.UploadAsset(ctx, upload); err != nil {
 		if ctx.Err() != nil {
 			s.logger.Printf("Upload of %s canceled; it stays in the watch directory: %v", path, err)
 			return
