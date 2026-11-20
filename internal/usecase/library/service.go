@@ -47,6 +47,9 @@ type Config struct {
 	// TakenBefore, when set, restricts the run to assets whose file date is
 	// older.
 	TakenBefore time.Time
+	// OlderThan, when set, restricts the run to assets whose file date is at
+	// least this long ago, counted from the start of the run.
+	OlderThan time.Duration
 	// ReadyTimeout is how long to wait for Immich to finish reading a newly
 	// uploaded asset before giving up on it.
 	ReadyTimeout time.Duration
@@ -84,14 +87,19 @@ type tally struct {
 
 // Summary counts what a run did.
 type Summary struct {
-	Seen         int   `json:"seen"`
-	Replaced     int   `json:"replaced"`
-	WouldReplace int   `json:"would_replace,omitempty"`
-	Kept         int   `json:"kept"`
-	Skipped      int   `json:"skipped"`
-	Failed       int   `json:"failed"`
-	Finalized    int   `json:"finalized,omitempty"`
-	RolledBack   int   `json:"rolled_back,omitempty"`
+	Seen         int `json:"seen"`
+	Replaced     int `json:"replaced"`
+	WouldReplace int `json:"would_replace,omitempty"`
+	Kept         int `json:"kept"`
+	Skipped      int `json:"skipped"`
+	Failed       int `json:"failed"`
+	Finalized    int `json:"finalized,omitempty"`
+	RolledBack   int `json:"rolled_back,omitempty"`
+	// SecondCopies are originals that were uploaded again after their
+	// conversion and were moved to the trash; WouldTrash counts them in a
+	// dry run.
+	SecondCopies int   `json:"second_copies,omitempty"`
+	WouldTrash   int   `json:"would_trash,omitempty"`
 	BytesBefore  int64 `json:"bytes_before"`
 	BytesAfter   int64 `json:"bytes_after"`
 }
@@ -136,6 +144,8 @@ func (sum *Summary) add(o Summary) {
 	sum.Failed += o.Failed
 	sum.Finalized += o.Finalized
 	sum.RolledBack += o.RolledBack
+	sum.SecondCopies += o.SecondCopies
+	sum.WouldTrash += o.WouldTrash
 	sum.BytesBefore += o.BytesBefore
 	sum.BytesAfter += o.BytesAfter
 }
@@ -154,7 +164,12 @@ func New(cfg Config, api port.LibraryAPI, conv port.CheckingConverter, journal *
 }
 
 // errSkip is returned for assets library mode leaves alone on purpose.
-type errSkip struct{ reason string }
+type errSkip struct {
+	reason string
+	// converted is the marker of an asset that is skipped because it is a
+	// finished conversion.
+	converted *entity.Marker
+}
 
 func (e *errSkip) Error() string { return e.reason }
 
@@ -279,9 +294,19 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	}
 	var candidates []candidate
 	var pendings []pendingCopy
+	// convertedFrom maps the checksum of an original to the asset it was
+	// converted into, from the markers read in this pass. Nothing is stored:
+	// it is built again on every run.
+	convertedFrom := map[string]string{}
 	s.forEach(len(assets), stopped, func(i int) {
 		a := assets[i]
 		meta, m, err := s.classify(ctx, me, a)
+		var sk *errSkip
+		if errors.As(err, &sk) && sk.converted != nil && !sk.converted.Kept && sk.converted.SHA1 != "" {
+			mu.Lock()
+			convertedFrom[strings.ToLower(sk.converted.SHA1)] = a.ID
+			mu.Unlock()
+		}
 		if err == nil {
 			// Decided later, in step 2 or 3: only count it as seen here.
 			mu.Lock()
@@ -307,7 +332,36 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 		outcome(p.asset, t, s.resumePending(ctx, p.asset, p.marker, t))
 	}
 
-	// 3. Convert. The limit counts replacements that are done or under way.
+	// 3. An unconverted asset with the checksum of an original that is
+	// already converted is a second copy of it: a phone uploads its photo
+	// again once the original has left Immich's trash. It is not converted a
+	// second time (Immich would refuse the identical result); it goes to the
+	// trash. Everything else that is too new is left for a later run.
+	notBefore := s.cfg.TakenBefore
+	if s.cfg.OlderThan > 0 {
+		if limit := started.Add(-s.cfg.OlderThan); notBefore.IsZero() || limit.Before(notBefore) {
+			notBefore = limit
+		}
+	}
+	rest := candidates[:0]
+	for _, c := range candidates {
+		if stopped() {
+			break
+		}
+		convertedID, second := convertedFrom[strings.ToLower(c.asset.Checksum)]
+		switch {
+		case second && c.asset.Checksum != "":
+			t := &tally{}
+			outcome(c.asset, t, s.secondCopy(ctx, c.asset, convertedID, t))
+		case !notBefore.IsZero() && !c.asset.FileCreatedAt.Before(notBefore):
+			outcome(c.asset, &tally{}, skip("it is newer than the configured date or age"))
+		default:
+			rest = append(rest, c)
+		}
+	}
+	candidates = rest
+
+	// 4. Convert. The limit counts replacements that are done or under way.
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].asset.FileCreatedAt.Before(candidates[j].asset.FileCreatedAt)
 	})
@@ -343,7 +397,7 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 		mu.Unlock()
 		outcome(c.asset, t, err)
 	})
-	// 4. A dry run converts a sample, without uploading anything, to say
+	// 5. A dry run converts a sample, without uploading anything, to say
 	// what a real run would save.
 	var estimate *Estimate
 	if s.cfg.DryRun && s.cfg.Sample > 0 && !stopped() {
@@ -357,8 +411,8 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	if err := s.record(Entry{Event: "run_finished", Summary: &sum}); err != nil {
 		return sum, err
 	}
-	s.infof("Library: run finished: %d seen, %d replaced, %d would be replaced, %d kept, %d skipped, %d failed (%d -> %d bytes)",
-		sum.Seen, sum.Replaced, sum.WouldReplace, sum.Kept, sum.Skipped, sum.Failed, sum.BytesBefore, sum.BytesAfter)
+	s.infof("Library: run finished: %d seen, %d replaced, %d would be replaced, %d kept, %d second copies trashed, %d skipped, %d failed (%d -> %d bytes)",
+		sum.Seen, sum.Replaced, sum.WouldReplace, sum.Kept, sum.SecondCopies, sum.Skipped, sum.Failed, sum.BytesBefore, sum.BytesAfter)
 	return sum, ctx.Err()
 }
 
@@ -432,15 +486,101 @@ func (s *Service) classify(ctx context.Context, me string, listed entity.Library
 		if m.State == entity.MarkerStatePending {
 			return nil, m, nil
 		}
-		return nil, nil, skip("it was already handled by the optimizer")
-	}
-	if !s.cfg.TakenBefore.IsZero() && !listed.FileCreatedAt.Before(s.cfg.TakenBefore) {
-		return nil, nil, skip("it is newer than the configured date")
+		return nil, nil, &errSkip{reason: "it was already handled by the optimizer", converted: m}
 	}
 	if ok, reason := s.conv.Converts(listed.OriginalFileName); !ok {
 		return nil, nil, skip("%s", reason)
 	}
 	return items, nil, nil
+}
+
+// secondCopy handles an unconverted asset whose file is the original of an
+// asset that is already converted. It is moved to the trash, unless it has
+// something the converted asset lacks: then it is left for the user.
+func (s *Service) secondCopy(ctx context.Context, listed entity.LibraryAsset, convertedID string, t *tally) error {
+	t.item.NewID = convertedID
+	old, err := s.api.GetAsset(ctx, listed.ID)
+	if err != nil {
+		return fmt.Errorf("reading asset: %w", err)
+	}
+	if old.IsTrashed {
+		return skip("it is in the trash")
+	}
+	// Both are read again: the listing is from the start of the run.
+	conv, err := s.api.GetAsset(ctx, convertedID)
+	if err != nil {
+		return fmt.Errorf("reading the converted asset %s: %w", convertedID, err)
+	}
+	convItems, err := s.api.GetMetadata(ctx, convertedID)
+	if err != nil {
+		return fmt.Errorf("reading the metadata of the converted asset %s: %w", convertedID, err)
+	}
+	m := markerOf(convItems)
+	if conv.IsTrashed || m == nil || m.State == entity.MarkerStatePending || m.Kept ||
+		old.Checksum == "" || !strings.EqualFold(m.SHA1, old.Checksum) {
+		return skip("it looked like a second copy of the converted asset %s, which has changed since; a later run decides", convertedID)
+	}
+	t.item.NewFile, t.item.NewSize = conv.OriginalFileName, conv.Size
+
+	var extra []string
+	if old.IsFavorite && !conv.IsFavorite {
+		extra = append(extra, "it is a favorite")
+	}
+	if old.StackID != "" && old.StackID != conv.StackID {
+		extra = append(extra, "it is in a stack")
+	}
+	if old.Visibility != conv.Visibility {
+		extra = append(extra, fmt.Sprintf("its visibility is %q", old.Visibility))
+	}
+	if old.Description != "" && old.Description != conv.Description {
+		extra = append(extra, "it has a description")
+	}
+	if old.Rating != nil && !sameFloat(old.Rating, conv.Rating) {
+		extra = append(extra, "it has a rating")
+	}
+	if len(minus(old.TagIDs, conv.TagIDs)) > 0 {
+		extra = append(extra, "it has tags")
+	}
+	if old.IsEdited {
+		extra = append(extra, "it has edits")
+	}
+	oldAlbums, err := s.api.Albums(ctx, old.ID)
+	if err != nil {
+		return fmt.Errorf("listing its albums: %w", err)
+	}
+	convAlbums, err := s.api.Albums(ctx, conv.ID)
+	if err != nil {
+		return fmt.Errorf("listing the albums of the converted asset: %w", err)
+	}
+	if len(minus(albumIDs(oldAlbums), albumIDs(convAlbums))) > 0 {
+		extra = append(extra, "it is in albums")
+	}
+	links, err := s.api.SharedLinkIDs(ctx, old.ID)
+	if err != nil {
+		return fmt.Errorf("listing its shared links: %w", err)
+	}
+	if len(links) > 0 {
+		extra = append(extra, "it is in shared links")
+	}
+	if len(extra) > 0 {
+		return skip("it is a second copy of the converted asset %s, but %s that the converted one lacks: merge them by hand", convertedID, strings.Join(extra, ", "))
+	}
+
+	t.item.Size = old.Size
+	t.item.Reason = "a second copy of an original that is already converted"
+	if s.cfg.DryRun {
+		t.WouldTrash++
+		t.item.Status = statusWouldTrash
+		s.infof("Library (dry run): would move %s (%s) to the trash: its conversion %s is already there", old.OriginalFileName, old.ID, convertedID)
+		return s.record(Entry{Event: "would_trash_second_copy", Asset: old.ID, File: old.OriginalFileName, NewAsset: convertedID, OriginalBytes: old.Size, OriginalSHA1: old.Checksum})
+	}
+	if err := s.api.Trash(ctx, []string{old.ID}); err != nil {
+		return fmt.Errorf("moving it to the trash: %w", err)
+	}
+	t.SecondCopies++
+	t.item.Status = statusSecondCopy
+	s.infof("Library: moved %s (%s) to the trash: its conversion %s is already there", old.OriginalFileName, old.ID, convertedID)
+	return s.record(Entry{Event: "second_copy_trashed", Asset: old.ID, File: old.OriginalFileName, NewAsset: convertedID, OriginalBytes: old.Size, OriginalSHA1: old.Checksum})
 }
 
 // work reads a candidate in full and replaces it (or, in a dry run, reports

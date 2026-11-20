@@ -47,8 +47,8 @@ tr.pick:hover td { background: var(--chip); }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
-.s-would_convert, .s-finalized { background: var(--info-bg); color: var(--info); }
-.s-replaced, .r-smaller { background: var(--ok-bg); color: var(--ok); }
+.s-would_convert, .s-would_trash, .s-finalized { background: var(--info-bg); color: var(--info); }
+.s-replaced, .s-second_copy, .r-smaller { background: var(--ok-bg); color: var(--ok); }
 .s-kept, .r-not_smaller { background: var(--warn-bg); color: var(--warn); }
 .s-skipped, .s-rolled_back { background: var(--idle-bg); color: var(--idle); }
 .s-failed, .r-failed { background: var(--bad-bg); color: var(--bad); }
@@ -135,7 +135,8 @@ footer { margin-top: 36px; color: var(--muted); font-size: 13px; }
   var R = window.REPORT, items = R.items || [];
   var LABEL = {
     would_convert: "Would convert", replaced: "Replaced", kept: "Kept", skipped: "Skipped",
-    failed: "Failed", finalized: "Completed", rolled_back: "Undone"
+    failed: "Failed", finalized: "Completed", rolled_back: "Undone",
+    second_copy: "Second copy trashed", would_trash: "Would trash second copy"
   };
   var SAMPLE = { smaller: "Smaller", not_smaller: "Not smaller", failed: "Failed" };
   var PAGE = 100;
@@ -191,6 +192,8 @@ footer { margin-top: 36px; color: var(--muted); font-size: 13px; }
   if (R.dry_run) tiles.push(tile(s.would_replace || 0, "would be converted"));
   else tiles.push(tile(s.replaced, "replaced"));
   tiles.push(tile(s.kept, "kept as they are"), tile(s.skipped, "skipped"), tile(s.failed, "failed"));
+  if (s.second_copies) tiles.push(tile(s.second_copies, "second copies trashed"));
+  if (s.would_trash) tiles.push(tile(s.would_trash, "second copies would be trashed"));
   if (R.dry_run) tiles.push(tile(bytes(s.bytes_before), "size of candidates"));
   else if (s.replaced) tiles.push(tile(bytes(s.bytes_before - s.bytes_after), "saved (" + pct(s.bytes_before, s.bytes_after) + ")"));
   tiles.forEach(function (t) { $("tiles").appendChild(t); });

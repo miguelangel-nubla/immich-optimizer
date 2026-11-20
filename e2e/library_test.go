@@ -627,3 +627,91 @@ func TestLibraryDryRunReport(t *testing.T) {
 		t.Errorf("real run report: dry_run=%v replaced=%d", data["dry_run"], replaced)
 	}
 }
+
+// A phone uploads its photo again once the original has left Immich's trash.
+// Library mode must recognise that file as a second copy of something it has
+// already converted, and must keep doing so on a schedule.
+func TestLibrarySecondCopiesAndSchedule(t *testing.T) {
+	u := newUser(t)
+	first := u.add(t, "plain.jpg", map[string]string{"fileCreatedAt": "2015-01-01T10:00:00.000Z"})
+	second := u.add(t, "photo.jpg", nil)
+
+	logDir := sharedDir(t)
+	code, out, log := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	if code != 0 {
+		t.Fatalf("library run exited %d:\n%s", code, out)
+	}
+	convFirst, convSecond := replacedBy(log, first.ID), replacedBy(log, second.ID)
+	if convFirst == "" || convSecond == "" {
+		t.Fatalf("the photos were not converted:\n%s", out)
+	}
+
+	// The trash is emptied, and the originals arrive again, straight from a
+	// phone. One of them is made a favorite in the meantime.
+	must(t, u.key, http.MethodDelete, "/assets", map[string]any{"ids": []string{first.ID, second.ID}, "force": true}, nil)
+	eventually(t, time.Minute, "Immich to delete the originals", func() bool {
+		return call(t, u.key, http.MethodGet, "/assets/"+first.ID, nil, nil) >= 400 &&
+			call(t, u.key, http.MethodGet, "/assets/"+second.ID, nil, nil) >= 400
+	})
+	again := u.add(t, "plain.jpg", map[string]string{"fileCreatedAt": "2015-01-01T10:00:00.000Z"})
+	favorite := u.add(t, "photo.jpg", nil)
+	must(t, u.key, http.MethodPut, "/assets/"+favorite.ID, map[string]any{"isFavorite": true}, nil)
+	if again.ID == first.ID || again.Checksum != first.Checksum {
+		t.Fatalf("the second upload is not a new asset with the same file: %+v", again)
+	}
+
+	// A dry run says what it would do and does nothing.
+	code, out, log = runLibrary(t, u, logDir, nil)
+	if code != 0 || u.asset(t, again.ID).IsTrashed {
+		t.Fatalf("dry run (exit %d) trashed something:\n%s", code, out)
+	}
+	if !contains(events(log, again.ID), "would_trash_second_copy") {
+		t.Errorf("the dry run did not report the second copy: %v", events(log, again.ID))
+	}
+
+	// A real run, limited to old photos: the second copy goes to the trash
+	// whatever the limit, without being converted again.
+	code, out, log = runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_LIBRARY_OLDER_THAN": "1h"})
+	if code != 0 {
+		t.Fatalf("library run exited %d:\n%s", code, out)
+	}
+	if !u.asset(t, again.ID).IsTrashed {
+		t.Fatalf("the second copy is still in the timeline:\n%s", out)
+	}
+	trashed := false
+	for _, e := range log {
+		if e["event"] == "second_copy_trashed" && e["asset"] == again.ID {
+			trashed = e["new_asset"] == convFirst
+		}
+	}
+	if !trashed {
+		t.Errorf("the audit log does not say which conversion the second copy belongs to: %v", events(log, again.ID))
+	}
+	// The one with something of its own is left for the user, and the
+	// conversions are untouched.
+	if u.asset(t, favorite.ID).IsTrashed {
+		t.Error("a second copy that is a favorite was trashed, although its conversion is not one")
+	}
+	for _, id := range []string{convFirst, convSecond} {
+		if a := u.asset(t, id); a.IsTrashed || a.OriginalMimeType != "image/jxl" {
+			t.Errorf("the conversion %s was touched: %+v", id, a)
+		}
+	}
+	if live := u.live(t); len(live) != 3 {
+		t.Errorf("%d assets in the timeline, want the two conversions and the favorite", len(live))
+	}
+
+	// With an interval it does not exit: it runs again and again.
+	before := len(events(readLog(t, filepath.Join(logDir, "audit.log")), ""))
+	startOptimizer(t, map[string]string{"IO_MODE": "library", "IO_IMMICH_API_KEY": u.keyS, "IO_LIBRARY_INTERVAL": "2s",
+		"IO_LIBRARY_DRY_RUN_SAMPLE": "0"}, false, logDir+":/undone")
+	eventually(t, 2*time.Minute, "three scheduled runs", func() bool {
+		n := 0
+		for _, e := range events(readLog(t, filepath.Join(logDir, "audit.log")), "")[before:] {
+			if e == "run_finished" {
+				n++
+			}
+		}
+		return n >= 3
+	})
+}

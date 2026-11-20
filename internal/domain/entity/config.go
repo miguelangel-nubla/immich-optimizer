@@ -58,6 +58,8 @@ type AppConfig struct {
 	LibraryConcurrency    int
 	LibraryTakenBefore    string
 	LibraryReadyTimeout   time.Duration
+	LibraryOlderThan      time.Duration
+	LibraryInterval       time.Duration
 	ConfigFile            string
 	MaxConcurrentRequests int
 	ImmichTimeout         time.Duration

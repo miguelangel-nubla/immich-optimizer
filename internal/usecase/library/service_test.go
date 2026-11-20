@@ -55,6 +55,7 @@ type fakeImmich struct {
 	activity      map[string]int      // albumID/assetID -> count
 	sharedAlbums  map[string]bool
 	neverReady    bool
+	afterList     func() // runs once the last page of the listing is read
 }
 
 func newFake() *fakeImmich {
@@ -114,6 +115,9 @@ func (f *fakeImmich) ListAssets(_ context.Context, page int) ([]entity.LibraryAs
 	end, next := start+size, page+1
 	if end >= len(live) {
 		end, next = len(live), 0
+		if f.afterList != nil {
+			f.afterList()
+		}
 	}
 	return live[start:end], next, nil
 }
@@ -1271,5 +1275,137 @@ func TestRealRunReport(t *testing.T) {
 	}
 	if it := byID[failing.ID]; it.Status != statusFailed || it.Reason == "" {
 		t.Errorf("failed item = %+v", it)
+	}
+}
+
+// convertOne runs one real pass that converts a single photo, and returns
+// the original and its converted copy.
+func convertOne(t *testing.T, h *harness, data []byte) (old, conv *fakeAsset) {
+	t.Helper()
+	old = h.im.add("IMG_1.jpg", data)
+	if sum, err := h.run(); err != nil || sum.Replaced != 1 {
+		t.Fatalf("first run: %+v, %v", sum, err)
+	}
+	for _, id := range h.im.order {
+		if m := h.marker(id); m != nil && m.SHA1 == old.Checksum {
+			conv = h.im.assets[id]
+		}
+	}
+	if conv == nil || !old.IsTrashed {
+		t.Fatal("the first run did not replace the photo")
+	}
+	h.im.calls = nil
+	return old, conv
+}
+
+// A phone uploads its photo again once the original has left Immich's trash.
+func TestSecondCopyOfAConvertedOriginalGoesToTheTrash(t *testing.T) {
+	h := newHarness(t)
+	data := photo(1)
+	old, conv := convertOne(t, h, data)
+	old.deleted = true // the trash was emptied
+	again := h.im.add("IMG_1.jpg", data)
+	other := h.im.add("IMG_2.jpg", photo(2))
+	other.FileCreatedAt = time.Now()
+	// Too new to be converted; a second copy is dealt with at any age.
+	again.FileCreatedAt = time.Now()
+	h.cfg.OlderThan = 24 * time.Hour
+
+	// A dry run only says so.
+	h.cfg.DryRun = true
+	sum, err := h.run()
+	if err != nil || sum.WouldTrash != 1 || sum.SecondCopies != 0 || len(h.im.calls) != 0 || again.IsTrashed {
+		t.Fatalf("dry run: %+v, %v, calls %v", sum, err, h.im.calls)
+	}
+	h.cfg.DryRun = false
+
+	sum, err = h.run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.SecondCopies != 1 || sum.Replaced != 0 || sum.Failed != 0 || sum.Skipped != 2 {
+		t.Errorf("summary = %+v", sum)
+	}
+	if len(h.im.calls) != 1 || h.im.calls[0] != "trash:"+again.ID {
+		t.Errorf("calls = %v, want only the second copy trashed", h.im.calls)
+	}
+	if !again.IsTrashed || conv.IsTrashed || other.IsTrashed {
+		t.Errorf("trashed: second copy %v, converted %v, other %v", again.IsTrashed, conv.IsTrashed, other.IsTrashed)
+	}
+	ev := h.events()
+	if index(ev, "second_copy_trashed") < 0 || index(ev, "would_trash_second_copy") < 0 {
+		t.Errorf("events = %v", ev)
+	}
+	if n := strings.Count(strings.Join(h.im.calls, " "), "upload:"); n != 0 {
+		t.Errorf("%d uploads: a second copy is not converted again", n)
+	}
+
+	// Nothing more to do on the next run.
+	h.im.calls = nil
+	if sum, err = h.run(); err != nil || sum.SecondCopies != 0 || len(h.im.calls) != 0 {
+		t.Errorf("next run: %+v, %v, calls %v", sum, err, h.im.calls)
+	}
+}
+
+func TestSecondCopyWithSomethingOfItsOwnIsLeftForTheUser(t *testing.T) {
+	for name, mod := range map[string]func(h *harness, again, conv *fakeAsset){
+		"favorite":    func(_ *harness, a, _ *fakeAsset) { a.IsFavorite = true },
+		"album":       func(_ *harness, a, _ *fakeAsset) { a.albums = []string{"album-9"} },
+		"shared link": func(_ *harness, a, _ *fakeAsset) { a.links = []string{"link-1"} },
+		"description": func(_ *harness, a, _ *fakeAsset) { a.Description = "mine" },
+		"stack":       func(_ *harness, a, _ *fakeAsset) { a.StackID = "stack-1" },
+		"archived":    func(_ *harness, a, _ *fakeAsset) { a.Visibility = "archive" },
+		// The conversion it would be a copy of is gone or not a conversion any more.
+		"converted asset trashed during the run": func(h *harness, _, c *fakeAsset) { h.im.afterList = func() { c.IsTrashed = true } },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			data := photo(1)
+			old, conv := convertOne(t, h, data)
+			old.deleted = true
+			again := h.im.add("IMG_1.jpg", data)
+			mod(h, again, conv)
+			sum, err := h.run()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again.IsTrashed || sum.SecondCopies != 0 {
+				t.Fatalf("the second copy was trashed: %+v", sum)
+			}
+		})
+	}
+}
+
+// What the first copy shares with the conversion does not hold it back.
+func TestSecondCopyInTheSameAlbumGoesToTheTrash(t *testing.T) {
+	h := newHarness(t)
+	data := photo(1)
+	old, conv := convertOne(t, h, data)
+	old.deleted = true
+	conv.albums, conv.IsFavorite = []string{"album-1", "album-2"}, true
+	again := h.im.add("IMG_1.jpg", data)
+	again.albums, again.IsFavorite = []string{"album-1"}, true
+	if sum, err := h.run(); err != nil || sum.SecondCopies != 1 || !again.IsTrashed {
+		t.Fatalf("%+v, %v", sum, err)
+	}
+}
+
+func TestOlderThan(t *testing.T) {
+	h := newHarness(t)
+	old := h.im.add("old.jpg", photo(1)) // dated 2020
+	recent := h.im.add("recent.jpg", photo(2))
+	recent.FileCreatedAt = time.Now().Add(-10 * 24 * time.Hour)
+	h.cfg.OlderThan = 90 * 24 * time.Hour
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 1 || sum.Skipped != 1 || !old.IsTrashed || recent.IsTrashed {
+		t.Fatalf("%+v, %v", sum, err)
+	}
+	// Together with a date, the stricter of the two counts.
+	h2 := newHarness(t)
+	h2.im.add("a.jpg", photo(1))
+	h2.cfg.OlderThan = 90 * 24 * time.Hour
+	h2.cfg.TakenBefore = time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
+	if sum, err := h2.run(); err != nil || sum.Replaced != 0 || sum.Skipped != 1 {
+		t.Fatalf("with a date too: %+v, %v", sum, err)
 	}
 }

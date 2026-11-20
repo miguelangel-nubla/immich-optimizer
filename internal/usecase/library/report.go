@@ -26,6 +26,8 @@ const (
 	statusFailed       = "failed"
 	statusFinalized    = "finalized"
 	statusRolledBack   = "rolled_back"
+	statusSecondCopy   = "second_copy"
+	statusWouldTrash   = "would_trash"
 )
 
 // Item is one asset's row in the report.

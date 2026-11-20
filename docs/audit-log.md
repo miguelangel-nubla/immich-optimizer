@@ -16,6 +16,7 @@ It records what happened to your files, and only that:
 | `library` | `converted`, `uploaded`, `verified`, `replaced` | the steps of one replacement; `replaced` means the original is in the trash |
 | `library` | `kept` | looked at and left as it is |
 | `library` | `verify_failed`, `rolled_back`, `failed` | a replacement was abandoned and the original left untouched; `differences` lists what did not match |
+| `library` | `second_copy_trashed` | an original that was uploaded again after its conversion was moved to the trash; `new_asset` is the conversion. `would_trash_second_copy` is the same in a dry run |
 | `library` | `finalized` | an interrupted replacement from an earlier run was completed |
 | `library` | `run_started`, `run_finished` | one pass, with a summary of counts and bytes |
 

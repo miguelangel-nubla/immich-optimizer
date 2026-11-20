@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -1003,5 +1005,45 @@ func TestDurationSettings(t *testing.T) {
 	t.Setenv("IUO_HTTP_TIMEOUT_SECONDS", "")
 	if cfg, err = parse("-http_timeout_seconds", "50"); err != nil || cfg.ImmichTimeout != 50*time.Second {
 		t.Errorf("legacy flag: %v %v", cfg, err)
+	}
+}
+
+func TestRepeatLibrary(t *testing.T) {
+	logger := customlogger.NewWithLevel(nil, "error", "")
+	// Without an interval: one run, and its error is the result.
+	n := 0
+	boom := errors.New("boom")
+	if err := repeatLibrary(context.Background(), 0, logger, func(context.Context) error { n++; return boom }); err != boom || n != 1 {
+		t.Fatalf("once: %v after %d run(s)", err, n)
+	}
+	// With one: it keeps going, also after a failed run, until it is stopped.
+	n = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	err := repeatLibrary(ctx, time.Millisecond, logger, func(context.Context) error {
+		n++
+		if n == 3 {
+			cancel()
+		}
+		if n == 1 {
+			return boom
+		}
+		return nil
+	})
+	if n != 3 || !errors.Is(err, context.Canceled) && err != nil {
+		t.Fatalf("repeated: %v after %d run(s)", err, n)
+	}
+}
+
+func TestLibraryAgeAndIntervalSettings(t *testing.T) {
+	base := []string{"-mode", "library", "-immich_url", "http://immich:2283", "-immich_api_key", "0123456789abcdef",
+		"-undone_dir", t.TempDir(), "-tasks_file", "../../config/lossless/tasks.yaml"}
+	ac, _, err := parseConfig(append(base, "-library_older_than", "2160h", "-library_interval", "24h"))
+	if err != nil || ac.LibraryOlderThan != 90*24*time.Hour || ac.LibraryInterval != 24*time.Hour {
+		t.Fatalf("%+v, %v", ac, err)
+	}
+	for _, bad := range [][]string{{"-library_older_than", "-1h"}, {"-library_interval", "-1h"}, {"-library_interval", "90"}} {
+		if _, _, err := parseConfig(append(append([]string(nil), base...), bad...)); err == nil {
+			t.Errorf("%v was accepted", bad)
+		}
 	}
 }

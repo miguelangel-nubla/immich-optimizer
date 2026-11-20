@@ -297,6 +297,12 @@ func validateAppConfig(ac *entity.AppConfig) error {
 		if ac.LibraryDryRunSample < 0 {
 			return fmt.Errorf("library_dry_run_sample must not be negative")
 		}
+		if ac.LibraryOlderThan < 0 {
+			return fmt.Errorf("library_older_than must not be negative")
+		}
+		if ac.LibraryInterval < 0 {
+			return fmt.Errorf("library_interval must not be negative")
+		}
 		if ac.LibraryConcurrency < 1 {
 			return fmt.Errorf("library_concurrency must be 1 or more")
 		}
@@ -538,8 +544,8 @@ func run(args []string) error {
 		}
 	}
 
-	// Library mode makes one pass over the existing library. When it is the
-	// only mode, the process ends with it.
+	// Library mode makes one pass over the existing library, or one every
+	// library_interval. When it is the only mode, the process ends with it.
 	var libraryDone chan error
 	libraryCtx, cancelLibrary := context.WithCancel(context.Background())
 	defer cancelLibrary()
@@ -557,6 +563,7 @@ func run(args []string) error {
 			DryRun:        config.LibraryDryRun,
 			Limit:         config.LibraryLimit,
 			TakenBefore:   takenBefore,
+			OlderThan:     config.LibraryOlderThan,
 			ReadyTimeout:  config.LibraryReadyTimeout,
 			Version:       version,
 			Concurrency:   config.LibraryConcurrency,
@@ -573,8 +580,10 @@ func run(args []string) error {
 		}
 		libraryDone = make(chan error, 1)
 		go func() {
-			_, err := svc.Run(libraryCtx)
-			libraryDone <- err
+			libraryDone <- repeatLibrary(libraryCtx, config.LibraryInterval, logger, func(ctx context.Context) error {
+				_, err := svc.Run(ctx)
+				return err
+			})
 		}()
 	}
 
@@ -612,6 +621,28 @@ func run(args []string) error {
 	logger.Printf("Shutting down gracefully (waiting up to %s for running jobs)...", grace)
 	shutdown(logger, grace, watcherAdapter, pipelineService, proxyServer)
 	return nil
+}
+
+// repeatLibrary runs one library pass, and with an interval another one that
+// long after each ends, until ctx is done. A pass that fails does not end the
+// schedule: it changed nothing it could not account for, and the next one
+// picks up whatever it left unfinished.
+func repeatLibrary(ctx context.Context, every time.Duration, logger *customlogger.Logger, run func(context.Context) error) error {
+	for {
+		err := run(ctx)
+		if every <= 0 || ctx.Err() != nil {
+			return err
+		}
+		if err != nil {
+			logger.Errorf("Library mode: the run failed: %v", err)
+		}
+		logger.Printf("Library mode: next run in %s", every)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(every):
+		}
+	}
 }
 
 // warnDeprecations prints the deprecation warning straight to the base
