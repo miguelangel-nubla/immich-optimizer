@@ -163,7 +163,9 @@ func (fw *inotifyWatcher) processExistingFilesRecursive(dir string) {
 			fw.logger.Printf("Error walking directory %s: %v", path, err)
 			return nil
 		}
-		if !d.IsDir() {
+		// A scan can catch a file that is still being written under a
+		// temporary name: leave it to its own rename or close event.
+		if !d.IsDir() && !utils.IsTempFile(path) {
 			fw.emitEvent(path)
 		}
 		return nil
@@ -253,6 +255,9 @@ func (fw *inotifyWatcher) rescan() {
 			_ = fw.addWatchRecursive(fw.watchDir)
 			_ = filepath.WalkDir(fw.watchDir, func(path string, d os.DirEntry, err error) error {
 				if err != nil || d.IsDir() {
+					return nil
+				}
+				if utils.IsTempFile(path) {
 					return nil
 				}
 				if info, err := d.Info(); err == nil && time.Since(info.ModTime()) >= fw.settle {
