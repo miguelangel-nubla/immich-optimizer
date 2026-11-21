@@ -597,6 +597,7 @@ func run(args []string) error {
 		proxyServer = proxy.NewServer(proxy.Config{
 			UpstreamURL: parsedImmichURL,
 			BindAddr:    config.BindAddr,
+			PassUploads: !config.ProxyConvertUploads,
 			Downloads:   config.Tasks.Downloads,
 			Processor:   processorAdapter,
 			// The same limits as for uploads.

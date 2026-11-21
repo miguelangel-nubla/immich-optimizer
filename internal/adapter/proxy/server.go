@@ -46,6 +46,9 @@ const (
 type Config struct {
 	UpstreamURL *url.URL
 	BindAddr    string
+	// PassUploads sends uploads to Immich as they are, like any other
+	// request: library mode converts them later, when they are tagged.
+	PassUploads bool
 	// Downloads are the tasks that convert an original on its way out, run
 	// by Processor. Without them downloads pass through untouched.
 	Downloads []entity.Task
@@ -151,6 +154,9 @@ func (s *Server) Start() error {
 	s.listener = ln
 	s.listenerMu.Unlock()
 	s.logger.Printf("Starting reverse proxy server on %s -> %s", ln.Addr(), s.cfg.UpstreamURL.String())
+	if s.cfg.PassUploads {
+		s.logger.Printf("Uploads are passed to Immich as they are (proxy_convert_uploads=false): tag them %q to convert them in library mode", "immich-optimizer/convert")
+	}
 	go s.jobs.janitor(s.baseCtx)
 	go func() {
 		if err := s.server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -257,7 +263,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.isUploadRequest(r) {
+	if !s.isUploadRequest(r) || s.cfg.PassUploads {
 		r.Host = s.cfg.UpstreamURL.Host
 		s.revProxy.ServeHTTP(w, r)
 		return

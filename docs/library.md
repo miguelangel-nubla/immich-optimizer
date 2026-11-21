@@ -4,7 +4,7 @@ Proxy and watcher mode only handle new uploads. Library mode (`IO_MODE=library`)
 
 > **Using the Immich mobile app to back up?** Run library mode together with [proxy mode](proxy.md), and have the phones reach Immich through the proxy. The proxy tells the app that a converted photo is still the photo it has, so the app does not upload the original again. Without it, every converted photo that is still on a phone is uploaded again once its original has left Immich's trash. See [Phones](#phones).
 
-The recommended setup, proxy and library mode in one container (see the [quick start](quickstart.md) for the proxy part):
+The recommended setup, proxy and library mode in one container (see the [quick start](quickstart.md) for the proxy part). The proxy converts new uploads as they arrive; to convert nothing until it is tagged, also set `IO_PROXY_CONVERT_UPLOADS=false` ([Converting only on demand](proxy.md#converting-only-on-demand)).
 
 ```yaml
 services:

@@ -25,6 +25,25 @@ Point your clients at the optimizer instead of Immich. If Immich sits behind you
 - **No API key is needed.** Each client's own credentials are forwarded, so it works for every user.
 - Settings: [Proxy mode](configuration.md#proxy-mode).
 
+## Converting only on demand
+
+With `IO_PROXY_CONVERT_UPLOADS=false` the proxy does not convert uploads: they reach Immich exactly as they were sent. Use it when you want to choose what is converted, with tags in Immich and [library mode](library.md):
+
+```yaml
+    environment:
+      - IO_MODE=proxy,library
+      - IO_IMMICH_URL=http://immich-server:2283
+      - IO_IMMICH_API_KEY=key-of-alice,key-of-bob
+      - IO_PROXY_CONVERT_UPLOADS=false
+```
+
+The proxy then still does the two things only it can do:
+
+- **The mobile app** keeps counting photos that library mode converted as backed up, and does not upload them again ([below](#the-mobile-app)).
+- **Downloads** of converted photos are converted back, for example JPEG XL to JPEG ([Tasks: downloads](tasks.md#downloads)).
+
+To convert every new upload anyway, but in the background instead of during the upload, let one of Immich's workflows tag new uploads `immich-optimizer/convert` ([Library mode](library.md#choosing-what-to-convert)).
+
 ## How it behaves
 
 - **What is converted:** multipart uploads to Immich's upload endpoint (`/api/assets`). The file is handled as described in [Tasks](tasks.md#how-a-file-is-handled).

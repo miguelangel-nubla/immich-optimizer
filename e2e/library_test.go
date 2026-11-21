@@ -721,3 +721,38 @@ func TestLibrarySeveralUsers(t *testing.T) {
 		t.Errorf("replacements logged for users %v, want alice %s and bob %s", users, alice.id, bob.id)
 	}
 }
+
+// Conversion on demand only: the proxy passes uploads through, and library
+// mode converts what is tagged. The proxy still tells a phone that the
+// converted photo is the one it has.
+func TestProxyPassesUploadsAndLibraryConvertsOnDemand(t *testing.T) {
+	u := newUser(t)
+	logDir := sharedDir(t)
+	name, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy,library", "IO_IMMICH_API_KEY": u.keyS,
+		"IO_PROXY_CONVERT_UPLOADS": "false"}, true, logDir+":/undone")
+	waitLibraryReady(t, name, 5*time.Minute)
+
+	src := filepath.Join(mediaDir, "photo.jpg")
+	status, out := u.upload(t, proxy, src, "photo.jpg", nil)
+	if status != http.StatusCreated {
+		t.Fatalf("upload through the proxy: %d %s", status, out["_body"])
+	}
+	a := u.waitReady(t, out["id"])
+	if a.OriginalMimeType != "image/jpeg" || a.Checksum != sha1Base64(t, src) {
+		t.Fatalf("the upload was changed on its way: %s, checksum %s", a.OriginalMimeType, a.Checksum)
+	}
+
+	u.tag(t, tagConvert, a.ID)
+	eventually(t, 2*time.Minute, "library mode to convert the tagged photo", func() bool {
+		return u.asset(t, a.ID).IsTrashed
+	})
+
+	// A phone syncing through the proxy is told the original's checksum.
+	found := false
+	for _, l := range hiddenLines(syncThrough(t, u, proxy)) {
+		found = found || l.Data["checksum"] == a.Checksum
+	}
+	if !found {
+		t.Error("the phone was not told that the converted photo is the one it has")
+	}
+}

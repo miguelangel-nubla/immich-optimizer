@@ -194,6 +194,31 @@ func TestProxyUploadOptimization(t *testing.T) {
 	}
 }
 
+// With uploads passed through, an upload reaches Immich byte for byte and
+// nothing is converted, also a type no task handles.
+func TestProxyPassesUploadsThroughWhenAskedTo(t *testing.T) {
+	up := newUpstream(t)
+	c := optimizedTo(t, "small")
+	server := newTestServer(t, up.srv.URL, c, func(cfg *Config) { cfg.PassUploads = true })
+	for _, name := range []string{"original.jpg", "notes.xyz"} {
+		body, ct := uploadBody(t, name, strings.Repeat("A", 100))
+		sent := body.String()
+		req := httptest.NewRequest(http.MethodPost, "/api/assets", body)
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("%s: expected 201, got %d: %s", name, rec.Code, rec.Body.String())
+		}
+		if got := up.bodies[len(up.bodies)-1]; got != sent {
+			t.Fatalf("%s: Immich did not get the upload as it was sent", name)
+		}
+	}
+	if n := c.calls.Load(); n != 0 {
+		t.Fatalf("%d conversions, want none", n)
+	}
+}
+
 func TestProxyUploadNonMatchingExtensionBlocked(t *testing.T) {
 	up := newUpstream(t)
 	c := &fakeConverter{fn: func(_ context.Context, in entity.ConvertInput) (*entity.ConvertResult, error) {

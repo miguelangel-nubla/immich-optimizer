@@ -50,6 +50,7 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 | Environment variable | Flag | Default | Description |
 |---|---|---|---|
 | `IO_PROXY_BIND_ADDR` | `-proxy_bind_addr` | `:2283` | Address and port the proxy listens on |
+| `IO_PROXY_CONVERT_UPLOADS` | `-proxy_convert_uploads` | `true` | Convert uploads on their way to Immich. `false` passes them through as they are: library mode then converts what is tagged, and the proxy still keeps phones from uploading converted photos again and converts downloads |
 
 ### Watcher mode
 
