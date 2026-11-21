@@ -31,9 +31,8 @@ import (
 	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
 )
 
-// WaitPath is the browser keep-alive redirect target (kept for compatibility
-// with immich-upload-optimizer).
-const WaitPath = "/_immich-upload-optimizer/wait"
+// WaitPath is the browser keep-alive redirect target.
+const WaitPath = "/_immich-optimizer/wait"
 
 // HealthPath is answered by the proxy itself: 200 while it takes uploads.
 const HealthPath = "/_immich-optimizer/health"

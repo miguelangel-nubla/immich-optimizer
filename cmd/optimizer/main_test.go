@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/proxy"
-	"log"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +20,7 @@ import (
 	customlogger "github.com/miguelangel-nubla/immich-optimizer/internal/logger"
 )
 
-// clearConfigEnv blanks every IO_* and IUO_* variable so the developer's
+// clearConfigEnv blanks every IO_* variable so the developer's
 // shell cannot leak into tests (empty counts as unset).
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
@@ -44,7 +44,7 @@ func TestParseConfigTuningFlags(t *testing.T) {
 	clearConfigEnv(t)
 	tasksFile := writeTestTasksFile(t)
 
-	cfg, _, err := parseConfig([]string{
+	cfg, err := parseConfig([]string{
 		"-mode", "proxy",
 		"-immich_url", "http://immich.example",
 		"-tasks_file", tasksFile,
@@ -73,7 +73,7 @@ func TestParseConfigRejectsInvalidMaxConcurrentRequests(t *testing.T) {
 	clearConfigEnv(t)
 	tasksFile := writeTestTasksFile(t)
 
-	_, _, err := parseConfig([]string{
+	_, err := parseConfig([]string{
 		"-mode", "proxy",
 		"-immich_url", "http://immich.example",
 		"-tasks_file", tasksFile,
@@ -88,7 +88,7 @@ func TestParseConfigRejectsInvalidHTTPTimeoutSeconds(t *testing.T) {
 	clearConfigEnv(t)
 	tasksFile := writeTestTasksFile(t)
 
-	_, _, err := parseConfig([]string{
+	_, err := parseConfig([]string{
 		"-mode", "proxy",
 		"-immich_url", "http://immich.example",
 		"-tasks_file", tasksFile,
@@ -103,7 +103,7 @@ func TestParseConfigRejectsInvalidInotifyBufferSize(t *testing.T) {
 	clearConfigEnv(t)
 	tasksFile := writeTestTasksFile(t)
 
-	_, _, err := parseConfig([]string{
+	_, err := parseConfig([]string{
 		"-mode", "proxy",
 		"-immich_url", "http://immich.example",
 		"-tasks_file", tasksFile,
@@ -138,7 +138,7 @@ func parseAPIKeyTestConfig(t *testing.T, extraArgs ...string) (string, error) {
 		"-immich_url", "http://immich.example",
 		"-tasks_file", writeTestTasksFile(t),
 	}, extraArgs...)
-	cfg, _, err := parseConfig(args)
+	cfg, err := parseConfig(args)
 	if err != nil {
 		return "", err
 	}
@@ -284,7 +284,7 @@ func TestParseConfigAPIKeyFileEmpty(t *testing.T) {
 	}
 }
 
-// ---- IO_ prefix, legacy IUO_ fallback, deprecated flags ----
+// ---- IO_ prefix ----
 
 func baseArgs(t *testing.T) []string {
 	t.Helper()
@@ -315,12 +315,9 @@ func TestEnvIOPrefix(t *testing.T) {
 	for k, v := range env {
 		t.Setenv(k, v)
 	}
-	cfg, deps, err := parseConfig(nil)
+	cfg, err := parseConfig(nil)
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
-	}
-	if len(deps) != 0 {
-		t.Fatalf("expected no deprecations, got %+v", deps)
 	}
 	checks := []struct {
 		name      string
@@ -348,176 +345,24 @@ func TestEnvIOPrefix(t *testing.T) {
 	}
 }
 
-func TestEnvLegacyIUOFallback(t *testing.T) {
+// The names of immich-upload-optimizer are gone: an old flag is unknown and an
+// old variable is not read.
+func TestOldNamesNotAccepted(t *testing.T) {
 	clearConfigEnv(t)
-	t.Setenv("IUO_IMMICH_URL", "http://legacy.example")
-	cfg, deps, err := parseConfig(append(baseArgs(t), "-mode", "proxy"))
-	if err != nil {
-		t.Fatalf("parseConfig: %v", err)
+	flagOutput = io.Discard
+	defer func() { flagOutput = os.Stderr }()
+	if _, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-upstream", "http://immich.example")); err == nil || !strings.Contains(err.Error(), "upstream") {
+		t.Fatalf("-upstream should be an unknown flag, got %v", err)
 	}
-	if cfg.ImmichURL != "http://legacy.example" {
-		t.Fatalf("legacy value not used: %q", cfg.ImmichURL)
-	}
-	if len(deps) != 1 || deps[0] != (deprecation{Old: "IUO_IMMICH_URL", New: "IO_IMMICH_URL"}) {
-		t.Fatalf("unexpected deprecations: %+v", deps)
-	}
-}
-
-func TestEnvIOWinsOverIUO(t *testing.T) {
-	clearConfigEnv(t)
-	t.Setenv("IO_IMMICH_URL", "http://new.example")
-	t.Setenv("IUO_IMMICH_URL", "http://old.example")
-	cfg, deps, err := parseConfig(append(baseArgs(t), "-mode", "proxy"))
-	if err != nil {
-		t.Fatalf("parseConfig: %v", err)
-	}
-	if cfg.ImmichURL != "http://new.example" {
-		t.Fatalf("IO_ should win, got %q", cfg.ImmichURL)
-	}
-	if len(deps) != 1 || !deps[0].Ignored || deps[0].Old != "IUO_IMMICH_URL" {
-		t.Fatalf("expected ignored deprecation, got %+v", deps)
-	}
-	if !strings.Contains(formatDeprecations(deps), "ignored, IO_IMMICH_URL is set") {
-		t.Fatalf("warning should say the legacy var was ignored: %s", formatDeprecations(deps))
-	}
-}
-
-func TestEnvLegacyOrder(t *testing.T) {
-	clearConfigEnv(t)
 	t.Setenv("IUO_IMMICH_URL", "http://immich.example")
-	t.Setenv("IUO_PROXY_BIND_ADDR", ":1111")
-	t.Setenv("IUO_LISTEN", ":2222")
-	cfg, deps, err := parseConfig(append(baseArgs(t), "-mode", "proxy"))
-	if err != nil {
-		t.Fatalf("parseConfig: %v", err)
-	}
-	if cfg.BindAddr != ":1111" {
-		t.Fatalf("IUO_PROXY_BIND_ADDR should beat IUO_LISTEN, got %q", cfg.BindAddr)
-	}
-	var listen *deprecation
-	for i := range deps {
-		if deps[i].Old == "IUO_LISTEN" {
-			listen = &deps[i]
-		}
-	}
-	if listen == nil || !listen.Ignored || listen.Winner != "IUO_PROXY_BIND_ADDR" {
-		t.Fatalf("IUO_LISTEN should be reported as ignored: %+v", deps)
-	}
-}
-
-func TestEnvLegacyUpstreamListen(t *testing.T) {
-	clearConfigEnv(t)
-	t.Setenv("IUO_UPSTREAM", "http://upstream.example")
-	t.Setenv("IUO_LISTEN", ":3000")
-	cfg, deps, err := parseConfig(append(baseArgs(t), "-mode", "proxy"))
-	if err != nil {
-		t.Fatalf("parseConfig: %v", err)
-	}
-	if cfg.ImmichURL != "http://upstream.example" || cfg.BindAddr != ":3000" {
-		t.Fatalf("legacy upstream/listen not applied: %q %q", cfg.ImmichURL, cfg.BindAddr)
-	}
-	msg := formatDeprecations(deps)
-	if !strings.Contains(msg, "IUO_UPSTREAM -> IO_IMMICH_URL") || !strings.Contains(msg, "IUO_LISTEN -> IO_PROXY_BIND_ADDR") {
-		t.Fatalf("unexpected warning: %s", msg)
-	}
-}
-
-func TestEnvLegacyUndoneAliases(t *testing.T) {
-	for _, name := range []string{"IUO_UNDONE_DIR", "IUO_WATCHER_UNDONE_DIR"} {
-		t.Run(name, func(t *testing.T) {
-			clearConfigEnv(t)
-			dir := filepath.Join(t.TempDir(), "legacy-undone")
-			t.Setenv("IO_IMMICH_URL", "http://immich.example")
-			tasks := writeTestTasksFile(t) // sets IO_UNDONE_DIR
-			t.Setenv("IO_UNDONE_DIR", "")
-			t.Setenv(name, dir)
-			cfg, deps, err := parseConfig([]string{"-mode", "proxy", "-tasks_file", tasks})
-			if err != nil {
-				t.Fatalf("parseConfig: %v", err)
-			}
-			if cfg.UndoneDir != dir {
-				t.Fatalf("got undone dir %q, want %q", cfg.UndoneDir, dir)
-			}
-			if len(deps) != 1 || deps[0].New != "IO_UNDONE_DIR" {
-				t.Fatalf("unexpected deprecations %+v", deps)
-			}
-		})
-	}
-}
-
-func TestDeprecatedFlags(t *testing.T) {
-	clearConfigEnv(t)
-	cfg, deps, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-upstream", "http://flag.example", "-listen", ":4000"))
-	if err != nil {
-		t.Fatalf("parseConfig: %v", err)
-	}
-	if cfg.ImmichURL != "http://flag.example" || cfg.BindAddr != ":4000" {
-		t.Fatalf("deprecated flags not applied: %q %q", cfg.ImmichURL, cfg.BindAddr)
-	}
-	if len(deps) != 2 || deps[0].Old != "-upstream" || deps[1].Old != "-listen" {
-		t.Fatalf("unexpected deprecations %+v", deps)
-	}
-
-	// New flag beats deprecated flag.
-	cfg, deps, err = parseConfig(append(baseArgs(t), "-mode", "proxy", "-upstream", "http://old.example", "-immich_url", "http://new.example"))
-	if err != nil {
-		t.Fatalf("parseConfig: %v", err)
-	}
-	if cfg.ImmichURL != "http://new.example" || len(deps) != 1 || !deps[0].Ignored {
-		t.Fatalf("-immich_url should win: %q %+v", cfg.ImmichURL, deps)
-	}
-
-	// Deprecated flag beats env.
-	t.Setenv("IO_IMMICH_URL", "http://env.example")
-	cfg, _, err = parseConfig(append(baseArgs(t), "-mode", "proxy", "-upstream", "http://flag.example"))
-	if err != nil {
-		t.Fatalf("parseConfig: %v", err)
-	}
-	if cfg.ImmichURL != "http://flag.example" {
-		t.Fatalf("flag should beat env, got %q", cfg.ImmichURL)
-	}
-}
-
-func TestHiddenFlagsNotInUsage(t *testing.T) {
-	clearConfigEnv(t)
-	var buf strings.Builder
-	old := flagOutput
-	flagOutput = &buf
-	defer func() { flagOutput = old }()
-
-	if _, _, err := parseConfig([]string{"-h"}); err == nil {
-		t.Fatalf("expected flag.ErrHelp")
-	}
-	out := buf.String()
-	if !strings.Contains(out, "-immich_url") || !strings.Contains(out, "-undone_dir") {
-		t.Fatalf("usage missing regular flags:\n%s", out)
-	}
-	if strings.Contains(out, "-upstream") || strings.Contains(out, "-listen") {
-		t.Fatalf("usage must not list hidden flags:\n%s", out)
-	}
-}
-
-func TestFormatDeprecationsSingleLine(t *testing.T) {
-	msg := formatDeprecations([]deprecation{
-		{Old: "IUO_IMMICH_URL", New: "IO_IMMICH_URL"},
-		{Old: "IUO_LISTEN", New: "IO_PROXY_BIND_ADDR", Ignored: true, Winner: "IO_PROXY_BIND_ADDR"},
-		{Old: "-upstream", New: "-immich_url"},
-	})
-	if strings.Contains(msg, "\n") {
-		t.Fatalf("warning must be a single line: %q", msg)
-	}
-	want := "IUO_IMMICH_URL -> IO_IMMICH_URL; IUO_LISTEN -> IO_PROXY_BIND_ADDR (ignored, IO_PROXY_BIND_ADDR is set); -upstream -> -immich_url"
-	if !strings.HasSuffix(msg, want) {
-		t.Fatalf("got %q", msg)
-	}
-	if formatDeprecations(nil) != "" {
-		t.Fatalf("no deprecations must give empty string")
+	if _, err := parseConfig(append(baseArgs(t), "-mode", "proxy")); err == nil || !strings.Contains(err.Error(), "immich_url") {
+		t.Fatalf("IUO_IMMICH_URL should be ignored, got %v", err)
 	}
 }
 
 func TestDefaultBindAddr2283(t *testing.T) {
 	clearConfigEnv(t)
-	cfg, _, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-immich_url", "http://immich.example"))
+	cfg, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-immich_url", "http://immich.example"))
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
 	}
@@ -565,7 +410,7 @@ func TestTasksFileSearchList(t *testing.T) {
 func TestUndoneDirCreatedInProxyMode(t *testing.T) {
 	clearConfigEnv(t)
 	dir := filepath.Join(t.TempDir(), "nested", "undone")
-	_, _, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-immich_url", "http://immich.example", "-undone_dir", dir))
+	_, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-immich_url", "http://immich.example", "-undone_dir", dir))
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
 	}
@@ -584,7 +429,7 @@ func TestUndoneDirNotWritableRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(ro, 0o700)
-	_, _, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-immich_url", "http://immich.example", "-undone_dir", ro))
+	_, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-immich_url", "http://immich.example", "-undone_dir", ro))
 	if err == nil || !strings.Contains(err.Error(), "not writable by uid") {
 		t.Fatalf("expected not-writable error, got %v", err)
 	}
@@ -594,7 +439,7 @@ func TestUndoneInsideWatchRejected(t *testing.T) {
 	clearConfigEnv(t)
 	watch := t.TempDir()
 	for _, undoneDir := range []string{watch, filepath.Join(watch, "undone")} {
-		_, _, err := parseConfig(append(baseArgs(t),
+		_, err := parseConfig(append(baseArgs(t),
 			"-mode", "watcher", "-immich_url", "http://immich.example", "-immich_api_key", testAPIKeyEnv,
 			"-watcher_dir", watch, "-undone_dir", undoneDir))
 		if err == nil || !strings.Contains(err.Error(), "inside") {
@@ -602,7 +447,7 @@ func TestUndoneInsideWatchRejected(t *testing.T) {
 		}
 	}
 	// A sibling whose name merely starts with the watch dir name is fine.
-	_, _, err := parseConfig(append(baseArgs(t),
+	_, err := parseConfig(append(baseArgs(t),
 		"-mode", "watcher", "-immich_url", "http://immich.example", "-immich_api_key", testAPIKeyEnv,
 		"-watcher_dir", watch, "-undone_dir", watch+"-undone"))
 	if err != nil {
@@ -614,41 +459,10 @@ func TestUndoneInsideWatchRejected(t *testing.T) {
 func TestNegativeTaskTimeoutRejected(t *testing.T) {
 	clearConfigEnv(t)
 	for _, flagName := range []string{"-tasks_timeout", "-shutdown_timeout"} {
-		_, _, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-immich_url", "http://immich.example", flagName, "-1"))
+		_, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-immich_url", "http://immich.example", flagName, "-1"))
 		if err == nil {
 			t.Fatalf("%s=-1 should be rejected", flagName)
 		}
-	}
-}
-
-func TestAPIKeyFileErrorNamesLegacyVar(t *testing.T) {
-	clearConfigEnv(t)
-	missing := filepath.Join(t.TempDir(), "missing")
-	t.Setenv("IUO_IMMICH_API_KEY_FILE", missing)
-	_, deps, err := parseConfig(append(baseArgs(t), "-mode", "proxy", "-immich_url", "http://immich.example"))
-	if err == nil || !strings.Contains(err.Error(), "IUO_IMMICH_API_KEY_FILE") {
-		t.Fatalf("error should name the legacy variable actually used, got %v", err)
-	}
-	if len(deps) != 1 {
-		t.Fatalf("deprecations should be returned even on error: %+v", deps)
-	}
-}
-
-func TestLegacyEnvUsageNoLegacy(t *testing.T) {
-	lookup := func(k string) (string, bool) {
-		if k == "IO_MODE" {
-			return "proxy", true
-		}
-		if k == "IUO_MODE" {
-			return "", true // empty counts as unset
-		}
-		return "", false
-	}
-	if d := legacyEnvUsage(lookup); len(d) != 0 {
-		t.Fatalf("expected none, got %+v", d)
-	}
-	if src := envSource("mode", lookup); src != "IO_MODE" {
-		t.Fatalf("envSource = %q", src)
 	}
 }
 
@@ -674,24 +488,9 @@ func TestTasksFileInWatchDirCwdIsSkipped(t *testing.T) {
 	// Through parseConfig in watcher mode this must not be a fatal error.
 	args := []string{"-mode", "watcher", "-immich_url", "http://immich.example", "-immich_api_key", "0123456789abcdef",
 		"-watcher_dir", watch, "-undone_dir", filepath.Join(t.TempDir(), "undone")}
-	_, _, err = parseConfig(args)
+	_, err = parseConfig(args)
 	if err != nil && strings.Contains(err.Error(), "must not be inside the watch directory") {
 		t.Fatalf("auto-detected tasks.yaml in the watch dir must be skipped: %v", err)
-	}
-}
-
-func TestDeprecationWarningShownAtErrorLevel(t *testing.T) {
-	var buf strings.Builder
-	base := log.New(&buf, "", 0)
-	quiet := customlogger.NewWithLevel(base, "error", "")
-	quiet.Warnf("filtered")
-	warnDeprecations(base, []deprecation{{Old: "IUO_UPSTREAM", New: "IO_IMMICH_URL"}})
-	out := buf.String()
-	if strings.Contains(out, "filtered") {
-		t.Fatalf("sanity: warn level should be filtered at error level")
-	}
-	if !strings.Contains(out, "[WARN]") || !strings.Contains(out, "IUO_UPSTREAM -> IO_IMMICH_URL") {
-		t.Fatalf("deprecation warning must be printed regardless of log level, got %q", out)
 	}
 }
 
@@ -768,7 +567,7 @@ func TestBundledProfilesCoverImmichFormats(t *testing.T) {
 	}
 }
 
-func TestLoadTasksRejectsLegacyFolderPlaceholder(t *testing.T) {
+func TestLoadTasksRejectsUnknownPlaceholder(t *testing.T) {
 	for _, cmd := range []string{
 		`cjxl {{.folder}}/{{.name}}.{{.extension}} {{.folder}}/{{.name}}.jxl`,
 		`cjxl {{.src_folder}}/{{.name}}.{{.extension}} {{.dst_folder}}/{{.nmae}}.jxl`,
@@ -778,8 +577,9 @@ func TestLoadTasksRejectsLegacyFolderPlaceholder(t *testing.T) {
 		if err := os.WriteFile(p, []byte(yaml), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := loadTasks(p); err == nil {
-			t.Errorf("expected an error for command %q", cmd)
+		_, err := loadTasks(p)
+		if err == nil || !strings.Contains(err.Error(), "template") {
+			t.Errorf("expected a template error for command %q, got %v", cmd, err)
 		}
 	}
 }
@@ -788,7 +588,7 @@ func TestLibraryModeConfig(t *testing.T) {
 	base := []string{"-mode", "library", "-immich_url", "http://immich:2283", "-undone_dir", t.TempDir(), "-tasks_file", "../../config/lossless/tasks.yaml"}
 
 	// Dry run is the default: a first start must never change a library.
-	cfg, _, err := parseConfig(append(base, "-immich_api_key", "0123456789abcdef"))
+	cfg, err := parseConfig(append(base, "-immich_api_key", "0123456789abcdef"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -796,7 +596,7 @@ func TestLibraryModeConfig(t *testing.T) {
 		t.Errorf("library defaults: %+v", cfg)
 	}
 
-	if _, _, err := parseConfig(base); err == nil {
+	if _, err := parseConfig(base); err == nil {
 		t.Error("library mode without an API key must be refused")
 	}
 	if !hasMode("watcher, Library", "library") || hasMode("watcher,proxy", "library") {
@@ -823,7 +623,6 @@ func TestSettingsDocs(t *testing.T) {
 		doc = doc[:i] + "\n" + content + doc[j:]
 	}
 	replace("<!-- BEGIN SETTINGS", "<!-- END SETTINGS -->", settingsMarkdown())
-	replace("<!-- BEGIN OLD NAMES", "<!-- END OLD NAMES -->", deprecatedNamesMarkdown()+"\n")
 	if doc == string(data) {
 		return
 	}
@@ -858,37 +657,6 @@ func TestSettingsNaming(t *testing.T) {
 		if !ok {
 			t.Errorf("setting %s does not carry the prefix of its group %q", s.Name, s.Group)
 		}
-		for _, old := range s.LegacyFlags {
-			if seen[old] {
-				t.Errorf("deprecated flag -%s of %s clashes with a setting", old, s.Name)
-			}
-		}
-	}
-}
-
-func TestDeprecatedFlagsStillWork(t *testing.T) {
-	cfg, deps, err := parseConfig([]string{"-mode", "proxy", "-upstream", "http://immich:2283", "-listen", ":9000",
-		"-max_concurrent_requests", "3", "-undone_dir", t.TempDir(), "-tasks_file", "../../config/lossless/tasks.yaml"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ImmichURL != "http://immich:2283" || cfg.BindAddr != ":9000" || cfg.MaxConcurrentRequests != 3 {
-		t.Errorf("deprecated flags not applied: %+v", cfg)
-	}
-	want := map[string]string{"-upstream": "-immich_url", "-listen": "-proxy_bind_addr", "-max_concurrent_requests": "-tasks_concurrency"}
-	for _, d := range deps {
-		if want[d.Old] == d.New {
-			delete(want, d.Old)
-		}
-	}
-	if len(want) != 0 {
-		t.Errorf("no deprecation reported for %v (got %+v)", want, deps)
-	}
-	// The new name wins when both are given.
-	cfg, _, err = parseConfig([]string{"-mode", "proxy", "-immich_url", "http://new:2283", "-upstream", "http://old:2283",
-		"-undone_dir", t.TempDir(), "-tasks_file", "../../config/lossless/tasks.yaml"})
-	if err != nil || cfg.ImmichURL != "http://new:2283" {
-		t.Errorf("new flag did not win: %v %v", cfg, err)
 	}
 }
 
@@ -964,7 +732,7 @@ func TestDurationSettings(t *testing.T) {
 		for k := range env {
 			t.Setenv(k, env[k])
 		}
-		cfg, _, err := parseConfig(append(append([]string{}, base...), args...))
+		cfg, err := parseConfig(append(append([]string{}, base...), args...))
 		return cfg, err
 	}
 
@@ -993,16 +761,6 @@ func TestDurationSettings(t *testing.T) {
 	delete(env, "IO_TASKS_TIMEOUT")
 	t.Setenv("IO_TASKS_TIMEOUT", "")
 
-	// The old names still mean whole seconds.
-	env["IUO_HTTP_TIMEOUT_SECONDS"] = "33"
-	if cfg, err = parse(); err != nil || cfg.ImmichTimeout != 33*time.Second {
-		t.Errorf("legacy env: %v %v", cfg, err)
-	}
-	delete(env, "IUO_HTTP_TIMEOUT_SECONDS")
-	t.Setenv("IUO_HTTP_TIMEOUT_SECONDS", "")
-	if cfg, err = parse("-http_timeout_seconds", "50"); err != nil || cfg.ImmichTimeout != 50*time.Second {
-		t.Errorf("legacy flag: %v %v", cfg, err)
-	}
 }
 
 func TestRepeatLibrary(t *testing.T) {
@@ -1034,12 +792,12 @@ func TestRepeatLibrary(t *testing.T) {
 func TestLibraryIntervalSetting(t *testing.T) {
 	base := []string{"-mode", "library", "-immich_url", "http://immich:2283", "-immich_api_key", "0123456789abcdef",
 		"-undone_dir", t.TempDir(), "-tasks_file", "../../config/lossless/tasks.yaml"}
-	ac, _, err := parseConfig(append(base, "-library_interval", "24h"))
+	ac, err := parseConfig(append(base, "-library_interval", "24h"))
 	if err != nil || ac.LibraryInterval != 24*time.Hour {
 		t.Fatalf("%+v, %v", ac, err)
 	}
 	for _, bad := range [][]string{{"-library_interval", "-1h"}, {"-library_interval", "90"}, {"-library_taken_before", "2020-01-01"}, {"-library_older_than", "24h"}, {"-library_limit", "5"}} {
-		if _, _, err := parseConfig(append(append([]string(nil), base...), bad...)); err == nil {
+		if _, err := parseConfig(append(append([]string(nil), base...), bad...)); err == nil {
 			t.Errorf("%v was accepted", bad)
 		}
 	}
@@ -1120,7 +878,7 @@ func TestHealthCheck(t *testing.T) {
 		t.Error("a proxy that does not answer was reported healthy")
 	}
 	// The flag needs none of the other settings to be valid.
-	if ac, _, err := parseConfig([]string{"-healthcheck"}); err != nil || !ac.HealthCheck {
+	if ac, err := parseConfig([]string{"-healthcheck"}); err != nil || !ac.HealthCheck {
 		t.Errorf("parseConfig: %+v, %v", ac, err)
 	}
 }
@@ -1203,11 +961,11 @@ func TestConfigFingerprint(t *testing.T) {
 // There is no default mode: a container started without one must say so,
 // not start doing something that was not asked for.
 func TestModeIsRequired(t *testing.T) {
-	_, _, err := parseConfig(append(baseArgs(t), "-immich_url", "http://immich.example", "-immich_api_key", testAPIKeyEnv))
+	_, err := parseConfig(append(baseArgs(t), "-immich_url", "http://immich.example", "-immich_api_key", testAPIKeyEnv))
 	if err == nil || !strings.Contains(err.Error(), "IO_MODE") {
 		t.Fatalf("starting without a mode: %v", err)
 	}
-	if _, _, err := parseConfig(append(baseArgs(t), "-mode", " , ", "-immich_url", "http://immich.example")); err == nil {
+	if _, err := parseConfig(append(baseArgs(t), "-mode", " , ", "-immich_url", "http://immich.example")); err == nil {
 		t.Error("an empty mode list was accepted")
 	}
 }

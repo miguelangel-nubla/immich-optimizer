@@ -75,26 +75,3 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 ## Durations
 
 Settings that hold a length of time take a number with a unit: `90s`, `15m`, `1h30m`. The units are `s`, `m` and `h` (also `ms`). A number without a unit is refused, except `0`.
-
-## Old names
-
-These names from earlier versions and from `immich-upload-optimizer` still work. Each one in use is listed in a warning at startup; they will be removed in a future release. Old names of duration settings take whole seconds, as they always did. If both the old and the new name are set, the new one wins.
-
-<!-- BEGIN OLD NAMES: generated, do not edit -->
-
-| Old name | Use instead |
-|---|---|
-| `IUO_MODE` | `IO_MODE`, `-mode` |
-| `IUO_LOG_LEVEL` | `IO_LOG_LEVEL`, `-log_level` |
-| `IUO_IMMICH_URL`, `IUO_UPSTREAM`, `-upstream` | `IO_IMMICH_URL`, `-immich_url` |
-| `IUO_IMMICH_API_KEY` | `IO_IMMICH_API_KEY`, `-immich_api_key` |
-| `IUO_IMMICH_API_KEY_FILE` | `IO_IMMICH_API_KEY_FILE`, `-immich_api_key_file` |
-| `IUO_HTTP_TIMEOUT_SECONDS`, `-http_timeout_seconds` | `IO_IMMICH_TIMEOUT`, `-immich_timeout` |
-| `IUO_TASKS_FILE` | `IO_TASKS_FILE`, `-tasks_file` |
-| `IUO_MAX_CONCURRENT_REQUESTS`, `-max_concurrent_requests` | `IO_TASKS_CONCURRENCY`, `-tasks_concurrency` |
-| `IUO_WATCHER_UNDONE_DIR`, `IUO_UNDONE_DIR` | `IO_UNDONE_DIR`, `-undone_dir` |
-| `IUO_PROXY_BIND_ADDR`, `IUO_BIND_ADDR`, `IUO_LISTEN`, `-bind_addr`, `-listen` | `IO_PROXY_BIND_ADDR`, `-proxy_bind_addr` |
-| `IUO_WATCHER_WATCH_DIR`, `IUO_WATCH_DIR`, `-watch_dir` | `IO_WATCHER_DIR`, `-watcher_dir` |
-| `IUO_WATCHER_INOTIFY_BUFFER_SIZE`, `IUO_INOTIFY_BUFFER_SIZE`, `-inotify_buffer_size` | `IO_WATCHER_INOTIFY_BUFFER_SIZE`, `-watcher_inotify_buffer_size` |
-
-<!-- END OLD NAMES -->

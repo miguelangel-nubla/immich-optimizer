@@ -64,40 +64,38 @@ var flagOutput io.Writer = os.Stderr
 
 const defaultTasksFile = "/etc/immich-optimizer/config/tasks.yaml"
 
-func parseConfig(args []string) (*entity.AppConfig, []deprecation, error) {
+func parseConfig(args []string) (*entity.AppConfig, error) {
 	ac := &entity.AppConfig{}
 
 	v := viper.New()
 	if err := bindEnv(v); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	fs := flag.NewFlagSet("immich-optimizer", flag.ContinueOnError)
 	fs.SetOutput(flagOutput)
 	fs.BoolVar(&ac.ShowVersion, "version", false, "Show the current version")
 	fs.BoolVar(&ac.HealthCheck, "healthcheck", false, "Check that a running optimizer answers, and exit")
-	applyLegacyFlags, envErr := registerSettings(fs, v, ac)
+	envErr := registerSettings(fs, v, ac)
 	fs.Usage = func() { printUsage(fs) }
 
 	if err := fs.Parse(args); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	if ac.ShowVersion {
-		return ac, nil, nil
+		return ac, nil
 	}
 	if envErr != nil {
-		return nil, nil, envErr
+		return nil, envErr
 	}
 
 	if ac.HealthCheck {
-		return ac, nil, nil
+		return ac, nil
 	}
 
 	visited := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
-
-	deps := append(legacyEnvUsage(osLookup), applyLegacyFlags(visited)...)
 
 	if ac.ImmichAPIKeyFile != "" {
 		source := envSource("immich_api_key_file", osLookup)
@@ -106,19 +104,19 @@ func parseConfig(args []string) (*entity.AppConfig, []deprecation, error) {
 		}
 		key, err := readSecretFile(source, ac.ImmichAPIKeyFile)
 		if err != nil {
-			return nil, deps, err
+			return nil, err
 		}
 		ac.ImmichAPIKey = key
 	}
 
 	if err := validateAppConfig(ac); err != nil {
-		return nil, deps, err
+		return nil, err
 	}
 
-	return ac, deps, nil
+	return ac, nil
 }
 
-// printUsage prints the settings by group, without the deprecated flag names.
+// printUsage prints the settings by group.
 func printUsage(fs *flag.FlagSet) {
 	out := fs.Output()
 	fmt.Fprintf(out, "Usage of %s:\n", fs.Name())
@@ -504,9 +502,6 @@ func initTask(task *entity.Task) error {
 	if err != nil {
 		return fmt.Errorf("task %s unable to parse command: %v", task.Name, err)
 	}
-	if strings.Contains(task.Command, ".folder}}") && !strings.Contains(task.Command, "_folder}}") {
-		return fmt.Errorf("task %s uses {{.folder}}, which immich-upload-optimizer provided: use {{.src_folder}} for the input and {{.dst_folder}} for the output", task.Name)
-	}
 
 	var cmdLine bytes.Buffer
 	if err := tmpl.Execute(&cmdLine, values); err != nil {
@@ -517,14 +512,11 @@ func initTask(task *entity.Task) error {
 }
 
 func run(args []string) error {
-	config, deps, err := parseConfig(args)
+	config, err := parseConfig(args)
 	if errors.Is(err, flag.ErrHelp) {
 		return nil
 	}
 	if err != nil {
-		if len(deps) > 0 {
-			fmt.Fprintln(os.Stderr, "warning: "+formatDeprecations(deps))
-		}
 		return err
 	}
 	if config.ShowVersion {
@@ -541,7 +533,6 @@ func run(args []string) error {
 
 	baseLogger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
 	logger := customlogger.NewWithLevel(baseLogger, config.LogLevel, "")
-	warnDeprecations(baseLogger, deps)
 	logger.Printf("Starting %s (mode: %s)", printVersion(), config.Mode)
 
 	parsedImmichURL, urlErr := url.Parse(config.ImmichURL)
@@ -768,15 +759,6 @@ func repeatLibrary(ctx context.Context, every time.Duration, logger *customlogge
 			return ctx.Err()
 		case <-time.After(every):
 		}
-	}
-}
-
-// warnDeprecations prints the deprecation warning straight to the base
-// logger, so it is shown whatever the configured log level: users who run
-// with IO_LOG_LEVEL=error must still learn that their setup will break.
-func warnDeprecations(base *log.Logger, deps []deprecation) {
-	if len(deps) > 0 {
-		base.Printf("[WARN] %s", formatDeprecations(deps))
 	}
 }
 

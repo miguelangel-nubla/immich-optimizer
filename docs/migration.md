@@ -41,13 +41,30 @@ What changed:
 
 1. **Image name**: `ghcr.io/miguelangel-nubla/immich-optimizer`.
 2. **Mode**: set `IO_MODE=proxy`. There is no default: without a mode the optimizer does not start. Proxy mode needs no API key: it forwards each client's own credentials.
-3. **Environment variables**: `IUO_UPSTREAM` becomes `IO_IMMICH_URL` and `IUO_LISTEN` becomes `IO_PROXY_BIND_ADDR`. The old names still work for now and print a warning at startup. See [the rename table](configuration.md#old-names). `IUO_FILTER_PATH` and `IUO_FILTER_FORM_KEY` are gone: the proxy always converts uploads to Immich's upload endpoint, and the old `-filter_path` and `-filter_form_key` flags are refused.
+3. **Environment variables and flags**: the old names are gone and are not read any more. A variable left at its old name is silently ignored, and an old flag stops the optimizer at startup. Rename each one you use:
+
+   | Old name | New name |
+   |---|---|
+   | `IUO_MODE` | `IO_MODE` |
+   | `IUO_LOG_LEVEL` | `IO_LOG_LEVEL` |
+   | `IUO_IMMICH_URL`, `IUO_UPSTREAM`, `-upstream` | `IO_IMMICH_URL`, `-immich_url` |
+   | `IUO_IMMICH_API_KEY` | `IO_IMMICH_API_KEY` |
+   | `IUO_IMMICH_API_KEY_FILE` | `IO_IMMICH_API_KEY_FILE` |
+   | `IUO_HTTP_TIMEOUT_SECONDS`, `-http_timeout_seconds` | `IO_IMMICH_TIMEOUT`, `-immich_timeout` (a [duration](configuration.md#durations) such as `90s`, not a number of seconds) |
+   | `IUO_TASKS_FILE` | `IO_TASKS_FILE` |
+   | `IUO_MAX_CONCURRENT_REQUESTS`, `-max_concurrent_requests` | `IO_TASKS_CONCURRENCY`, `-tasks_concurrency` |
+   | `IUO_WATCHER_UNDONE_DIR`, `IUO_UNDONE_DIR` | `IO_UNDONE_DIR` |
+   | `IUO_PROXY_BIND_ADDR`, `IUO_BIND_ADDR`, `IUO_LISTEN`, `-bind_addr`, `-listen` | `IO_PROXY_BIND_ADDR`, `-proxy_bind_addr` |
+   | `IUO_WATCHER_WATCH_DIR`, `IUO_WATCH_DIR`, `-watch_dir` | `IO_WATCHER_DIR`, `-watcher_dir` |
+   | `IUO_WATCHER_INOTIFY_BUFFER_SIZE`, `IUO_INOTIFY_BUFFER_SIZE`, `-inotify_buffer_size` | `IO_WATCHER_INOTIFY_BUFFER_SIZE`, `-watcher_inotify_buffer_size` |
+
+   `IUO_FILTER_PATH` and `IUO_FILTER_FORM_KEY` have no replacement: the proxy always converts uploads to Immich's upload endpoint. See [Configuration](configuration.md) for every setting.
 4. **Port**: unchanged. The proxy listens on `:2283`, so a `2283:2283` mapping keeps working.
 5. **Config folder**: mount your tasks at `/etc/immich-optimizer/config` (was `/etc/immich-upload-optimizer/config`). A mount left at the old path is ignored without any error and the default lossless profile runs instead.
 6. **Undone folder**: mount `/undone`. When a conversion fails, or no task matches, the client still gets an error and nothing is uploaded, and the original is now kept there. See [Undone folder](undone.md).
 7. **Container user**: the container no longer runs as root. See [Folders and ports](docker.md#folders-and-ports).
 8. **Custom `tasks.yaml`**: the input and the output now live in separate folders.
-   - Replace `{{.folder}}` with `{{.src_folder}}` for the input and `{{.dst_folder}}` for the output. A task that still uses `{{.folder}}` stops the optimizer at startup with a message saying so.
+   - Replace `{{.folder}}` with `{{.src_folder}}` for the input and `{{.dst_folder}}` for the output. A task that still uses `{{.folder}}` stops the optimizer at startup with a template error.
    - A command must leave **exactly one file** in `{{.dst_folder}}`. Tools that used to rewrite the file in place must now write there, and scripts that skip a file must copy it there.
    - Remove `-new` suffixes and trailing `rm` commands that only existed to work in a single folder.
 
