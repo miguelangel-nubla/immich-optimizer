@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // These tests drive the real Immich Android app in an emulator, which is the
@@ -175,23 +176,34 @@ func (p phone) fields(n int) []node {
 	}
 }
 
-// typeInto fills the i-th of n text fields. Typing is retried, because the
-// app sometimes drops what is typed while the keyboard is still opening.
+// typeInto fills the i-th of n text fields and checks what ended up in it.
+// It is retried: while the keyboard is still opening the app can drop what is
+// typed, or keep only a part of it.
 func (p phone) typeInto(i, n int, text string) {
 	p.t.Helper()
-	for try := 0; try < 5; try++ {
+	// A password field shows a dot for every character.
+	typed := func(got string) bool {
+		return got == text || utf8.RuneCountInString(got) == utf8.RuneCountInString(text) && strings.Trim(got, "\u2022*") == ""
+	}
+	for try := 0; try < 6; try++ {
 		f := p.fields(n)[i]
-		if f.Text != "" {
+		if typed(f.Text) {
 			return
 		}
 		x1, y1, x2, y2 := f.box()
 		p.tapAt((x1+x2)/2, (y1+y2)/2)
 		time.Sleep(2 * time.Second)
+		if f.Text != "" {
+			// Something partial is in it: select all of it and delete.
+			p.shell("input keycombination 113 29")
+			p.shell("input keyevent 67")
+			time.Sleep(time.Second)
+		}
 		p.shell("input text '" + text + "'")
 		time.Sleep(time.Second)
 	}
-	if p.fields(n)[i].Text == "" {
-		p.t.Fatalf("could not type into text field %d", i)
+	if got := p.fields(n)[i].Text; !typed(got) {
+		p.t.Fatalf("could not type into text field %d: it holds %q", i, got)
 	}
 }
 
