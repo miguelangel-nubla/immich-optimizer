@@ -453,10 +453,12 @@ func (c *LibraryClient) UpdateAsset(ctx context.Context, id string, u entity.Lib
 
 func (c *LibraryClient) Albums(ctx context.Context, assetID string) ([]entity.LibraryAlbum, error) {
 	var out []struct {
-		ID         string `json:"id"`
-		AlbumName  string `json:"albumName"`
-		Shared     bool   `json:"shared"`
-		AlbumUsers []any  `json:"albumUsers"`
+		ID         string  `json:"id"`
+		AlbumName  string  `json:"albumName"`
+		Shared     bool    `json:"shared"`
+		AlbumUsers []any   `json:"albumUsers"`
+		OwnerID    string  `json:"ownerId"`
+		Cover      *string `json:"albumThumbnailAssetId"`
 	}
 	if err := c.call(ctx, http.MethodGet, "/albums?assetId="+url.QueryEscape(assetID), nil, &out); err != nil {
 		return nil, err
@@ -464,9 +466,14 @@ func (c *LibraryClient) Albums(ctx context.Context, assetID string) ([]entity.Li
 	albums := make([]entity.LibraryAlbum, 0, len(out))
 	for _, a := range out {
 		// More than one album user means somebody else can see and react to it.
-		albums = append(albums, entity.LibraryAlbum{ID: a.ID, Name: a.AlbumName, Shared: a.Shared || len(a.AlbumUsers) > 1})
+		albums = append(albums, entity.LibraryAlbum{ID: a.ID, Name: a.AlbumName, Shared: a.Shared || len(a.AlbumUsers) > 1,
+			OwnerID: a.OwnerID, CoverAssetID: str(a.Cover)})
 	}
 	return albums, nil
+}
+
+func (c *LibraryClient) SetAlbumCover(ctx context.Context, albumID, assetID string) error {
+	return c.call(ctx, http.MethodPatch, "/albums/"+url.PathEscape(albumID), map[string]any{"albumThumbnailAssetId": assetID}, nil)
 }
 
 func (c *LibraryClient) ActivityCount(ctx context.Context, albumID, assetID string) (int, error) {

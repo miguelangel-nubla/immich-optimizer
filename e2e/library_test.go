@@ -759,9 +759,9 @@ func TestLibraryFilter(t *testing.T) {
 	}
 }
 
-// A memory ("on this day") lists its assets by id: the converted copy has to
-// take its original's place in it.
-func TestLibraryCarriesMemoriesOver(t *testing.T) {
+// A memory ("on this day") lists its assets by id, and an album names its
+// cover by id: the converted copy has to take its original's place in both.
+func TestLibraryCarriesMemoriesAndAlbumCoversOver(t *testing.T) {
 	u := newUser(t)
 	a := u.add(t, "photo.jpg", nil)
 	b := u.add(t, "plain.jpg", nil)
@@ -773,6 +773,17 @@ func TestLibraryCarriesMemoriesOver(t *testing.T) {
 		"memoryAt": "2021-06-15T00:00:00.000Z", "assetIds": []string{a.ID},
 	}, &memory)
 
+	// An album with both photos, the first one picked as its cover.
+	var album struct {
+		ID    string  `json:"id"`
+		Cover *string `json:"albumThumbnailAssetId"`
+	}
+	must(t, u.key, http.MethodPost, "/albums", map[string]any{"albumName": "trip", "assetIds": []string{b.ID, a.ID}}, &album)
+	must(t, u.key, http.MethodPatch, "/albums/"+album.ID, map[string]any{"albumThumbnailAssetId": a.ID}, &album)
+	if album.Cover == nil || *album.Cover != a.ID {
+		t.Fatalf("could not make the photo the album's cover: %+v", album)
+	}
+
 	code, out, log := runLibrary(t, u, sharedDir(t), map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
@@ -780,6 +791,10 @@ func TestLibraryCarriesMemoriesOver(t *testing.T) {
 	newA, newB := replacedBy(log, a.ID), replacedBy(log, b.ID)
 	if newA == "" || newB == "" {
 		t.Fatalf("the photos were not converted:\n%s", out)
+	}
+	must(t, u.key, http.MethodGet, "/albums/"+album.ID, nil, &album)
+	if album.Cover == nil || *album.Cover != newA {
+		t.Errorf("the album's cover is %v, want the converted photo %s", album.Cover, newA)
 	}
 	var got struct {
 		Assets []struct {

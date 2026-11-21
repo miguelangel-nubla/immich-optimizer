@@ -46,6 +46,8 @@ type fakeImmich struct {
 	order  []string
 	nextID int
 	calls  []string
+	// covers maps an album to its cover asset.
+	covers map[string]string
 	// memories maps a memory to its assets.
 	memories map[string][]string
 	// filters are the filters library mode asked Immich to apply.
@@ -341,7 +343,11 @@ func (f *fakeImmich) Albums(_ context.Context, assetID string) ([]entity.Library
 	}
 	var out []entity.LibraryAlbum
 	for _, id := range a.albums {
-		out = append(out, entity.LibraryAlbum{ID: id, Name: id, Shared: f.sharedAlbums[id]})
+		owner := me
+		if f.sharedAlbums[id] && strings.HasPrefix(id, "theirs-") {
+			owner = "user-2"
+		}
+		out = append(out, entity.LibraryAlbum{ID: id, Name: id, Shared: f.sharedAlbums[id], OwnerID: owner, CoverAssetID: f.covers[id]})
 	}
 	return out, nil
 }
@@ -423,6 +429,27 @@ func (f *fakeImmich) AddToMemory(_ context.Context, memoryID, assetID string) er
 	}
 	f.memories[memoryID] = append(f.memories[memoryID], assetID)
 	f.calls = append(f.calls, "memory:"+assetID)
+	return nil
+}
+
+func (f *fakeImmich) SetAlbumCover(_ context.Context, albumID, assetID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail("SetAlbumCover"); err != nil {
+		return err
+	}
+	a, err := f.get(assetID)
+	if err != nil {
+		return err
+	}
+	if index(a.albums, albumID) < 0 {
+		return fmt.Errorf("invalid album thumbnail")
+	}
+	if f.covers == nil {
+		f.covers = map[string]string{}
+	}
+	f.covers[albumID] = assetID
+	f.calls = append(f.calls, "cover:"+albumID+"="+assetID)
 	return nil
 }
 
@@ -1514,4 +1541,47 @@ func (h *harness) marker2(id string) *entity.Marker {
 		return nil
 	}
 	return h.marker(id)
+}
+
+func TestAlbumCoverIsCarriedOver(t *testing.T) {
+	h := newHarness(t)
+	old := h.im.add("IMG_1.jpg", photo(1))
+	old.albums = []string{"mine", "other-cover", "theirs-shared"}
+	h.im.sharedAlbums["theirs-shared"] = true
+	h.im.covers = map[string]string{"mine": old.ID, "other-cover": "another-asset", "theirs-shared": old.ID}
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 1 {
+		t.Fatalf("%+v, %v", sum, err)
+	}
+	var conv string
+	for _, id := range h.im.order {
+		if m := h.marker(id); m != nil && m.SHA1 == old.Checksum {
+			conv = id
+		}
+	}
+	if h.im.covers["mine"] != conv {
+		t.Errorf("the album's cover is %q, want the converted asset %q", h.im.covers["mine"], conv)
+	}
+	// Covers that were another asset, or belong to someone else's album, are left alone.
+	if h.im.covers["other-cover"] != "another-asset" || h.im.covers["theirs-shared"] != old.ID {
+		t.Errorf("covers = %v", h.im.covers)
+	}
+	// The cover moves after everything is verified and before the original is trashed.
+	calls := strings.Join(h.im.calls, " ")
+	if c, tr := strings.Index(calls, "cover:mine="+conv), strings.Index(calls, "trash:"+old.ID); c < 0 || c > tr {
+		t.Errorf("order of changes: %v", h.im.calls)
+	}
+}
+
+// A replacement that is abandoned must leave the album's cover where it was.
+func TestAlbumCoverStaysWhenTheReplacementFails(t *testing.T) {
+	h := newHarness(t)
+	old := h.im.add("IMG_1.jpg", photo(1))
+	old.albums = []string{"mine"}
+	h.im.covers = map[string]string{"mine": old.ID}
+	h.im.failCall["SetAlbumCover"] = errors.New("no")
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 0 || sum.Failed != 1 || old.IsTrashed || h.im.covers["mine"] != old.ID {
+		t.Fatalf("%+v, %v, trashed %v, covers %v", sum, err, old.IsTrashed, h.im.covers)
+	}
 }

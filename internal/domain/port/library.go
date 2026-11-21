@@ -30,6 +30,8 @@ type LibraryAPI interface {
 	CopyAsset(ctx context.Context, sourceID, targetID string) error
 	UpdateAsset(ctx context.Context, id string, u entity.LibraryAssetUpdate) error
 	Albums(ctx context.Context, assetID string) ([]entity.LibraryAlbum, error)
+	// SetAlbumCover makes an asset that is in the album its cover.
+	SetAlbumCover(ctx context.Context, albumID, assetID string) error
 	// ActivityCount returns comments plus likes on an asset in an album.
 	ActivityCount(ctx context.Context, albumID, assetID string) (int, error)
 	TagAsset(ctx context.Context, assetID string, tagIDs []string) error

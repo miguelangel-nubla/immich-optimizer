@@ -71,6 +71,10 @@ type LibraryAlbum struct {
 	ID     string
 	Name   string
 	Shared bool
+	// OwnerID is the user the album belongs to, and CoverAssetID the asset
+	// shown as its cover ("" when Immich picks one).
+	OwnerID      string
+	CoverAssetID string
 }
 
 // LibraryAssetUpdate holds the user-editable fields to set on an asset. Nil
