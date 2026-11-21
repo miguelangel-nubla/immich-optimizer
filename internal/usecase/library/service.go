@@ -40,6 +40,10 @@ import (
 )
 
 type Config struct {
+	// Label names the API key in the log until its user is known, when
+	// there are several ("key 2 of 3"). Once known, the log names the
+	// user by id instead, which does not change with the key.
+	Label string
 	// ReadyTimeout is how long to wait for Immich to finish reading a newly
 	// uploaded asset before giving up on it.
 	ReadyTimeout time.Duration
@@ -93,6 +97,8 @@ type Service struct {
 	base port.LibraryAPI
 	// own are the ids of the optimizer's tags, during a run.
 	own map[string]bool
+	// rootLog is log without the label or user prefix.
+	rootLog *logger.Logger
 	// me is the API key's user, once known.
 	me string
 	// idx is what the audit log knows, while Serve runs.
@@ -153,7 +159,11 @@ func New(cfg Config, api port.LibraryAPI, conv port.CheckingConverter, journal *
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = 1
 	}
-	return &Service{cfg: cfg, api: api, base: api, conv: conv, log: log, journal: journal}
+	s := &Service{cfg: cfg, api: api, base: api, conv: conv, log: log, rootLog: log, journal: journal}
+	if cfg.Label != "" {
+		s.log = log.WithPrefix("[" + cfg.Label + "] ")
+	}
+	return s
 }
 
 // errSkip is returned for assets library mode leaves alone on purpose.
@@ -220,10 +230,11 @@ func (s *Service) record(e Entry) error {
 // does this when the audit log has nothing to go by; otherwise it only looks
 // at what the tags, the events and the log point at (see Serve).
 func (s *Service) Run(ctx context.Context) (Summary, error) {
-	me, err := s.api.CurrentUserID(ctx)
+	u, err := s.base.CurrentUser(ctx)
 	if err != nil {
 		return Summary{}, fmt.Errorf("identifying the API key's user: %w", err)
 	}
+	me := u.ID
 	rt, err := s.loadTags(ctx)
 	if err != nil {
 		return Summary{}, err

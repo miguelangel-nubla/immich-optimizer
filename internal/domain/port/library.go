@@ -9,8 +9,8 @@ import (
 // LibraryAPI is what library mode needs from Immich. Every call acts as the
 // owner of the API key.
 type LibraryAPI interface {
-	// CurrentUserID returns the id of the API key's owner.
-	CurrentUserID(ctx context.Context) (string, error)
+	// CurrentUser returns the API key's owner.
+	CurrentUser(ctx context.Context) (entity.LibraryUser, error)
 	// ListAssets returns one page of the owner's assets (oldest first) and
 	// the next page number, 0 when there is none.
 	ListAssets(ctx context.Context, page int) ([]entity.LibraryAsset, int, error)

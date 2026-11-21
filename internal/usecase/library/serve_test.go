@@ -5,6 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
+	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -233,11 +236,11 @@ func TestServeTrashesASecondCopyWhenItIsUploaded(t *testing.T) {
 func TestServeRetriesUntilImmichAnswers(t *testing.T) {
 	h := tagged(t)
 	writeLog(t, h.logPath, `{"source":"library","event":"full_read"}`+"\n")
-	h.im.failCall["CurrentUserID"] = errRefused
+	h.im.failCall["CurrentUser"] = errRefused
 	ev := h.serve()
 	time.Sleep(50 * time.Millisecond)
 	h.im.mu.Lock()
-	delete(h.im.failCall, "CurrentUserID")
+	delete(h.im.failCall, "CurrentUser")
 	h.im.mu.Unlock()
 	// Serve listens for events only once it has started.
 	ev.handlers(t)
@@ -271,4 +274,64 @@ func TestServeWithAnotherUsersConversionInTheLog(t *testing.T) {
 		}
 		return false
 	})
+}
+
+// lockedBuffer collects log output from several goroutines.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// With several keys, a worker's lines name its key only until its user is
+// known, and from then on the user's id, which does not change with the key.
+func TestServeLogNamesTheUser(t *testing.T) {
+	h := tagged(t)
+	writeLog(t, h.logPath, `{"source":"library","event":"full_read"}`+"\n")
+	h.im.failCall["CurrentUser"] = errRefused
+	out := &lockedBuffer{}
+	h.cfg.Label = "key 2 of 2"
+	j, err := audit.Open(h.logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	ev := &fakeEvents{}
+	go func() {
+		done <- New(h.cfg, h.im, h.conv, j, logger.New(log.New(out, "", 0), "")).Serve(ctx, ev)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(out.String(), "[key 2 of 2]") && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	h.im.mu.Lock()
+	delete(h.im.failCall, "CurrentUser")
+	h.im.mu.Unlock()
+	ev.handlers(t)
+	cancel()
+	<-done
+	text := out.String()
+	if !strings.Contains(text, "[key 2 of 2]") || !strings.Contains(text, "identifying the API key's user") {
+		t.Errorf("before the user is known, the key is not named:\n%s", text)
+	}
+	if !strings.Contains(text, "[user "+me+"] Library: working for Test <test@example.com> (user "+me+")") {
+		t.Errorf("the user is not named once known:\n%s", text)
+	}
+	after := text[strings.Index(text, "working for"):]
+	if strings.Contains(after, "[key 2 of 2]") {
+		t.Errorf("the key is still named after the user is known:\n%s", after)
+	}
 }

@@ -698,7 +698,8 @@ func TestLibrarySeveralUsers(t *testing.T) {
 		false, logDir+":/undone")
 	eventually(t, 5*time.Minute, "both users' workers to start", func() bool {
 		out, _ := exec.Command("docker", "logs", name).CombinedOutput()
-		return strings.Count(string(out), libraryReady) == 2
+		return strings.Contains(string(out), "[user "+alice.id+"] "+libraryReady) &&
+			strings.Contains(string(out), "[user "+bob.id+"] "+libraryReady)
 	})
 	alice.tag(t, tagConvert, a.ID)
 	bob.tag(t, tagConvert, b.ID)

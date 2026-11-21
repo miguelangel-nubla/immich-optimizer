@@ -116,6 +116,14 @@ func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
 	}
 }
 
+// Warnf logs a warning under the name of this worker: its key until the
+// user is known, then the user's id.
+func (s *Service) Warnf(format string, args ...any) {
+	if s.log != nil {
+		s.log.Warnf(format, args...)
+	}
+}
+
 func ignoreCanceled(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return nil
@@ -126,9 +134,16 @@ func ignoreCanceled(ctx context.Context, err error) error {
 // start identifies the user, settles what earlier runs left and acts on
 // what is tagged.
 func (s *Service) start(ctx context.Context, me *string) error {
-	id, err := s.base.CurrentUserID(ctx)
+	u, err := s.base.CurrentUser(ctx)
 	if err != nil {
 		return fmt.Errorf("identifying the API key's user: %w", err)
+	}
+	id := u.ID
+	if s.me != id {
+		if s.cfg.Label != "" {
+			s.log = s.rootLog.WithPrefix("[user " + id + "] ")
+		}
+		s.infof("Library: working for %s <%s> (user %s)", u.Name, u.Email, id)
 	}
 	*me, s.me = id, id
 	if s.idx == nil {

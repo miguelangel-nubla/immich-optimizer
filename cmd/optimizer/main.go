@@ -624,19 +624,20 @@ func run(args []string) error {
 		keys := config.ImmichAPIKeys
 		libraryDone = make(chan error, len(keys))
 		for i, key := range keys {
-			wlog := logger
+			label := ""
 			if len(keys) > 1 {
-				wlog = logger.WithPrefix(fmt.Sprintf("[user %d] ", i+1))
+				label = fmt.Sprintf("key %d of %d", i+1, len(keys))
 			}
 			svc := library.New(library.Config{
+				Label:         label,
 				ReadyTimeout:  config.LibraryReadyTimeout,
 				Version:       version,
 				ConfigSHA256:  configSHA256,
 				Concurrency:   config.LibraryConcurrency,
 				IsMotionPhoto: motionphoto.IsMotionJPEG,
-			}, immich.NewLibraryClient(config.ImmichURL, key, httpClient), engine, auditLog, wlog)
+			}, immich.NewLibraryClient(config.ImmichURL, key, httpClient), engine, auditLog, logger)
 			events := immich.NewEventClient(config.ImmichURL, key)
-			events.Errorf = wlog.Warnf
+			events.Errorf = svc.Warnf
 			go func() { libraryDone <- svc.Serve(libraryCtx, events) }()
 		}
 		logger.Printf("Library mode: converting what is tagged %s in Immich, for %d user(s); originals go to Immich's trash", library.TagConvert, len(keys))

@@ -111,3 +111,11 @@ type LibraryUploadResult struct {
 	ID        string
 	Duplicate bool // Immich already had these exact bytes as asset ID
 }
+
+// LibraryUser is the Immich user an API key belongs to. ID never changes;
+// name and email can.
+type LibraryUser struct {
+	ID    string
+	Name  string
+	Email string
+}

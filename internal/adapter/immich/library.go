@@ -211,17 +211,19 @@ func (d *assetDTO) toEntity() (entity.LibraryAsset, error) {
 	return a, nil
 }
 
-func (c *LibraryClient) CurrentUserID(ctx context.Context) (string, error) {
+func (c *LibraryClient) CurrentUser(ctx context.Context) (entity.LibraryUser, error) {
 	var me struct {
-		ID string `json:"id"`
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		Email string `json:"email"`
 	}
 	if err := c.call(ctx, http.MethodGet, "/users/me", nil, &me); err != nil {
-		return "", err
+		return entity.LibraryUser{}, err
 	}
 	if me.ID == "" {
-		return "", fmt.Errorf("immich did not report the API key's user")
+		return entity.LibraryUser{}, fmt.Errorf("immich did not report the API key's user")
 	}
-	return me.ID, nil
+	return entity.LibraryUser{ID: me.ID, Name: me.Name, Email: me.Email}, nil
 }
 
 func (c *LibraryClient) ListAssets(ctx context.Context, page int) ([]entity.LibraryAsset, int, error) {

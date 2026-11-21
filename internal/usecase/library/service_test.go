@@ -98,10 +98,10 @@ func (f *fakeImmich) get(id string) (*fakeAsset, error) {
 	return a, nil
 }
 
-func (f *fakeImmich) CurrentUserID(context.Context) (string, error) {
+func (f *fakeImmich) CurrentUser(context.Context) (entity.LibraryUser, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return me, f.fail("CurrentUserID")
+	return entity.LibraryUser{ID: me, Name: "Test", Email: "test@example.com"}, f.fail("CurrentUser")
 }
 
 func (f *fakeImmich) ListAssets(_ context.Context, page int) ([]entity.LibraryAsset, int, error) {
