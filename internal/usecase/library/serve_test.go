@@ -335,3 +335,37 @@ func TestServeLogNamesTheUser(t *testing.T) {
 		t.Errorf("the key is still named after the user is known:\n%s", after)
 	}
 }
+
+// At start, the tags under immich-optimizer/ that are not used are deleted,
+// unless assets still carry them.
+func TestServeTidiesTheOptimizersTags(t *testing.T) {
+	h := tagged(t)
+	writeLog(t, h.logPath, `{"source":"library","event":"full_read"}`+"\n")
+	if _, err := h.im.UpsertTags(context.Background(), []string{TagPrefix + "redo", TagPrefix + "convert/gone", TagFailed, TagReview, "holiday"}); err != nil {
+		t.Fatal(err)
+	}
+	a := h.im.add("IMG_1.jpg", photo(1))
+	h.im.tag(a, TagPrefix+"convert/gone")
+	ev := h.serve()
+	ev.handlers(t) // started: tidied, and its own tags created
+	h.waitFor("the unused tag to be deleted", func() bool { return h.im.tags[TagPrefix+"redo"] == "" })
+	h.im.mu.Lock()
+	defer h.im.mu.Unlock()
+	for _, v := range []string{TagPrefix + "convert/gone", TagFailed, TagReview, "holiday", TagConvert, TagKeep} {
+		if h.im.tags[v] == "" {
+			t.Errorf("%s was deleted", v)
+		}
+	}
+	if !h.im.hasTag(a, TagPrefix+"convert/gone") {
+		t.Error("an asset lost a tag it had")
+	}
+	h.im.mu.Unlock()
+	deleted := false
+	for _, e := range h.entries() {
+		deleted = deleted || e.Event == "tag_deleted" && e.Detail == TagPrefix+"redo"
+	}
+	h.im.mu.Lock()
+	if !deleted {
+		t.Error("the deletion is not in the audit log")
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -578,6 +579,8 @@ func TestLibraryTags(t *testing.T) {
 	u.tag(t, tagConvert, broken.ID)
 	// Tagged keep and convert, as tagging in bulk does: keep protects it.
 	u.tagWith(t, []string{tagKeep, tagConvert}, kept.ID)
+	// A tag an earlier version used, on no asset: library mode deletes it.
+	u.tagID(t, "immich-optimizer/redo")
 
 	// JPEGs convert; the only PNG task fails, so that the failed tag is set.
 	cfg := sharedDir(t)
@@ -618,6 +621,12 @@ func TestLibraryTags(t *testing.T) {
 		if !contains(values, want) {
 			t.Errorf("tag %s does not exist after a run: %v", want, values)
 		}
+	}
+	if contains(values, "immich-optimizer/redo") {
+		t.Error("the unused tag immich-optimizer/redo was not deleted")
+	}
+	if !contains(events(log, ""), "tag_deleted") {
+		t.Errorf("the deletion is not in the audit log: %v", events(log, ""))
 	}
 	newID := replacedBy(log, conv.ID)
 	if newID == "" {
@@ -850,7 +859,8 @@ func TestLibraryProfiles(t *testing.T) {
 	u.tag(t, tagConvert+"/smaller", mine.ID)
 	u.tag(t, tagConvert+"/lossless", bundled.ID)
 	code, out, log := runLibrary(t, u, sharedDir(t), map[string]string{"E2E_TAGS": "own"}, profiles+":/etc/immich-optimizer/profiles:ro")
-	if code != 0 || !strings.Contains(out, "lossless, passthrough-all, profile1, smaller") {
+	listed := regexp.MustCompile(`Library mode: profiles ([^(]*) \(`).FindStringSubmatch(out)
+	if code != 0 || len(listed) < 2 || !strings.Contains(listed[1], "lossless") || !strings.Contains(listed[1], "smaller") {
 		t.Fatalf("library mode (exit %d) did not list the profiles:\n%s", code, out)
 	}
 	for _, c := range []struct {

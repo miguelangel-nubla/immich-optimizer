@@ -575,7 +575,7 @@ func TestBundledProfilesCoverImmichFormats(t *testing.T) {
 		raf raw rw2 rwl sr2 srf srw x3f
 		3gp 3gpp avi flv insv m2t m2ts m4v mkv mov mp4 mpe mpeg mpg mts mxf ts vob webm wmv`)
 	profiles, err := filepath.Glob("../../config/*/tasks.yaml")
-	if err != nil || len(profiles) < 3 {
+	if err != nil || len(profiles) < 2 {
 		t.Fatalf("bundled profiles not found: %v %v", profiles, err)
 	}
 	for _, p := range profiles {

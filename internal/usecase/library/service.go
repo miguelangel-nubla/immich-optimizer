@@ -99,6 +99,8 @@ type Service struct {
 	base port.LibraryAPI
 	// own are the ids of the optimizer's tags, during a run.
 	own map[string]bool
+	// tagValues maps those tags' values to their ids, during a run.
+	tagValues map[string]string
 	// rootLog is log without the label or user prefix.
 	rootLog *logger.Logger
 	// me is the API key's user, once known.
@@ -268,8 +270,8 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 	}
 	// The optimizer's own tags are hidden from every read of an asset for
 	// the rest of the pass.
-	s.api, s.own = withoutOwnTags{s.base, rt.own}, rt.own
-	defer func() { s.api, s.own = s.base, nil }()
+	s.api, s.own, s.tagValues = withoutOwnTags{s.base, rt.own}, rt.own, rt.ids
+	defer func() { s.api, s.own, s.tagValues = s.base, nil, nil }()
 	for i := range assets {
 		assets[i].TagIDs = withoutOwnTags{own: rt.own}.strip(assets[i].TagIDs)
 	}

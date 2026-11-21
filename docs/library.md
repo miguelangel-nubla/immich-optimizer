@@ -112,6 +112,8 @@ These assets are left exactly as they are. The reason for each is written to the
 
 You choose in Immich, with tags. Library mode creates them the first time it runs; they are under `immich-optimizer` in Immich's tag list.
 
+**The `immich-optimizer` tags belong to the optimizer.** At every start, library mode creates the ones it uses and deletes the ones it does not, such as tags of an earlier version or of a profile you removed, so the tag picker only offers what works. A tag that some photos still have is not deleted, since that would silently drop what was asked of them: the log names it and how many photos have it. Every tag library mode adds, removes, creates or deletes is in the [audit log](audit-log.md).
+
 | Tag | Set by | What happens |
 |---|---|---|
 | `immich-optimizer/convert` | you | the asset is converted with your tasks file, and the tag is removed. If it is already converted, it is converted again from the file it has now (see [Converting again](#converting-again)) |
@@ -152,7 +154,7 @@ Tagging a photo that is already converted `convert` (or `convert/<profile>`) con
 
 A profile is another set of tasks, for converting some photos differently: a folder with a `tasks.yaml` (and any scripts or presets its commands use), like the bundled ones. Tag a photo `immich-optimizer/convert/<profile>` to convert it with that profile.
 
-- **The bundled profiles** are available as they are: `convert/lossless`, `convert/profile1` and `convert/passthrough-all` (see [Bundled profiles](tasks.md#bundled-profiles)).
+- **The bundled profiles** are available as they are: `convert/lossless` and `convert/profile1` (see [Bundled profiles](tasks.md#bundled-profiles)).
 - **Your own** go in the profiles folder: mount a folder at `/etc/immich-optimizer/profiles` (or set [`IO_LIBRARY_PROFILES_DIR`](configuration.md#library-mode)), with one folder per profile. A folder named like a bundled profile replaces it.
 
   ```yaml

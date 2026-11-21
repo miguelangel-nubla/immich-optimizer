@@ -116,6 +116,11 @@ func (s *Service) loadTags(ctx context.Context) (*runTags, error) {
 			}
 		}
 		s.infof("Library: created the tags %v in Immich", missing)
+		for _, v := range missing {
+			if err := s.record(Entry{Event: "tag_created", Detail: v}); err != nil {
+				return nil, err
+			}
+		}
 	}
 	rt := &runTags{ids: map[string]string{}, own: map[string]bool{}, convert: map[string]string{},
 		conflict: map[string][]string{}, convertTagged: map[string]map[string]bool{}}
@@ -193,6 +198,55 @@ func (s *Service) loadTags(ctx context.Context) (*runTags, error) {
 	return rt, nil
 }
 
+// knownTags are every tag the optimizer uses, the status tags included.
+func (s *Service) knownTags() map[string]bool {
+	known := map[string]bool{TagFailed: true, TagReview: true}
+	for _, v := range s.commandTags() {
+		known[v] = true
+	}
+	return known
+}
+
+// tidyTags deletes the tags under TagPrefix that the optimizer does not use
+// (left by an earlier version, or by a profile that was removed), so that
+// Immich's tag picker only offers what works. A tag that assets still carry
+// is left alone, with a warning: deleting it would silently drop what was
+// asked of them.
+func (s *Service) tidyTags(ctx context.Context) error {
+	all, err := s.base.Tags(ctx)
+	if err != nil {
+		return fmt.Errorf("listing tags: %w", err)
+	}
+	known := s.knownTags()
+	var unknown []string
+	for v := range all {
+		if strings.HasPrefix(v, TagPrefix) && !known[v] {
+			unknown = append(unknown, v)
+		}
+	}
+	sort.Strings(unknown)
+	for _, v := range unknown {
+		ids, err := s.base.TaggedAssetIDs(ctx, all[v])
+		if err != nil {
+			return fmt.Errorf("finding the assets tagged %s: %w", v, err)
+		}
+		if len(ids) > 0 {
+			if s.log != nil {
+				s.log.Warnf("Library: the tag %s is not one the optimizer uses, but %d asset(s) have it: it is left alone. Remove it from them, or add back the profile it names", v, len(ids))
+			}
+			continue
+		}
+		if err := s.base.DeleteTag(ctx, all[v]); err != nil {
+			return fmt.Errorf("deleting the unused tag %s: %w", v, err)
+		}
+		s.infof("Library: deleted the tag %s, which the optimizer does not use", v)
+		if err := s.record(Entry{Event: "tag_deleted", Detail: v}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // withoutOwnTags hides the optimizer's tags from everything that reads an
 // asset: they are commands and status for this asset only, and must be
 // neither carried over to a converted copy nor counted as a difference.
@@ -241,9 +295,22 @@ func (s *Service) dropOwnTags(ctx context.Context, id string) error {
 			if err := s.base.UntagAssets(ctx, t, []string{id}); err != nil {
 				return fmt.Errorf("removing the optimizer's tag from the new asset: %w", err)
 			}
+			if err := s.record(Entry{Event: "tag_removed", Asset: id, Detail: s.tagValue(t) + " (copied over by Immich)"}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// tagValue returns the value of one of the optimizer's tags, from its id.
+func (s *Service) tagValue(id string) string {
+	for v, tid := range s.tagValues {
+		if tid == id {
+			return v
+		}
+	}
+	return id
 }
 
 // basicChecks are the reasons to leave an asset alone that the listing
@@ -302,15 +369,27 @@ func (s *Service) settleTags(ctx context.Context, rt *runTags, items []*Item) er
 			}
 			id = created[tag]
 			rt.ids[tag], rt.own[id] = id, true
+			if err := s.record(Entry{Event: "tag_created", Detail: tag}); err != nil {
+				errs = append(errs, err)
+				return
+			}
 		}
 		var err error
+		event := "tag_removed"
 		if add {
-			err = s.base.TagAssets(ctx, id, ids)
+			err, event = s.base.TagAssets(ctx, id, ids), "tag_added"
 		} else {
 			err = s.base.UntagAssets(ctx, id, ids)
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("updating the tag %s on %d asset(s): %w", tag, len(ids), err))
+			return
+		}
+		for _, a := range ids {
+			if err := s.record(Entry{Event: event, Asset: a, Detail: tag}); err != nil {
+				errs = append(errs, err)
+				return
+			}
 		}
 	}
 	tags := make([]string, 0, len(rt.convertTagged))

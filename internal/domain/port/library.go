@@ -22,6 +22,8 @@ type LibraryAPI interface {
 	// TaggedAssetIDs returns the owner's assets (in the timeline or the
 	// archive, not in the trash) that have the tag.
 	TaggedAssetIDs(ctx context.Context, tagID string) ([]string, error)
+	// DeleteTag deletes a tag (and takes it off every asset).
+	DeleteTag(ctx context.Context, tagID string) error
 	// TagAssets and UntagAssets add a tag to assets or remove it.
 	TagAssets(ctx context.Context, tagID string, assetIDs []string) error
 	UntagAssets(ctx context.Context, tagID string, assetIDs []string) error

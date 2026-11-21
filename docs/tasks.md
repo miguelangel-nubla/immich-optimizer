@@ -78,7 +78,6 @@ The image ships these under `/etc/immich-optimizer/bundled-configs/<profile>/`. 
 |---|---|---|
 | [`lossless`](../config/lossless/tasks.yaml) (default) | JPEG and PNG to JPEG XL without any loss; the rest unchanged | unchanged |
 | [`profile1`](../config/profile1/tasks.yaml) | lossy JPEG XL (quality 75), HEIC included | HandBrake |
-| [`passthrough-all`](../config/passthrough-all/tasks.yaml) | unchanged | unchanged |
 
 Every bundled profile accepts every file type Immich accepts.
 

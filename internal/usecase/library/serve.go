@@ -155,6 +155,9 @@ func (s *Service) start(ctx context.Context, me *string) error {
 			s.log.Warnf("Library: could not read the audit log (%v); reading the whole library instead", err)
 		}
 	}
+	if err := s.tidyTags(ctx); err != nil {
+		return err
+	}
 	if !s.idx.isKnown() {
 		s.infof("Library: the audit log has no record of earlier conversions; reading the whole library once")
 		_, err := s.Run(ctx)

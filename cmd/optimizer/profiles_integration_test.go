@@ -321,15 +321,6 @@ func TestIntegrationProfilesVideo(t *testing.T) {
 	}
 }
 
-func TestIntegrationPassthroughProfileChangesNothing(t *testing.T) {
-	for _, sample := range []string{"photo.jpg", "photo.heic", "photo.png", "motion.jpg", "motion.heic", "live.mov", "clip.mp4"} {
-		res := runProfile(t, "passthrough-all", sample, "")
-		if !sameBytes(t, res.ProcessedFilePath, filepath.Join(mediaDir(), sample)) {
-			t.Errorf("passthrough-all changed %s", sample)
-		}
-	}
-}
-
 // The validity check library mode applies to converted files, run with the
 // image's real tools.
 func TestIntegrationOutputCheck(t *testing.T) {

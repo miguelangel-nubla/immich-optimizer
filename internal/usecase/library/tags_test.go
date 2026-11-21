@@ -405,3 +405,36 @@ func TestConvertWithAProfile(t *testing.T) {
 		t.Error("the failure does not name the tags")
 	}
 }
+
+// Every tag change the optimizer makes is in the audit log.
+func TestTagChangesAreAudited(t *testing.T) {
+	h := tagged(t)
+	a := h.im.add("IMG_1.jpg", photo(1))
+	b := h.im.add("IMG_2.jpg", photo(2))
+	h.im.tag(a, TagConvert)
+	h.im.tag(b, TagConvert)
+	h.conv.failOn = "IMG_2.jpg"
+	if _, err := h.run(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"tag_created|" + TagKeep:                 false,
+		"tag_removed|" + TagConvert + "|" + a.ID: false,
+		"tag_created|" + TagFailed:               false,
+		"tag_added|" + TagFailed + "|" + b.ID:    false,
+	}
+	for _, e := range h.entries() {
+		k := e.Event + "|" + e.Detail
+		if e.Asset != "" {
+			k += "|" + e.Asset
+		}
+		if _, ok := want[k]; ok {
+			want[k] = true
+		}
+	}
+	for k, seen := range want {
+		if !seen {
+			t.Errorf("not in the audit log: %s", k)
+		}
+	}
+}

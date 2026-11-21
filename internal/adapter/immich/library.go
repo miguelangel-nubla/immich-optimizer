@@ -316,6 +316,10 @@ func (c *LibraryClient) TaggedAssetIDs(ctx context.Context, tagID string) ([]str
 	}
 }
 
+func (c *LibraryClient) DeleteTag(ctx context.Context, tagID string) error {
+	return c.call(ctx, http.MethodDelete, "/tags/"+url.PathEscape(tagID), nil, nil)
+}
+
 func (c *LibraryClient) TagAssets(ctx context.Context, tagID string, assetIDs []string) error {
 	if len(assetIDs) == 0 {
 		return nil

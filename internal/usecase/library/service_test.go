@@ -216,6 +216,27 @@ func (f *fakeImmich) TaggedAssetIDs(_ context.Context, tagID string) ([]string, 
 	return ids, nil
 }
 
+func (f *fakeImmich) DeleteTag(_ context.Context, tagID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for v, id := range f.tags {
+		if id == tagID {
+			delete(f.tags, v)
+			f.tagCalls = append(f.tagCalls, "delete:"+v)
+		}
+	}
+	for _, a := range f.assets {
+		kept := a.TagIDs[:0]
+		for _, t := range a.TagIDs {
+			if t != tagID {
+				kept = append(kept, t)
+			}
+		}
+		a.TagIDs = kept
+	}
+	return nil
+}
+
 func (f *fakeImmich) TagAssets(_ context.Context, tagID string, assetIDs []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -603,6 +624,7 @@ type fakeConv struct {
 	noGain     bool
 	jxlToo     bool   // a task also converts .jxl, as one that converts again does
 	task       string // the task's name in the marker; "jpeg-xl" when empty
+	failOn     string // a file name whose conversion fails
 	convertErr error
 	verifyErr  error
 	motion     string
@@ -613,6 +635,9 @@ type fakeConv struct {
 func (c *fakeConv) Convert(_ context.Context, in entity.ConvertInput) (*entity.ConvertResult, error) {
 	if c.convertErr != nil {
 		return nil, c.convertErr
+	}
+	if c.failOn != "" && in.Filename == c.failOn {
+		return nil, errors.New("this one fails")
 	}
 	if !in.SkipUndone {
 		return nil, errors.New("library mode must not save originals to undone")
