@@ -51,7 +51,7 @@ The proxy takes care of this: it tells the app the checksums of the originals. T
 - **It covers [library mode](library.md#phones) too**: photos converted there are not uploaded again either.
 - **Lossy and video tasks** should give the same result for the same file every time. The app uploads a photo once, but if it ever does so again (after a reinstall, say) and the conversion comes out different, Immich stores a second copy.
 
-**What it is tested with.** The real Android app (Immich v3.4.2) in an emulator, in the project's own tests. The iOS app uses the same code for all of this and has been checked by reading its source, but it has not been run against the proxy: if you use an iPhone, look at the backup page after the first backup, and [report](https://github.com/miguelangel-nubla/immich-optimizer/issues) what does not look right.
+**What it is tested with.** The real Immich apps (v3.4.2), in the project's own tests: Android in an emulator, iOS in Xcode's simulator. [Details.](app-sync.md#what-it-is-tested-with)
 
 **If Immich changes** the way the app and the server talk, the proxy passes on untouched whatever it no longer understands. The worst case is that the app goes back to uploading again; nothing in Immich is affected.
 

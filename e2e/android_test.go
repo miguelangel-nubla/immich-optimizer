@@ -598,7 +598,7 @@ func TestAndroidAppBackup(t *testing.T) {
 
 // eventuallyRestarting is eventually for things the app only does when it
 // syncs or looks for things to back up: it starts the app again now and then.
-func eventuallyRestarting(t *testing.T, p phone, timeout time.Duration, what string, check func() bool) {
+func eventuallyRestarting(t *testing.T, p interface{ restart() }, timeout time.Duration, what string, check func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {

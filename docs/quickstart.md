@@ -55,7 +55,7 @@ docker compose up -d
 
 Nothing changes in the app: it uses the same address as before.
 
-The app would normally not recognise its own photos once they are converted, and upload them again. The optimizer takes care of that by itself. It has been tested with the Android app; on an iPhone it should work the same, but nobody has tried yet, so have a look at the app's backup page after the first backup. [More about it.](proxy.md#the-mobile-app)
+The app would normally not recognise its own photos once they are converted, and upload them again. The optimizer takes care of that by itself, with the Android and the iPhone app. [More about it.](proxy.md#the-mobile-app)
 
 ## Good to know
 

@@ -17,6 +17,9 @@
 # Set E2E_ANDROID=1 to also boot an Android emulator with the Immich app and
 # run the tests that drive the real app (see scripts/android-emulator.sh for
 # what it needs). An emulator that is already up is reused and left running.
+# Set E2E_IOS=1 (on a Mac) to also boot a simulated iPhone with the Immich app
+# and run the tests that drive it (see scripts/ios-simulator.sh: the first run
+# builds the app, which is slow). A device that is already up is reused.
 set -euo pipefail
 
 IMAGE="${1:-ghcr.io/miguelangel-nubla/immich-optimizer:dev}"
@@ -34,10 +37,14 @@ OUT="$(mktemp -d)"
 
 ANDROID_SERIAL=""
 ANDROID_STARTED=""
+IOS_STARTED=""
 
 cleanup() {
   if [ -n "$ANDROID_STARTED" ] && [ -z "${E2E_KEEP:-}" ]; then
     scripts/android-emulator.sh down || true
+  fi
+  if [ -n "$IOS_STARTED" ] && [ -z "${E2E_KEEP:-}" ]; then
+    scripts/ios-simulator.sh down || true
   fi
   if [ -z "${E2E_KEEP:-}" ]; then
     "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
@@ -67,6 +74,14 @@ if [ -n "${E2E_ANDROID:-}" ]; then
     ANDROID_STARTED=1
     scripts/android-emulator.sh up
   fi
+fi
+
+if [ -n "${E2E_IOS:-}" ]; then
+  if ! scripts/ios-simulator.sh ready; then
+    IOS_STARTED=1
+    scripts/ios-simulator.sh up
+  fi
+  while read -r line; do export "$line"; done < <(scripts/ios-simulator.sh env)
 fi
 
 E2E_ANDROID_SERIAL="$ANDROID_SERIAL" \

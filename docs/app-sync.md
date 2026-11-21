@@ -35,7 +35,7 @@ Two kinds of marker get no hidden entry: one on an original that library mode ke
 
 The app finds "its" server asset for a photo through the checksum, which leads it to the hidden entry. Two things it then does name that entry in a request:
 
-- **The iOS app records each photo's iCloud id** on the asset, for many assets in one request. Immich refuses the whole request over a single id it does not know, so the proxy takes the hidden entries out of it. The real asset is usually in the same request and gets the id.
+- **The iOS app records each photo's iCloud id** on the asset, for many assets in one request, each time it starts, for every asset that has no record yet. The proxy gives each hidden entry a copy of its asset's record in the sync, so the app has nothing to send for it. Should a request name a hidden entry anyway, the proxy takes it out: Immich would refuse the whole request over one id it does not know.
 - **After a photo is edited on the phone** and uploaded again, the app stacks the new upload on the earlier one. The proxy puts the converted asset in the hidden entry's place, which is what the app means.
 
 In the address of a request, a hidden id is replaced by the real one in the same way.
@@ -54,6 +54,11 @@ In the address of a request, a hidden id is replaced by the real one in the same
 
 ## What it is tested with
 
-The [end-to-end tests](development.md) drive the real Immich Android app (v3.4.2) in an emulator: a backup with photos, a motion photo and a video, trash, restore and permanent deletion, library mode converting photos the phone still has, and what the app does when the proxy answers with an error. Against a real Immich without a phone, they also cover a phone that had synced before, and the two requests above.
+The [end-to-end tests](development.md) drive the real Immich apps (v3.4.2) through the proxy and read the app's own database to see what it considers backed up:
 
-The iOS app has not been run against the proxy. Its source (v3.4.2) was compared with Android's: deciding what is backed up, the sync, its acknowledgements and the live connection are the same code on both. What differs on iOS is the iCloud id request above, uploads in the background (which name the file in a separate field, handled), and Live Photos (one checksum per photo, so one hidden entry). Whether iOS always uploads exactly the bytes it computed the checksum from, for edited, RAW+JPEG and burst photos, cannot be told from the source; that would matter with or without the proxy.
+- **Android**, in an emulator, on every push: a backup with photos, a motion photo and a video, trash, restore and permanent deletion, library mode converting photos the phone still has, and what the app does when the proxy answers with an error.
+- **iOS**, in Xcode's simulator, run by hand on a Mac: the same backup, trash, restore and deletion, plus the iCloud records above, a Live Photo (the photo converted, still paired with its video), and a photo edited in the Photos app.
+
+Against a real Immich without a phone, they also cover a phone that had synced before, and the requests above.
+
+Not run on iOS: **uploads in the background.** iOS starts the app's background task when it chooses, and the simulator only does it on demand through the debugger. The background task uses the same upload and the same check for what is backed up as the app in front, and names the file in a separate form field, which the proxy reads. RAW+JPEG pairs and burst photos are not in the test either; what the app uploads for those is up to iOS, with or without the proxy.
