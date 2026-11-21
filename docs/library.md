@@ -148,7 +148,7 @@ Library mode recognises such a file without converting it again. Every converted
 
 The official mobile app decides what to back up by checksum: a photo counts as backed up while the server has a file with the same checksum, in the timeline or in the trash. A converted file has another checksum.
 
-**With the proxy's app sync, a phone is not affected.** When the phone reaches Immich through [proxy mode](proxy.md) with the [experimental app sync](proxy.md#experimental-making-the-mobile-app-see-converted-photos-as-backed-up) on, it learns the original's checksum from each conversion's [marker](marker.md), whether the proxy or library mode made the conversion. Photos that are still on the phone are converted like any other and are not uploaded again. This is tested with the real Android app in an emulator: library mode converts photos the phone has, the trash is emptied, and the app uploads nothing.
+**With the proxy's app sync, you can ignore this.** When the phone reaches Immich through [proxy mode](proxy.md) with the [experimental app sync](proxy.md#experimental-making-the-mobile-app-see-converted-photos-as-backed-up) on, the app is told the original's checksum together with each converted photo, whether the proxy or library mode converted it. So it keeps counting a photo as backed up after library mode has replaced it, also once the original has left the trash, and does not upload it again. You can run library mode on the whole library without thinking about which photos are still on a phone. This is tested with the real Android app in an emulator: library mode converts photos the phone has, the trash is emptied, and the app uploads nothing.
 
 **Without it**, a photo that is still on a phone with backup on comes back:
 
