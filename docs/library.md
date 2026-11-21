@@ -36,7 +36,7 @@ It keeps running and waits. **Nothing happens until you tag something** in Immic
 
 Library mode keeps a live connection to Immich, the same one the web and mobile apps use. Immich tells it within a second or two when an asset is tagged, and it acts on it. Every 15 minutes it also looks for tagged assets by itself, in case a message was missed.
 
-When it starts, it settles anything an earlier run left unfinished (a replacement interrupted by a restart, for example) and then acts on whatever is tagged. To know what may be unfinished, and which originals were converted into what, it reads its [audit log](audit-log.md) instead of every asset in Immich. The log is only used to know where to look: before acting, the optimizer always checks the asset's [marker](marker.md) in Immich. If the log is missing or empty, it reads the whole library once instead, which takes a while on a large library.
+When it starts, it settles anything left unfinished (a replacement interrupted by a restart, for example) and then acts on whatever is tagged. To know what may be unfinished, and which originals were converted into what, it reads its [audit log](audit-log.md) instead of every asset in Immich. The log is only used to know where to look: before acting, the optimizer always checks the asset's [marker](marker.md) in Immich. If the log is missing or empty, it reads the whole library once instead, which takes a while on a large library.
 
 ## What happens to each asset
 
@@ -85,28 +85,37 @@ Every ✅ row is checked in step 5: if the copy differs from the original in any
 - Memories are not read back: adding the copy to a memory is confirmed by Immich's answer, and a refusal undoes the replacement like any other difference.
 - **Dimensions and orientation are not compared**, because a task may resize, crop or rotate. A video's length may differ by half a second or 2%.
 
-The validity check in step 2 does **not** compare the picture with the original either: a task is free to crop, resize, watermark or re-encode. It only rejects results that are broken. Library mode converts with whatever your tasks file says, and treats every task the same way.
+The validity check in step 2 does **not** compare the picture with the original either: a task is free to crop, resize, watermark or re-encode. It only rejects results that are broken. Library mode converts with whatever your tasks file (or the [profile](#profiles) the asset is tagged for) says, and treats every task the same way.
 
 ## What is skipped
 
-These assets are left exactly as they are. The reason for each is written to the debug log; assets marked 📝 also get an audit log entry.
+Library mode only looks at what is tagged to be converted. A tagged asset is still left exactly as it is in the cases below. The log says why, and those marked 📝 also get an [audit log](audit-log.md) entry.
+
+**The `convert` tag is removed**, because there is nothing more to do:
 
 | Asset | Why |
 |---|---|
-| Its task is a passthrough, or no task handles its type | there is nothing to convert |
-| It does not get smaller 📝 | the original is kept and marked, so later runs do not download it again |
+| No task converts its type: the task for it uploads it as it is, or there is none | there is nothing to convert. For a photo already converted, this is the usual case: the bundled profiles have no task for JPEG XL |
+| It does not get smaller 📝 | the original is kept and marked as kept. Tagging it again tries again, with your tasks as they are then |
+| An asset that is already converted, and converting it again does not make it smaller | it stays exactly as it is, record included |
 | A motion photo whose video Immich did not extract 📝 | converting the photo would lose the video |
 | A motion photo with `motion_photos: keep` or `drop_photo` 📝 | the result would hide or drop a part of it. Use `drop_video`, as the bundled profiles do |
 | Has comments or likes in a shared album | they belong to the asset and cannot be moved to the copy |
-| In the locked folder | not visible to an API key |
 | In an external library | Immich does not own those files |
-| In the trash, hidden, or offline | not part of the visible library |
-| Belongs to another user or a partner | each user runs library mode with their own key |
-| Not tagged `immich-optimizer/convert` | see [Choosing what to convert](#choosing-what-to-convert) |
-| Already converted, already looked at, or tagged `keep` | recognised by its [marker](marker.md) |
+| Its record is from an earlier version and does not say what its original was | the new record could not tell phones which file they have |
 | A second copy of a converted original that has something of its own 📝 | see [Second copies](#second-copies-of-converted-originals) |
-| Immich has not finished reading it yet | it is picked up by a later run |
-| It changed while it was being replaced | you edited it, or Immich was still analysing it. The copy is removed and a later run converts it |
+
+**The tag stays**, and the asset is tried again later:
+
+| Asset | When it is tried again |
+|---|---|
+| Tagged `keep` | never, while it has `keep` |
+| Tagged `failed` (its conversion failed) | once you remove `failed` |
+| Immich has not finished reading it yet | at the next batch |
+| In the trash, or its file is offline | once it is back |
+| It changed while it was being replaced (you edited it, or Immich was still analysing it) | the copy is removed, and it is converted at the next batch |
+
+**Not seen at all**, so a tag on them does nothing: photos that are hidden or in the locked folder, and other people's photos (a partner's, or someone else's in a shared album). A key acts on its own user's photos only: the owner's key converts them.
 
 ## Choosing what to convert
 
@@ -139,7 +148,7 @@ You choose in Immich, with tags. Library mode creates them the first time it run
 - **Tags are settled once a batch is finished.** A batch that is stopped (the container is restarted, for example) leaves them as they are, and they are acted on again after the restart.
 - **Change a photo's tags one at a time.** Immich can lose one of two changes made to the same photo within a second or two, such as removing one tag and adding another straight after. Add or remove several tags in one go (select them together in the tag picker), or wait a moment in between.
 - **The optimizer's tags are never carried over** to a converted copy, and are not counted as a difference when the copy is compared with its original. Your own tags are carried over as usual.
-- **Cleaning up does not depend on tags.** [Second copies](#second-copies-of-converted-originals) are moved to the trash and replacements an earlier run left unfinished are completed, all over the library.
+- **Cleaning up does not depend on tags.** [Second copies](#second-copies-of-converted-originals) go to the trash as they are uploaded, and a replacement a restart interrupted is completed or undone when library mode starts, tagged or not.
 
 ### Converting again
 
@@ -171,10 +180,10 @@ A profile is another set of tasks, for converting some photos differently: a fol
 
 An original can come back after it was converted: the mobile app uploads a photo again when the server no longer has a file with its checksum, which is the case once the original has left Immich's trash (see [Phones](#phones)).
 
-Library mode recognises such a file without converting it again. Every converted asset carries a [marker](marker.md) with the checksum of its original, and each run reads them all. An unconverted asset whose file has that checksum is a second copy of the same photo.
+Library mode recognises such a file without converting it again. Every converted asset carries a [marker](marker.md) with the checksum of its original. An unconverted asset whose file has that checksum is a second copy of the same photo.
 
 - **It is moved to the trash**, and the audit log gets a `second_copy_trashed` entry that names both assets. The converted asset is not touched.
-- **The optimizer keeps no list of its own.** It recognises second copies from the markers in Immich, afresh on every run.
+- **The optimizer keeps no list of its own.** Its [audit log](audit-log.md) says which originals were converted into what, and before acting it checks the converted asset's marker in Immich. With no audit log, it reads the markers of the whole library once.
 - **It is left alone when it has something the converted asset lacks**: it is a favorite, has a description, a rating, tags or edits, or is in an album, stack or shared link the converted asset is not in. It is tagged `immich-optimizer/review`, and the audit log says what it has, so you can merge the two by hand.
 - **It happens within seconds of the upload.** Immich announces every upload with its checksum, and library mode compares it with the originals its audit log knows. Nothing else is read.
 
@@ -188,7 +197,7 @@ The official mobile app decides what to back up by checksum: a photo counts as b
 
 1. Library mode converts the photo and moves the original to the trash. The app still finds the original's checksum there and stays quiet.
 2. Immich empties the trash (30 days by default). The checksum is gone, and the app uploads the photo again.
-3. The next library run finds the [second copy](#second-copies-of-converted-originals) and moves it to the trash, which starts at 1 again.
+3. Library mode sees the [second copy](#second-copies-of-converted-originals) arrive and moves it to the trash, which starts at 1 again.
 
 Nothing is lost, but such a photo saves no space: its original is in the trash most of the time.
 
@@ -197,12 +206,12 @@ Nothing is lost, but such a photo saves no space: its original is in the trash m
 - **Live photos (Apple) and motion photos (Android)** are a photo paired with a short video. In Immich the video is an asset of its own, hidden behind the photo. Library mode converts the photo and pairs the copy with that same video. The video itself is not converted.
 - **Edits made in Immich** are stored as positions on the original picture. They are copied to the new asset when it has the same pixel size. If your task resizes or crops, an edited asset fails the comparison and is left as it is; unedited assets are converted normally.
 
-## Things to know before running it
+## Things to know before you start
 
 - **A phone that still has the photos uploads them again** once the originals have left Immich's trash, unless it reaches Immich through the proxy. See [Phones](#phones).
-- **Android: turn off "Sync remote deletions" in the Immich app** (Settings → Advanced, marked experimental, off by default) before a real run. With it on, the app deletes a photo from the phone when the same photo is moved to the trash on the server, which is exactly what library mode does with each original.
+- **Android: turn off "Sync remote deletions" in the Immich app** (Settings → Advanced, marked experimental, off by default) before you tag anything. With it on, the app deletes a photo from the phone when the same photo is moved to the trash on the server, which is exactly what library mode does with each original.
 - **Space is freed when Immich empties its trash**, not at once. Until then the original also counts against a user's storage quota.
-- It waits for Immich to finish reading each new file, so a large library takes a long time. By default it works on one asset at a time; [`IO_LIBRARY_CONCURRENCY`](configuration.md#library-mode) raises that, at the cost of more load on Immich. It can be stopped at any point: when it starts again it finishes or undoes whatever was in progress, and carries on with what is still tagged.
+- It waits for Immich to finish reading each new file, so converting a large library takes a long time. By default it works on one asset at a time; [`IO_LIBRARY_CONCURRENCY`](configuration.md#library-mode) raises that, at the cost of more load on Immich. It can be stopped at any point: when it starts again it finishes or undoes whatever was in progress, and carries on with what is still tagged.
 
 Every step is written to the [audit log](audit-log.md).
 

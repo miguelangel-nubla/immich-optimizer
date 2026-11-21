@@ -14,7 +14,7 @@ Shrinks the photos and videos in your [Immich](https://immich.app/) library by c
 |---|---|---|
 | [Proxy](docs/proxy.md) | sits in front of Immich and converts uploads on the way in | the web interface, the mobile app, `immich-go`, the CLI |
 | [Watcher](docs/watcher.md) | watches a folder, converts and uploads what appears in it | importing folders of plain files in one step, without the Immich CLI or immich-go; phone backup through a sync tool |
-| [Library](docs/library.md) | converts the assets already in Immich | shrinking an existing library; together with proxy mode when phones back up to Immich |
+| [Library](docs/library.md) | converts the assets already in Immich that you tag | shrinking an existing library, a photo at a time or all of it; together with proxy mode when phones back up to Immich |
 
 The mode is set with `IO_MODE` and has no default. Modes can be combined: `IO_MODE=watcher,proxy`.
 
