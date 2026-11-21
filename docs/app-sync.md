@@ -1,6 +1,6 @@
 # How app sync works
 
-This page explains what the proxy does when [`IO_PROXY_EXPERIMENTAL_APP_SYNC=true`](proxy.md#the-mobile-app). You do not need it to use the setting; it is here for when you want to know what happens, or have to find out why something does not.
+This page explains what the proxy does so that [the mobile app](proxy.md#the-mobile-app) counts converted photos as backed up. You do not need it to use the proxy; it is here for when you want to know what happens, or have to find out why something does not.
 
 ## The problem
 
@@ -26,10 +26,19 @@ The hidden entry:
 - **Right after an upload.** Immich tells the app about a finished upload over a live connection (a websocket), not through the sync. The proxy adds the hidden entry there too, so the app counts the photo as backed up at once.
 - **Trash and restore.** These change the asset, not its marker, so no marker passes by. For each asset the app is told about, the proxy therefore asks Immich whether it has a marker, and sends the hidden entry along in the same state: in the trash when the asset is, out of it when the asset is restored.
 - **Deleting for good**, or removing the marker, deletes the hidden entry from the phone as well.
-- **A phone that synced before the setting was on** has no hidden entries, and Immich has no reason to send those markers again. Such a phone uploads a photo once more. The proxy finds the conversion already in Immich, stores nothing new, and writes the marker again unchanged, which makes Immich send it out. The hidden entry arrives with the next sync.
+- **A phone that synced without the proxy**, or with an earlier version of it, has no hidden entries, and Immich has no reason to send those markers again. Such a phone uploads a photo once more. The proxy finds the conversion already in Immich, stores nothing new, and writes the marker again unchanged, which makes Immich send it out. The hidden entry arrives with the next sync.
 - **Assets converted by library mode** carry the same marker, so all of this applies to them.
 
 Two kinds of marker get no hidden entry: one on an original that library mode kept as it is (its own entry already has the right checksum), and one on a replacement library mode has not finished.
+
+## Requests that name a hidden entry
+
+The app finds "its" server asset for a photo through the checksum, which leads it to the hidden entry. Two things it then does name that entry in a request:
+
+- **The iOS app records each photo's iCloud id** on the asset, for many assets in one request. Immich refuses the whole request over a single id it does not know, so the proxy takes the hidden entries out of it. The real asset is usually in the same request and gets the id.
+- **After a photo is edited on the phone** and uploaded again, the app stacks the new upload on the earlier one. The proxy puts the converted asset in the hidden entry's place, which is what the app means.
+
+In the address of a request, a hidden id is replaced by the real one in the same way.
 
 ## What it costs
 
@@ -41,8 +50,10 @@ Two kinds of marker get no hidden entry: one on an original that library mode ke
 
 - **Immich changes the format** of the sync or of the live messages. The proxy passes on unchanged whatever it does not recognise, so the app would stop receiving hidden entries and go back to uploading. Nothing in Immich is affected.
 - **The app reaches Immich some other way** for part of its traffic. A sync that does not go through the proxy carries no hidden entries.
-- **The setting is turned off again.** Hidden entries stay on a phone until the app syncs from scratch: log out and in again.
+- **The phone stops going through the proxy.** Hidden entries stay on it until the app syncs from scratch: log out and in again.
 
 ## What it is tested with
 
-The [end-to-end tests](development.md) drive the real Immich Android app (v3.4.2) in an emulator: a backup with and without the setting, photos, a motion photo and a video, trash, restore and permanent deletion, turning the setting on for a phone that had already synced, and library mode converting photos the phone still has. It has not been tried on iOS.
+The [end-to-end tests](development.md) drive the real Immich Android app (v3.4.2) in an emulator: a backup with photos, a motion photo and a video, trash, restore and permanent deletion, library mode converting photos the phone still has, and what the app does when the proxy answers with an error. Against a real Immich without a phone, they also cover a phone that had synced before, and the two requests above.
+
+The iOS app has not been run against the proxy. Its source (v3.4.2) was compared with Android's: deciding what is backed up, the sync, its acknowledgements and the live connection are the same code on both. What differs on iOS is the iCloud id request above, uploads in the background (which name the file in a separate field, handled), and Live Photos (one checksum per photo, so one hidden entry). Whether iOS always uploads exactly the bytes it computed the checksum from, for edited, RAW+JPEG and burst photos, cannot be told from the source; that would matter with or without the proxy.

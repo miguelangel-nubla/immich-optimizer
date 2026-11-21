@@ -348,17 +348,6 @@ func received(t *testing.T, container string) int {
 	return strings.Count(string(out), "Intercepted upload request")
 }
 
-func uploads(t *testing.T, undone string) int {
-	t.Helper()
-	n := 0
-	for _, e := range readLog(t, filepath.Join(undone, "audit.log")) {
-		if e["event"] == "uploaded" {
-			n++
-		}
-	}
-	return n
-}
-
 // assetOf returns the user's asset that was converted from the sample.
 func (u *user) assetOf(t *testing.T, sample string) string {
 	t.Helper()
@@ -372,36 +361,20 @@ func (u *user) assetOf(t *testing.T, sample string) string {
 	return ""
 }
 
-// The reason the experimental app sync exists: the app decides what to back
-// up by comparing the phone's files with the checksums the server reports,
-// and a converted photo has a different one. These run backups in the real
-// app, with the setting off and on.
+// The app decides what to back up by comparing the phone's files with the
+// checksums the server reports, and a converted photo has a different one.
+// The proxy tells the app the originals' checksums. These run backups in the
+// real app to see that it then counts converted photos as backed up.
 func TestAndroidAppBackup(t *testing.T) {
 	if androidSerial == "" || adbPath == "" {
 		t.Skip("needs an Android emulator: run with E2E_ANDROID=1 scripts/e2e-test.sh")
 	}
 	photos := []string{"photo.jpg", "plain.jpg", "photo.png"}
 
-	t.Run("without app sync the phone uploads converted photos again", func(t *testing.T) {
+	t.Run("the phone sees converted photos as backed up and uploads them once", func(t *testing.T) {
 		u := newUser(t)
 		undone := sharedDir(t)
 		name, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy"}, true, undone+":/undone")
-		p := setUpPhone(t, proxy, u, photos)
-
-		eventually(t, 3*time.Minute, "the app to upload the photos", func() bool { return uploads(t, undone) >= len(photos) })
-		eventually(t, 2*time.Minute, "the app to learn about the converted assets", func() bool { return p.queryInt(sqlRemote) == len(photos) })
-		if n := p.queryInt(sqlNotBackedUp); n != len(photos) {
-			t.Fatalf("the app has %d photo(s) left to back up, want all %d: the converted checksums should not match", n, len(photos))
-		}
-		// So when it looks again, it sends them all again.
-		p.restart()
-		eventually(t, 2*time.Minute, "the app to upload the photos a second time", func() bool { return received(t, name) >= 2*len(photos) })
-	})
-
-	t.Run("with app sync the phone sees them as backed up and uploads once", func(t *testing.T) {
-		u := newUser(t)
-		undone := sharedDir(t)
-		name, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy", "IO_PROXY_EXPERIMENTAL_APP_SYNC": "true"}, true, undone+":/undone")
 		// A motion photo (converted without its video) and a video (not
 		// converted by this profile) next to the ordinary photos.
 		samples := append(append([]string(nil), photos...), "motion.jpg", "clip.mp4")
@@ -507,43 +480,6 @@ func TestAndroidAppBackup(t *testing.T) {
 		}
 	})
 
-	t.Run("turning app sync on for a phone that had already synced", func(t *testing.T) {
-		u := newUser(t)
-		undone := sharedDir(t)
-		port := freePort(t)
-		first, proxy := startOptimizerOn(t, map[string]string{"IO_MODE": "proxy"}, true, port, undone+":/undone")
-		p := setUpPhone(t, proxy, u, photos)
-		eventually(t, 3*time.Minute, "the app to upload the photos", func() bool { return received(t, first) >= len(photos) })
-		eventually(t, 2*time.Minute, "the app to learn about the converted assets", func() bool { return p.queryInt(sqlRemote) == len(photos) })
-
-		// The same proxy address, now with the setting on.
-		if out, err := exec.Command("docker", "rm", "-f", first).CombinedOutput(); err != nil {
-			t.Fatalf("docker rm: %v\n%s", err, out)
-		}
-		second, _ := startOptimizerOn(t, map[string]string{"IO_MODE": "proxy", "IO_PROXY_EXPERIMENTAL_APP_SYNC": "true"}, true, port, undone+":/undone")
-
-		// The app had synced the markers before the setting was on. It gets
-		// the hidden entries when Immich next sends it one of those assets,
-		// or, when that does not happen, after it has uploaded the photos
-		// once more: the proxy finds the conversions already in Immich and
-		// announces their markers again (TestProxyAppSyncHealsAndFollowsTheTrash
-		// covers that path on its own).
-		eventuallyRestarting(t, p, 5*time.Minute, "the hidden entries to reach the app", func() bool {
-			return p.queryInt(sqlHidden) == len(photos) && p.queryInt(sqlNotBackedUp) == 0
-		})
-		settled := received(t, second)
-		for i := 0; i < 2; i++ {
-			p.restart()
-			time.Sleep(15 * time.Second)
-		}
-		if n := received(t, second); n != settled {
-			t.Fatalf("the app kept uploading: %d uploads after it had settled at %d", n, settled)
-		}
-		if live := u.live(t); len(live) != len(photos) {
-			t.Fatalf("Immich has %d assets, want %d", len(live), len(photos))
-		}
-	})
-
 	// Library mode converts what is already in Immich and moves the
 	// originals to the trash. A phone that still has those photos would
 	// upload them again once the trash is emptied, unless it learns the
@@ -556,7 +492,7 @@ func TestAndroidAppBackup(t *testing.T) {
 		for _, s := range photos {
 			originals = append(originals, u.add(t, s, nil).ID)
 		}
-		name, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy", "IO_PROXY_EXPERIMENTAL_APP_SYNC": "true"}, true, undone+":/undone")
+		name, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy"}, true, undone+":/undone")
 		p := setUpPhone(t, proxy, u, photos)
 		eventuallyRestarting(t, p, 3*time.Minute, "the app to find its photos in Immich", func() bool {
 			return p.queryInt(sqlRemote) == len(photos) && p.queryInt(sqlNotBackedUp) == 0
@@ -636,7 +572,7 @@ func TestAndroidAppBackup(t *testing.T) {
 		if out, err := exec.Command("docker", "rm", "-f", broken).CombinedOutput(); err != nil {
 			t.Fatalf("docker rm: %v\n%s", err, out)
 		}
-		startOptimizerOn(t, map[string]string{"IO_MODE": "proxy", "IO_PROXY_EXPERIMENTAL_APP_SYNC": "true"}, true, port, sharedDir(t)+":/undone")
+		startOptimizerOn(t, map[string]string{"IO_MODE": "proxy"}, true, port, sharedDir(t)+":/undone")
 		eventuallyRestarting(t, p, 5*time.Minute, "the app to back everything up once the proxy works", func() bool {
 			return len(u.live(t)) == len(samples) && p.queryInt(sqlNotBackedUp) == 0
 		})

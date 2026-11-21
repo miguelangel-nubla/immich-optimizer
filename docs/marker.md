@@ -48,7 +48,7 @@ Only `v` and `original` are always there; a part that does not apply is left out
 
 - It is written with the upload itself, next to any metadata the client sent (the mobile app's own item is kept).
 - Files uploaded unchanged get no marker.
-- When Immich answers "duplicate", the marker is added to the existing asset if it has none. With the proxy's app sync on, an existing marker is written again unchanged, so Immich sends it to phones once more.
+- When Immich answers "duplicate", the marker is added to the existing asset if it has none. The proxy also writes an existing marker again, unchanged, so Immich sends it to phones once more.
 - The optimizer keeps no database: this record inside Immich is the only state.
 - It is what the proxy's [app sync](app-sync.md) tells the mobile app the original's checksum from, and how library mode recognises [second copies](library.md#second-copies-of-converted-originals) and what it has already handled.
 - The command is stored as written, so do not put a password or a token into a task's command. Anyone who can see the asset in Immich can read its metadata.

@@ -51,7 +51,6 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 | Environment variable | Flag | Default | Description |
 |---|---|---|---|
 | `IO_PROXY_BIND_ADDR` | `-proxy_bind_addr` | `:2283` | Address and port the proxy listens on |
-| `IO_PROXY_EXPERIMENTAL_APP_SYNC` | `-proxy_experimental_app_sync` | `false` | Experimental: make the Immich mobile app see converted assets as backed up, so it stops uploading them again. See the proxy documentation before turning it on |
 
 ### Watcher mode
 

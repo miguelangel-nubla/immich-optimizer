@@ -65,4 +65,4 @@ What changed:
 13. **Downloads**: with the bundled profiles, an original stored as JPEG XL is now downloaded as JPEG. Remove the `downloads` list from your tasks file to get the stored file. See [Downloads](tasks.md#downloads).
 14. **Health check**: the image's health check now asks the running proxy instead of only starting the program. See [Health check](docker.md#health-check).
 
-If you use the official mobile app, read [The mobile app](proxy.md#the-mobile-app): one setting stops it from uploading converted photos again and again.
+If you use the official mobile app: it no longer uploads converted photos again and again. See [The mobile app](proxy.md#the-mobile-app).

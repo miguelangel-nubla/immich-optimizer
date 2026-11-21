@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -309,8 +310,8 @@ func TestAppSyncThroughTheProxy(t *testing.T) {
 	defer upstream.Close()
 	u, _ := url.Parse(upstream.URL)
 
-	newProxy := func(on bool) *httptest.Server {
-		s := NewServer(Config{UpstreamURL: u, AppSync: on}, &fakeConverter{}, customlogger.NewWithLevel(nil, "error", ""))
+	newProxy := func() *httptest.Server {
+		s := NewServer(Config{UpstreamURL: u}, &fakeConverter{}, customlogger.NewWithLevel(nil, "error", ""))
 		return httptest.NewServer(s)
 	}
 	do := func(base, method, path, body string) (int, string) {
@@ -327,7 +328,7 @@ func TestAppSyncThroughTheProxy(t *testing.T) {
 		return resp.StatusCode, string(b)
 	}
 
-	on := newProxy(true)
+	on := newProxy()
 	defer on.Close()
 	status, out := do(on.URL, http.MethodPost, syncStreamPath, `{"types":["AssetsV2","AssetMetadataV1"]}`)
 	if status != 200 || strings.Count(out, "\n") != 2 || !strings.Contains(out, abcBase64) || !strings.Contains(out, hiddenID(realAsset)) {
@@ -358,16 +359,73 @@ func TestAppSyncThroughTheProxy(t *testing.T) {
 	if len(paths) != 1 || paths[0] != "GET /api/assets/"+realAsset+"/thumbnail" {
 		t.Errorf("Immich saw %v", paths)
 	}
+}
 
-	// Turned off (the default), the proxy changes none of this.
-	off := newProxy(false)
-	defer off.Close()
-	if _, out := do(off.URL, http.MethodPost, syncStreamPath, `{"types":["AssetsV2","AssetMetadataV1"]}`); strings.Count(out, "\n") != 1 {
-		t.Errorf("stream edited although the feature is off: %q", out)
+// The app can name a hidden entry in the body of a request: the iOS app when
+// it records iCloud ids, and both apps when they stack an edited photo on
+// its earlier upload.
+func TestHiddenIDsInRequestBodies(t *testing.T) {
+	const second = "7f908a71-185e-4fb6-960c-278a8d87e66b"
+	type seen struct{ method, path, body string }
+	var got []seen
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if n := r.Header.Get("Content-Length"); n != "" && n != strconv.Itoa(len(b)) {
+			t.Errorf("%s %s: Content-Length %s for %d bytes", r.Method, r.URL.Path, n, len(b))
+		}
+		got = append(got, seen{r.Method, r.URL.Path, string(b)})
+		_, _ = io.WriteString(w, `["from immich"]`)
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	proxy := httptest.NewServer(NewServer(Config{UpstreamURL: u}, &fakeConverter{}, customlogger.NewWithLevel(nil, "error", "")))
+	defer proxy.Close()
+	send := func(method, path, ctype, body string) string {
+		t.Helper()
+		req, _ := http.NewRequest(method, proxy.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", ctype)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s %s: status %d", method, path, resp.StatusCode)
+		}
+		return string(b)
 	}
-	acks = nil
-	do(off.URL, http.MethodPost, syncAckPath, `{"acks":["`+hiddenAckPrefix+realAsset+`"]}`)
-	if len(acks) != 1 {
-		t.Errorf("ack not passed through when off: %v", acks)
+	item := func(id string) string {
+		return `{"assetId":"` + id + `","key":"mobile-app","value":{"iCloudId":"X"}}`
+	}
+
+	// A batch of iCloud ids: the hidden entries are left out, the rest goes on.
+	send(http.MethodPut, bulkMetadataPath, "application/json", `{"items":[`+item(realAsset)+`,`+item(hiddenID(realAsset))+`,`+item(second)+`]}`)
+	if len(got) != 1 || strings.Contains(got[0].body, hiddenID(realAsset)) || strings.Count(got[0].body, `"assetId"`) != 2 ||
+		!strings.Contains(got[0].body, realAsset) || !strings.Contains(got[0].body, second) || !strings.Contains(got[0].body, `"iCloudId":"X"`) {
+		t.Fatalf("the metadata batch reached Immich as %+v", got)
+	}
+	// A batch of hidden entries only does not reach Immich at all.
+	got = nil
+	if out := send(http.MethodPut, bulkMetadataPath, "application/json", `{"items":[`+item(hiddenID(realAsset))+`]}`); len(got) != 0 || out != "[]" {
+		t.Fatalf("a batch with nothing left: answer %q, Immich saw %+v", out, got)
+	}
+
+	// Anywhere else a hidden id means the real asset: an edited photo is
+	// stacked on the converted asset of its earlier version.
+	got = nil
+	send(http.MethodPost, "/api/stacks", "application/json; charset=utf-8", `{"assetIds":["`+second+`","`+hiddenID(realAsset)+`"]}`)
+	if len(got) != 1 || got[0].body != `{"assetIds":["`+second+`","`+realAsset+`"]}` {
+		t.Fatalf("the stack request reached Immich as %+v", got)
+	}
+
+	// Bodies without a hidden id, and bodies that are not JSON, are not touched.
+	got = nil
+	plain := `{"assetIds":["` + second + `","` + realAsset + `"],"note":"  spacing   kept "}`
+	send(http.MethodPost, "/api/stacks", "application/json", plain)
+	text := `"` + hiddenID(realAsset) + `"`
+	send(http.MethodPost, "/api/other", "text/plain", text)
+	if len(got) != 2 || got[0].body != plain || got[1].body != text {
+		t.Fatalf("untouched bodies reached Immich as %+v", got)
 	}
 }

@@ -130,8 +130,8 @@ func TestWebsocketThroughTheProxy(t *testing.T) {
 	defer upstream.Close()
 	u, _ := url.Parse(upstream.URL)
 
-	dial := func(on bool) (*bufio.Reader, net.Conn) {
-		s := NewServer(Config{UpstreamURL: u, AppSync: on}, &fakeConverter{}, customlogger.NewWithLevel(nil, "error", ""))
+	dial := func() (*bufio.Reader, net.Conn) {
+		s := NewServer(Config{UpstreamURL: u}, &fakeConverter{}, customlogger.NewWithLevel(nil, "error", ""))
 		srv := httptest.NewServer(s)
 		t.Cleanup(srv.Close)
 		t.Cleanup(s.Cancel)
@@ -151,7 +151,7 @@ func TestWebsocketThroughTheProxy(t *testing.T) {
 		return br, conn
 	}
 
-	br, conn := dial(true)
+	br, conn := dial()
 	if gotExtensions != "" {
 		t.Errorf("compression was offered to Immich (%q): the messages would not be readable", gotExtensions)
 	}
@@ -204,14 +204,4 @@ func TestWebsocketThroughTheProxy(t *testing.T) {
 		t.Error("what the client sent did not reach Immich")
 	}
 
-	// Turned off, the websocket is passed on as it is.
-	br, _ = dial(false)
-	if gotExtensions != "permessage-deflate" {
-		t.Errorf("the handshake was changed although the feature is off: %q", gotExtensions)
-	}
-	for i := 0; i < 5; i++ {
-		if _, payload := readFrame(t, br); strings.Contains(string(payload), hiddenFileName) {
-			t.Errorf("a message was added although the feature is off: %s", payload)
-		}
-	}
 }

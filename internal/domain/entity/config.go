@@ -50,7 +50,6 @@ type AppConfig struct {
 	HealthCheck      bool
 	Mode             string
 	BindAddr         string
-	ProxyAppSync     bool
 	ImmichURL        string
 	ImmichAPIKey     string
 	ImmichAPIKeyFile string

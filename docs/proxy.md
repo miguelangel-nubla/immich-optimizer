@@ -40,30 +40,21 @@ Point your clients at the optimizer instead of Immich. If Immich sits behind you
 
 ## The mobile app
 
-The official app decides that a photo is backed up by comparing the checksum of the file on the phone with the checksums Immich reports. A converted file has a different checksum, so on its own the app does not recognise its photos once they are converted.
+The official app decides that a photo is backed up by comparing the checksum of the file on the phone with the checksums Immich reports. A converted file has a different checksum, so left to itself the app would not recognise its photos once they are converted, and would upload them again and again.
 
-**Set `IO_PROXY_EXPERIMENTAL_APP_SYNC=true`** and the proxy tells the app the checksums of the originals. The app then counts converted photos as backed up and uploads each one once.
+The proxy takes care of this: it tells the app the checksums of the originals. The app counts converted photos as backed up and uploads each one once. There is nothing to set.
 
-It is off by default and called experimental for two reasons: it has been tested with the real Android app (Immich v3.4.2, in an emulator) but not on an iPhone, and it relies on the way the app and Immich talk to each other, which Immich can change in any release.
-
-What to know when it is on:
-
-- **The app must reach Immich through the proxy** for everything, not only for uploads.
-- **Turning it on later works.** A phone that already knows your photos catches up by itself. At worst it uploads each converted photo one more time: nothing is stored twice, and after that it counts them as backed up.
-- **"Free up space" will trust it.** The app considers those photos safely backed up and offers to delete them from the phone, although the server holds the converted file, not the original. It does not offer photos whose converted copy is in Immich's trash.
+- **The app must reach Immich through the proxy** for everything, not only for uploads. A phone that talks to Immich directly part of the time does not learn the originals' checksums there.
+- **A phone that already knew your photos catches up by itself** when it starts going through the proxy. At worst it uploads each converted photo one more time: nothing is stored twice, and after that it counts them as backed up.
+- **"Free up space" trusts it.** The app considers those photos safely backed up and offers to delete them from the phone, although the server holds the converted file, not the original. It does not offer photos whose converted copy is in Immich's trash.
 - **It follows what you do in Immich.** Trash a converted photo, restore it or delete it for good, and the app treats the photo on the phone as it would with any other photo.
 - **It covers [library mode](library.md#phones) too**: photos converted there are not uploaded again either.
-- **If Immich changes and the proxy no longer understands it**, the proxy passes everything through untouched. The worst case is that the app goes back to uploading again.
-- **Turning it off** does not undo it on a phone that already has it; logging out and in again in the app does.
+- **Lossy and video tasks** should give the same result for the same file every time. The app uploads a photo once, but if it ever does so again (after a reinstall, say) and the conversion comes out different, Immich stores a second copy.
 
-How it does this is described in [How app sync works](app-sync.md).
+**What it is tested with.** The real Android app (Immich v3.4.2) in an emulator, in the project's own tests. The iOS app uses the same code for all of this and has been checked by reading its source, but it has not been run against the proxy: if you use an iPhone, look at the backup page after the first backup, and [report](https://github.com/miguelangel-nubla/immich-optimizer/issues) what does not look right.
 
-**Without it** the app never sees a converted photo as backed up:
+**If Immich changes** the way the app and the server talk, the proxy passes on untouched whatever it no longer understands. The worst case is that the app goes back to uploading again; nothing in Immich is affected.
 
-- It uploads every converted photo again each time it looks for things to back up, and shows it as not backed up.
-- No second copy is stored. Within 30 minutes the proxy answers the retry from memory; after that it converts again and Immich answers "duplicate", as long as the conversion gives the same bytes every time.
-- **Lossy and video tasks can create real duplicates** if the encoder does not produce identical bytes for the same input.
-
-Everything else works either way: the web interface, `immich-go`, the Immich CLI and uploads through a shared link upload a file once.
+How it works is described in [How app sync works](app-sync.md).
 
 If you would rather keep the app out of uploading altogether, use [watcher mode for phones](watcher.md#using-it-for-phone-backup): a sync tool brings the photos, and the app is a viewer only.

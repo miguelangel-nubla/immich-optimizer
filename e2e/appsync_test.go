@@ -90,12 +90,12 @@ func hiddenLines(lines []streamLine) []streamLine {
 	return out
 }
 
-// The experimental app sync, against Immich's real sync stream: what a phone
+// App sync against Immich's real sync stream: what a phone
 // would receive, acknowledge and be told to delete.
 func TestProxyAppSyncAddsHiddenEntries(t *testing.T) {
 	u := newUser(t)
 	undone := sharedDir(t)
-	_, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy", "IO_PROXY_EXPERIMENTAL_APP_SYNC": "true"}, true, undone+":/undone")
+	_, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy"}, true, undone+":/undone")
 
 	// One converted upload and one that is passed through unchanged.
 	src := filepath.Join(mediaDir, "photo.jpg")
@@ -152,6 +152,44 @@ func TestProxyAppSyncAddsHiddenEntries(t *testing.T) {
 	}
 	if resp != nil {
 		resp.Body.Close()
+	}
+
+	// The iOS app records iCloud ids on what it takes for its assets, in one
+	// batch, and that includes the hidden entry. Immich refuses a batch with
+	// an id it does not know; through the proxy the batch goes in without it.
+	batch := map[string]any{"items": []map[string]any{
+		{"assetId": converted.ID, "key": "mobile-app", "value": map[string]any{"iCloudId": "cloud-1"}},
+		{"assetId": hid, "key": "mobile-app", "value": map[string]any{"iCloudId": "cloud-1"}},
+	}}
+	putJSON := func(base string) int {
+		b, _ := json.Marshal(batch)
+		req, _ := http.NewRequest(http.MethodPut, base+"/api/assets/metadata", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(u.session[0], u.session[1])
+		resp, err := httpc.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := putJSON(immichURL); code < 400 {
+		t.Errorf("Immich itself accepted a batch with a hidden id (status %d): the proxy's handling would not be needed", code)
+	}
+	if code := putJSON(proxy); code >= 300 {
+		t.Errorf("the batch through the proxy: status %d", code)
+	}
+	var items []struct {
+		Key   string         `json:"key"`
+		Value map[string]any `json:"value"`
+	}
+	must(t, u.key, http.MethodGet, "/assets/"+converted.ID+"/metadata", nil, &items)
+	cloud := false
+	for _, it := range items {
+		cloud = cloud || it.Key == "mobile-app" && it.Value["iCloudId"] == "cloud-1"
+	}
+	if !cloud {
+		t.Errorf("the real asset did not get the iCloud id of the batch: %+v", items)
 	}
 
 	// The phone acknowledges everything, including the proxy's own line.
@@ -212,26 +250,28 @@ func settle(t *testing.T, u *user, base string) {
 	}
 }
 
-// Two things that reach a phone without a new marker: the setting being
-// turned on after the phone had synced, and the trash.
+// Two things that reach a phone without a new marker: a phone that had
+// synced without the proxy, and the trash.
 func TestProxyAppSyncHealsAndFollowsTheTrash(t *testing.T) {
 	u := newUser(t)
 	undone := sharedDir(t)
 	src := filepath.Join(mediaDir, "photo.jpg")
 
-	// Uploaded and synced through a proxy without the setting: the phone
-	// has seen the marker and acknowledged it, and has no hidden entry.
-	_, plain := startOptimizer(t, map[string]string{"IO_MODE": "proxy"}, true, undone+":/undone")
-	status, out := u.upload(t, plain, src, "photo.jpg", nil)
+	// Converted by one proxy, and synced by a phone that talks to Immich
+	// directly: it has seen the marker and acknowledged it, and has no
+	// hidden entry.
+	_, first := startOptimizer(t, map[string]string{"IO_MODE": "proxy"}, true, undone+":/undone")
+	status, out := u.upload(t, first, src, "photo.jpg", nil)
 	if status != http.StatusCreated {
 		t.Fatalf("upload: %d %s", status, out["_body"])
 	}
 	converted := u.waitReady(t, out["id"])
-	settle(t, u, plain)
+	settle(t, u, immichURL)
 
-	// Now with the setting on. Nothing about the asset changes, so the sync
-	// has nothing for the phone, which therefore uploads its photo again.
-	_, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy", "IO_PROXY_EXPERIMENTAL_APP_SYNC": "true"}, true, undone+":/undone")
+	// The phone now goes through a proxy (another one, which has no memory
+	// of the upload). Nothing about the asset changes, so the sync has
+	// nothing for the phone, which therefore uploads its photo again.
+	_, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy"}, true, undone+":/undone")
 	if n := len(hiddenLines(syncThrough(t, u, proxy))); n != 0 {
 		t.Fatalf("%d hidden entries before anything happened; the test expects none", n)
 	}

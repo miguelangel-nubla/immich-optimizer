@@ -24,7 +24,7 @@ In every mode:
 - Every converted asset is tagged in Immich with a [marker](docs/marker.md) that records its original's checksum.
 - Every operation on an asset is written to a persistent [audit log](docs/audit-log.md).
 
-**Using the official Immich mobile app?** It needs one setting to work well with converted photos, which the quick start includes. Details: [The mobile app](docs/proxy.md#the-mobile-app).
+**Using the official Immich mobile app?** It works through the proxy without any setting: see [The mobile app](docs/proxy.md#the-mobile-app).
 
 ## Quick start
 
@@ -39,7 +39,6 @@ services:
     environment:
       - IO_MODE=proxy
       - IO_IMMICH_URL=http://immich-server:2283
-      - IO_PROXY_EXPERIMENTAL_APP_SYNC=true   # for the phone app
     ports:
       - "2283:2283"
     volumes:

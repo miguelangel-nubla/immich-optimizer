@@ -47,9 +47,6 @@ const (
 type Config struct {
 	UpstreamURL *url.URL
 	BindAddr    string
-	// AppSync turns on the experimental hidden entries that make the Immich
-	// mobile app see converted assets as backed up (see appsync.go).
-	AppSync bool
 	// Downloads are the tasks that convert an original on its way out, run
 	// by Processor. Without them downloads pass through untouched.
 	Downloads []entity.Task

@@ -32,7 +32,6 @@ The optimizer takes over that address, and passes everything on to Immich.
     environment:
       - IO_MODE=proxy
       - IO_IMMICH_URL=http://immich-server:2283
-      - IO_PROXY_EXPERIMENTAL_APP_SYNC=true   # for the phone app, see below
     ports:
       - '2283:2283'
     volumes:
@@ -56,7 +55,7 @@ docker compose up -d
 
 Nothing changes in the app: it uses the same address as before.
 
-The line `IO_PROXY_EXPERIMENTAL_APP_SYNC=true` above is there for the app. Without it, the app does not recognise its own photos once they are converted, and keeps uploading them again. It is called experimental because it has been tested with the Android app only, not yet on an iPhone. [More about it.](proxy.md#the-mobile-app)
+The app would normally not recognise its own photos once they are converted, and upload them again. The optimizer takes care of that by itself. It has been tested with the Android app; on an iPhone it should work the same, but nobody has tried yet, so have a look at the app's backup page after the first backup. [More about it.](proxy.md#the-mobile-app)
 
 ## Good to know
 

@@ -149,7 +149,7 @@ Library mode recognises such a file without converting it again. Every converted
 
 The official mobile app decides what to back up by checksum: a photo counts as backed up while the server has a file with the same checksum, in the timeline or in the trash. A converted file has another checksum.
 
-**With the proxy's app sync, you can ignore this.** When the phone reaches Immich through [proxy mode](proxy.md) with the [experimental app sync](proxy.md#the-mobile-app) on, the app is told the original's checksum together with each converted photo, whether the proxy or library mode converted it. So it keeps counting a photo as backed up after library mode has replaced it, also once the original has left the trash, and does not upload it again. You can run library mode on the whole library without thinking about which photos are still on a phone. This is tested with the real Android app in an emulator: library mode converts photos the phone has, the trash is emptied, and the app uploads nothing.
+**When the phone goes through the proxy, you can ignore this.** A phone that reaches Immich through [proxy mode](proxy.md#the-mobile-app) is told the original's checksum together with each converted photo, whether the proxy or library mode converted it. So it keeps counting a photo as backed up after library mode has replaced it, also once the original has left the trash, and does not upload it again. You can run library mode on the whole library without thinking about which photos are still on a phone. This is tested with the real Android app in an emulator: library mode converts photos the phone has, the trash is emptied, and the app uploads nothing.
 
 **Without it**, a photo that is still on a phone with backup on comes back:
 
@@ -180,7 +180,7 @@ Durations are written as hours (`h`), minutes (`m`) and seconds (`s`). A run tha
 
 ## Things to know before running it
 
-- **A phone that still has the photos uploads them again** once the originals have left Immich's trash, unless it reaches Immich through the proxy with app sync on. See [Phones](#phones).
+- **A phone that still has the photos uploads them again** once the originals have left Immich's trash, unless it reaches Immich through the proxy. See [Phones](#phones).
 - **Android: turn off "Sync remote deletions" in the Immich app** (Settings → Advanced, marked experimental, off by default) before a real run. With it on, the app deletes a photo from the phone when the same photo is moved to the trash on the server, which is exactly what library mode does with each original.
 - **Space is freed when Immich empties its trash**, not at once. Until then the original also counts against a user's storage quota.
 - It waits for Immich to finish reading each new file, so a large library takes a long time. By default it works on one asset at a time; [`IO_LIBRARY_CONCURRENCY`](configuration.md#library-mode) raises that, at the cost of more load on Immich. A run can be stopped at any point and started again: it continues where it left off, and finishes or undoes whatever was in progress.

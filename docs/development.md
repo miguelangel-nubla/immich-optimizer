@@ -9,7 +9,7 @@ The code is split so that every way of receiving a file shares one conversion pa
 | `cmd/optimizer` | start-up, and the [settings table](../cmd/optimizer/settings.go) that defines every flag, environment variable and the settings reference |
 | `internal/usecase/convert` | the conversion engine: picks the tasks for a file, limits how many run at once, decides between output and original, and owns the undone folder |
 | `internal/usecase/pipeline` | watcher mode: folder events in, uploads out |
-| `internal/adapter/proxy` | proxy mode: uploads, the experimental app sync, converting downloads |
+| `internal/adapter/proxy` | proxy mode: uploads, app sync for the mobile app, converting downloads |
 | `internal/usecase/library` | library mode |
 | `internal/adapter/processor` | runs task commands |
 | `internal/adapter/immich` | the Immich API |
@@ -39,7 +39,7 @@ The samples are synthetic.
 
 `E2E_VIDEO=1 scripts/e2e-test.sh` also runs the video test. It takes two real, public-domain phone clips from Immich's test assets (an iPhone and a Pixel portrait video, both with a position), converts them with `profile1`'s own command, uploads original and result to Immich and compares what Immich reads: date, time zone, position, camera and upright shape must be the same. It downloads about 90 MB and transcodes 4K in software, so it takes minutes and all the CPU Docker has. CI runs it when the profiles, the image or the test change, and always on `main`.
 
-`E2E_ANDROID=1 scripts/e2e-test.sh` also boots an Android emulator, installs the real Immich app and drives it: it logs in through the proxy, backs up an album and reads the app's own database to see what the app considers backed up. This is the test for the [experimental app sync](app-sync.md), with it off and on. Add `-run TestAndroid` to run only this.
+`E2E_ANDROID=1 scripts/e2e-test.sh` also boots an Android emulator, installs the real Immich app and drives it: it logs in through the proxy, backs up an album and reads the app's own database to see what the app considers backed up. This is the test for [app sync](app-sync.md). Add `-run TestAndroid` to run only this.
 
 - It needs an Android SDK in `ANDROID_HOME` with the emulator and one system image: `sdkmanager "emulator" "platform-tools" "system-images;android-36;google_apis;arm64-v8a"` (`x86_64` instead of `arm64-v8a` on Intel/AMD, where it also needs KVM). The `google_apis` image is required, not `playstore`: reading the app's database takes root.
 - `scripts/android-emulator.sh up` creates the device in a temporary folder, boots it without a window and installs the app (downloaded once from Immich's releases, `IMMICH_APP_VERSION` picks the version); `down` stops and deletes it. The test script does both by itself; an emulator that is already up is reused and left running, which saves the boot when running the test repeatedly.

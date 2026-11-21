@@ -628,7 +628,6 @@ func run(args []string) error {
 		proxyServer = proxy.NewServer(proxy.Config{
 			UpstreamURL: parsedImmichURL,
 			BindAddr:    config.BindAddr,
-			AppSync:     config.ProxyAppSync,
 			Downloads:   config.Tasks.Downloads,
 			Processor:   processorAdapter,
 			// The same limits as for uploads.
@@ -637,9 +636,6 @@ func run(args []string) error {
 			HTTPClient:          httpClient,
 			Audit:               auditLog,
 		}, engine, logger)
-		if config.ProxyAppSync {
-			logger.Warnf("Experimental app sync is on: the proxy adds hidden entries to the mobile app's sync so converted photos count as backed up")
-		}
 		if err := proxyServer.Start(); err != nil {
 			if watcherAdapter != nil {
 				_ = watcherAdapter.Stop()

@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -17,8 +19,7 @@ import (
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 )
 
-// Experimental: making the Immich mobile app see converted assets as backed
-// up.
+// Making the Immich mobile app see converted assets as backed up.
 //
 // The app decides that a photo is backed up when its own database, filled
 // from Immich's sync stream, has an asset with the checksum of the file on
@@ -540,14 +541,105 @@ func (s *Server) serveSyncAck(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+// The app can also name a hidden entry in the body of a request. Two places
+// in the app do, both by matching a photo on the phone to "its" server asset
+// through the checksum, which finds the hidden entry:
+//
+//   - On iOS it records the photo's iCloud id on that asset, for all such
+//     assets at once (PUT /api/assets/metadata). Immich checks every id of
+//     the batch and refuses all of it over one it does not know.
+//   - After a photo was edited on the phone and uploaded again, it stacks the
+//     new upload on the earlier one (POST /api/stacks).
+//
+// So a hidden id in a JSON body is turned into the id of the real asset,
+// which is what the app means. The bulk metadata request is the exception:
+// there the real asset is usually in the same batch already, and one batch
+// must not name an asset twice, so the hidden entries are taken out.
+
+const (
+	bulkMetadataPath = "/api/assets/metadata"
+	// maxRewrittenBody bounds the request bodies that are read to look for
+	// hidden ids. Bigger ones are passed on as they are.
+	maxRewrittenBody = 8 << 20
+)
+
+// hiddenIDInJSON matches a hidden id as a JSON string. No real asset id has
+// c, d, e or f as the first digit of its fourth group.
+var hiddenIDInJSON = regexp.MustCompile(`"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[c-fC-F][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"`)
+
+// rewriteHiddenBody replaces hidden ids in a JSON request body. It reports
+// whether it answered the request itself.
+func (s *Server) rewriteHiddenBody(w http.ResponseWriter, r *http.Request) bool {
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	default:
+		return false
+	}
+	if r.Body == nil || r.ContentLength <= 0 || r.ContentLength > maxRewrittenBody ||
+		!strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRewrittenBody+1))
+	if err != nil {
+		http.Error(w, "failed to read request", http.StatusBadRequest)
+		return true
+	}
+	restore := func(b []byte) {
+		r.Body = io.NopCloser(bytes.NewReader(b))
+		r.ContentLength = int64(len(b))
+		r.Header.Set("Content-Length", strconv.Itoa(len(b)))
+	}
+	if !hiddenIDInJSON.Match(body) {
+		restore(body)
+		return false
+	}
+
+	if r.Method == http.MethodPut && r.URL.Path == bulkMetadataPath {
+		var req struct {
+			Items []map[string]json.RawMessage `json:"items"`
+		}
+		if json.Unmarshal(body, &req) != nil {
+			restore(body)
+			return false
+		}
+		kept := make([]map[string]json.RawMessage, 0, len(req.Items))
+		for _, it := range req.Items {
+			var id string
+			_ = json.Unmarshal(it["assetId"], &id)
+			if _, hidden := realID(id); !hidden {
+				kept = append(kept, it)
+			}
+		}
+		s.logger.Debugf("App sync: left %d hidden entr(ies) out of a metadata request", len(req.Items)-len(kept))
+		if len(kept) == 0 {
+			// Nothing left to tell Immich.
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_, _ = io.WriteString(w, "[]")
+			return true
+		}
+		out, _ := json.Marshal(map[string]any{"items": kept})
+		restore(out)
+		return false
+	}
+
+	restore(hiddenIDInJSON.ReplaceAllFunc(body, func(m []byte) []byte {
+		real, ok := realID(string(m[1 : len(m)-1]))
+		if !ok {
+			return m
+		}
+		return []byte(`"` + real + `"`)
+	}))
+	return false
+}
+
 // serveAppSync handles the requests the app sync feature cares about. It
 // reports whether the request was answered.
 func (s *Server) serveAppSync(w http.ResponseWriter, r *http.Request) bool {
-	if !s.cfg.AppSync {
-		return false
-	}
 	if p, changed := rewriteHiddenIDs(r.URL.Path); changed {
 		r.URL.Path, r.URL.RawPath = p, ""
+	}
+	if s.rewriteHiddenBody(w, r) {
+		return true
 	}
 	switch {
 	case r.URL.Path == socketPath && isWebsocketUpgrade(r):

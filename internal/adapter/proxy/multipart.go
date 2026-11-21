@@ -365,7 +365,7 @@ func (s *Server) markDuplicate(ctx context.Context, j *job, spec jobSpec, target
 	if id == "" {
 		return
 	}
-	err := immich.EnsureMarker(ctx, s.client, s.cfg.UpstreamURL.String(), immich.AuthHeaders(spec.header), id, marker, s.cfg.AppSync)
+	err := immich.EnsureMarker(ctx, s.client, s.cfg.UpstreamURL.String(), immich.AuthHeaders(spec.header), id, marker, true)
 	if err != nil {
 		s.logger.Warnf("Proxy job %s: could not record the optimizer marker on existing asset %s: %v", j.id, id, err)
 	}
