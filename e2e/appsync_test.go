@@ -192,8 +192,24 @@ func TestProxyAppSyncAddsHiddenEntries(t *testing.T) {
 		t.Errorf("the real asset did not get the iCloud id of the batch: %+v", items)
 	}
 
-	// The phone acknowledges everything, including the proxy's own line.
-	// Immich accepts it, and the next sync has nothing left to send.
+	// The phone acknowledges everything, including the proxy's own lines.
+	ackAll(t, u, proxy, lines)
+	// The iCloud record is new since that sync. It comes now, and the hidden
+	// entry gets a copy, sent with the entry itself so that the copy always
+	// has something to belong to on the phone.
+	lines = syncThrough(t, u, proxy)
+	copied := false
+	for _, l := range lines {
+		if l.Type == "AssetMetadataV1" && l.Data["assetId"] == hid && l.Data["key"] == "mobile-app" {
+			v, _ := l.Data["value"].(map[string]any)
+			copied = v["iCloudId"] == "cloud-1"
+		}
+	}
+	if !copied || len(hiddenLines(lines)) != 1 {
+		t.Errorf("the hidden entry did not get a copy of the iCloud record (%d hidden entries): %+v", len(hiddenLines(lines)), lines)
+	}
+	// Once that is acknowledged too, Immich accepts it and the next sync has
+	// nothing left to send.
 	ackAll(t, u, proxy, lines)
 	if again := syncThrough(t, u, proxy); len(hiddenLines(again)) != 0 {
 		t.Errorf("the hidden entry was sent again after being acknowledged: %d line(s)", len(again))
