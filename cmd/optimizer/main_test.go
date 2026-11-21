@@ -909,6 +909,8 @@ func TestDocsLinksAndSettingNames(t *testing.T) {
 		return out
 	}
 	known := map[string]bool{"IO_UPDATE_DOCS": true, "IO_DEV_DIR": true,
+		// Read by the test scripts.
+		"IO_IOS_FULL_SPEED": true, "IO_IOS_DEVICES": true,
 		// Given to task commands, not settings.
 		"IO_MOTION_PHOTOS": true, "IO_SRC_FOLDER": true, "IO_DST_FOLDER": true, "IO_NAME": true, "IO_EXTENSION": true,
 		"IO_ORIGINAL_NAME": true, "IO_SOURCE": true, "IO_TASK": true}
