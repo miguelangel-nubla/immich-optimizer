@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -43,6 +44,7 @@ func (p *fakeProcessor) Process(_ context.Context, path string, _ []entity.Task)
 func TestDownloadsAreConvertedOnlyWhereATaskSaysSo(t *testing.T) {
 	const jxl = "2f908a71-185e-4fb6-960c-278a8d87e66b"
 	const heic = "3f908a71-185e-4fb6-960c-278a8d87e66b"
+	const edited = "4f908a71-185e-4fb6-960c-278a8d87e66b"
 	var originals atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Api-Key") != "k" {
@@ -50,7 +52,8 @@ func TestDownloadsAreConvertedOnlyWhereATaskSaysSo(t *testing.T) {
 			_, _ = io.WriteString(w, `{"message":"no"}`)
 			return
 		}
-		name := map[string]string{jxl: "IMG 1.JXL", heic: "IMG_2.heic"}[strings.Split(r.URL.Path, "/")[3]]
+		id := strings.Split(r.URL.Path, "/")[3]
+		name := map[string]string{jxl: "IMG 1.JXL", heic: "IMG_2.heic", edited: "IMG_3.jxl"}[id]
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/original"):
 			originals.Add(1)
@@ -59,7 +62,7 @@ func TestDownloadsAreConvertedOnlyWhereATaskSaysSo(t *testing.T) {
 			w.Header().Set("Cache-Control", "private, max-age=86400")
 			_, _ = io.WriteString(w, "stored:"+r.URL.RawQuery)
 		default:
-			_, _ = io.WriteString(w, `{"originalFileName":"`+name+`"}`)
+			_, _ = io.WriteString(w, `{"originalFileName":"`+name+`","isEdited":`+strconv.FormatBool(id == edited)+`}`)
 		}
 	}))
 	defer upstream.Close()
@@ -93,15 +96,21 @@ func TestDownloadsAreConvertedOnlyWhereATaskSaysSo(t *testing.T) {
 		t.Errorf("range: %d %q", rec.Code, rec.Body.String())
 	}
 
-	// Not converted: another type, the edited version, and anything that is
-	// not the download of an original.
+	// The apps and the web always ask for the edited version. An asset that
+	// was never edited in Immich is its original, and is converted.
+	if rec = get("/api/assets/"+jxl+"/original?edited=true", nil); rec.Body.String() != "0123456789-jpeg" {
+		t.Errorf("a download asking for the edited version of an unedited asset was not converted: %q", rec.Body.String())
+	}
+
+	// Not converted: another type, an asset that was edited in Immich, and
+	// anything that is not the download of an original.
 	calls := proc.calls.Load()
-	for _, path := range []string{"/api/assets/" + heic + "/original", "/api/assets/" + jxl + "/original?edited=true", "/api/assets/" + jxl + "/thumbnail"} {
+	for _, path := range []string{"/api/assets/" + heic + "/original", "/api/assets/" + edited + "/original?edited=true", "/api/assets/" + jxl + "/thumbnail"} {
 		if get(path, nil); proc.calls.Load() != calls {
 			t.Errorf("%s was converted", path)
 		}
 	}
-	if rec = get("/api/assets/"+jxl+"/original?edited=true", nil); rec.Body.String() != "stored:edited=true" {
+	if rec = get("/api/assets/"+edited+"/original?edited=true", nil); rec.Body.String() != "stored:edited=true" {
 		t.Errorf("the edited version did not pass through: %q", rec.Body.String())
 	}
 

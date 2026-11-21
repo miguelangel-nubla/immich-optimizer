@@ -288,7 +288,9 @@ func TestProxyConvertsDownloads(t *testing.T) {
 
 	get := func(base, id string, header map[string]string) (*http.Response, []byte) {
 		t.Helper()
-		req, _ := http.NewRequest(http.MethodGet, base+"/api/assets/"+id+"/original", nil)
+		// As the apps and the web ask for it: the edited version, which for
+		// an asset not edited in Immich is the original.
+		req, _ := http.NewRequest(http.MethodGet, base+"/api/assets/"+id+"/original?edited=true", nil)
 		req.Header.Set(u.key[0], u.key[1])
 		for k, v := range header {
 			req.Header.Set(k, v)

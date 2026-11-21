@@ -27,7 +27,8 @@ import (
 // download and thrown away.
 //
 // Only the download of a single original is converted. Everything else,
-// including archives of several assets and the edited version of an asset,
+// including archives of several assets and the version of an asset edited in
+// Immich,
 // passes through as Immich sends it.
 
 // originalPathPrefix and originalPathSuffix frame the id in the path of an
@@ -45,29 +46,31 @@ type nameCache struct {
 }
 
 type cachedName struct {
-	name string
-	at   time.Time
+	name   string
+	edited bool
+	at     time.Time
 }
 
 const nameCacheTTL = time.Minute
 
-func (c *nameCache) get(key string) (string, bool) {
+func (c *nameCache) get(key string) (cachedName, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n, ok := c.names[key]
 	if !ok || time.Since(n.at) > nameCacheTTL {
-		return "", false
+		return cachedName{}, false
 	}
-	return n.name, true
+	return n, true
 }
 
-func (c *nameCache) put(key, name string) {
+func (c *nameCache) put(key string, n cachedName) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.names == nil || len(c.names) > 10000 {
 		c.names = map[string]cachedName{}
 	}
-	c.names[key] = cachedName{name, time.Now()}
+	n.at = time.Now()
+	c.names[key] = n
 }
 
 // downloadTask reports whether some download task handles the file name.
@@ -84,24 +87,24 @@ func (s *Server) downloadTask(name string) bool {
 }
 
 // originalID returns the asset id when the request downloads an original
-// that may be converted.
-func originalID(r *http.Request) (string, bool) {
+// that may be converted, and whether it asks for the edited version.
+func originalID(r *http.Request) (id string, edited, ok bool) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		return "", false
+		return "", false, false
 	}
 	p := r.URL.Path
 	if !strings.HasPrefix(p, originalPathPrefix) || !strings.HasSuffix(p, originalPathSuffix) {
-		return "", false
+		return "", false, false
 	}
-	id := p[len(originalPathPrefix) : len(p)-len(originalPathSuffix)]
+	id = p[len(originalPathPrefix) : len(p)-len(originalPathSuffix)]
 	if !isUUID(id) {
-		return "", false
+		return "", false, false
 	}
-	// The edited version is rendered by Immich, in a format of its choice.
-	if v := r.URL.Query().Get("edited"); v != "" && v != "false" {
-		return "", false
-	}
-	return id, true
+	// The apps and the web ask for "edited" on every download: Immich then
+	// sends the edited version when the asset has one, and the original
+	// otherwise.
+	v := r.URL.Query().Get("edited")
+	return id, v != "" && v != "false", true
 }
 
 // upstreamGet asks Immich for path with the caller's credentials and query
@@ -118,25 +121,28 @@ func (s *Server) upstreamGet(ctx context.Context, r *http.Request, path string, 
 	return client.Do(req)
 }
 
-// assetName asks Immich for the file name of an asset.
-func (s *Server) assetName(r *http.Request, id string) (string, bool) {
+// assetName asks Immich for the file name of an asset, and whether it has
+// been edited in Immich.
+func (s *Server) assetName(r *http.Request, id string) (cachedName, bool) {
 	key := id + "\x00" + r.Header.Get("Authorization") + "\x00" + r.Header.Get("X-Api-Key") + "\x00" + r.Header.Get("Cookie") + "\x00" + r.URL.RawQuery
-	if name, ok := s.names.get(key); ok {
-		return name, true
+	if n, ok := s.names.get(key); ok {
+		return n, true
 	}
 	resp, err := s.upstreamGet(r.Context(), r, originalPathPrefix+id, s.client)
 	if err != nil {
-		return "", false
+		return cachedName{}, false
 	}
 	defer resp.Body.Close()
 	var a struct {
-		Name string `json:"originalFileName"`
+		Name   string `json:"originalFileName"`
+		Edited bool   `json:"isEdited"`
 	}
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&a) != nil || a.Name == "" {
-		return "", false
+		return cachedName{}, false
 	}
-	s.names.put(key, a.Name)
-	return a.Name, true
+	n := cachedName{name: a.Name, edited: a.Edited}
+	s.names.put(key, n)
+	return n, true
 }
 
 // serveDownload answers the download of an original with its converted form
@@ -146,14 +152,16 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) bool {
 	if len(s.cfg.Downloads) == 0 || s.cfg.Processor == nil {
 		return false
 	}
-	id, ok := originalID(r)
+	id, wantsEdited, ok := originalID(r)
 	if !ok {
 		return false
 	}
-	name, ok := s.assetName(r, id)
-	if !ok || !s.downloadTask(name) {
+	asset, ok := s.assetName(r, id)
+	// An edited version is rendered by Immich, in a format of its choice.
+	if !ok || wantsEdited && asset.edited || !s.downloadTask(asset.name) {
 		return false
 	}
+	name := asset.name
 
 	// The whole file is needed to convert it, whatever part was asked for.
 	resp, err := s.upstreamGet(r.Context(), r, r.URL.Path, s.streamClient)
