@@ -24,11 +24,13 @@ In every mode:
 - Every converted asset is tagged in Immich with a [marker](docs/marker.md) that records its original's checksum.
 - Every operation on an asset is written to a persistent [audit log](docs/audit-log.md).
 
-**Using the official Immich mobile app?** Read [The mobile app](docs/proxy.md#the-mobile-app) first: it needs one setting to work well with converted photos.
+**Using the official Immich mobile app?** It needs one setting to work well with converted photos, which the quick start includes. Details: [The mobile app](docs/proxy.md#the-mobile-app).
 
 ## Quick start
 
-Proxy mode with the default lossless profile:
+**New here? Follow the [quick start guide](docs/quickstart.md):** ten minutes, no background needed, and every photo you upload from then on is stored smaller without losing quality.
+
+In short, it is one more service in your Immich `docker-compose.yml`, in front of Immich:
 
 ```yaml
 services:
@@ -37,6 +39,7 @@ services:
     environment:
       - IO_MODE=proxy
       - IO_IMMICH_URL=http://immich-server:2283
+      - IO_PROXY_EXPERIMENTAL_APP_SYNC=true   # for the phone app
     ports:
       - "2283:2283"
     volumes:
@@ -44,12 +47,11 @@ services:
     restart: unless-stopped
 ```
 
-Then point your browser at the optimizer instead of Immich. The setup for each mode is on its own page.
-
 ## Documentation
 
 | | |
 |---|---|
+| [Quick start](docs/quickstart.md) | the recommended setup, step by step |
 | [Proxy mode](docs/proxy.md) · [Watcher mode](docs/watcher.md) · [Library mode](docs/library.md) | setting up and understanding each mode |
 | [Tasks](docs/tasks.md) | the tasks file, bundled profiles, motion photos, converting downloads back |
 | [Configuration](docs/configuration.md) | every setting |
