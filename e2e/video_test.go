@@ -26,11 +26,7 @@ const testAssets = "https://raw.githubusercontent.com/immich-app/test-assets/222
 // phoneClip downloads one of them once and returns its path.
 func phoneClip(t *testing.T, name string) string {
 	t.Helper()
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(cache, "immich-optimizer", "test-assets")
+	dir := filepath.Join(downloadsDir(t), "test-assets")
 	path := filepath.Join(dir, name)
 	if _, err := os.Stat(path); err == nil {
 		return path

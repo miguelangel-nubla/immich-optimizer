@@ -38,3 +38,6 @@ go.work.sum
 # local build artefacts (root-anchored so source paths never match)
 /test-runner
 /*.test
+
+# Where things are on this machine, for the test scripts (scripts/dev-env.sh).
+.dev.env

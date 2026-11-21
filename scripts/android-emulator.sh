@@ -16,10 +16,12 @@
 # "down" removes it.
 set -euo pipefail
 
-: "${ANDROID_HOME:?set ANDROID_HOME to your Android SDK}"
+. "$(dirname "$0")/dev-env.sh"
+: "${ANDROID_HOME:?set ANDROID_HOME to your Android SDK (in the environment or in .dev.env)}"
 API="${IO_ANDROID_API:-36}"
 APP_VERSION="${IMMICH_APP_VERSION:-v3.4.2}"
-DIR="${IO_ANDROID_DIR:-${TMPDIR:-/tmp}/io-android}"
+DIR="${IO_ANDROID_DIR:-${IO_DEV_DIR:+$IO_DEV_DIR/android-device}}"
+DIR="${DIR:-${TMPDIR:-/tmp}/io-android}"
 PORT="${IO_ANDROID_PORT:-5580}"
 # Processor cores the device gets (IO_ANDROID_CORES). Fewer keeps the machine
 # it runs on usable; the tests only get slower.
@@ -109,7 +111,8 @@ INI
   # the first characters are typed, and the app then loses some of them.
   "$ADB" -s "$SERIAL" shell settings put secure show_ime_with_hard_keyboard 0
 
-  APK="${IO_ANDROID_APK_CACHE:-$HOME/.cache/immich-optimizer}/immich-$APP_VERSION-$ABI.apk"
+  CACHE="${IO_ANDROID_APK_CACHE:-${IO_DEV_DIR:+$IO_DEV_DIR/downloads}}"
+  APK="${CACHE:-$HOME/.cache/immich-optimizer}/immich-$APP_VERSION-$ABI.apk"
   if [ ! -s "$APK" ]; then
     mkdir -p "$(dirname "$APK")"
     echo "Downloading the Immich app $APP_VERSION..."

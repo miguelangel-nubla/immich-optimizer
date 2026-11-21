@@ -100,11 +100,7 @@ func immichGo(t *testing.T) string {
 	if arch == "" {
 		t.Skipf("no immich-go build for %s", runtime.GOARCH)
 	}
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(cache, "immich-optimizer", "immich-go-"+immichGoVersion+"-"+arch)
+	dir := filepath.Join(downloadsDir(t), "immich-go-"+immichGoVersion+"-"+arch)
 	bin := filepath.Join(dir, "immich-go")
 	if _, err := os.Stat(bin); err == nil {
 		return dir

@@ -37,6 +37,15 @@ The samples are synthetic.
 
 `E2E_ML=1 scripts/e2e-test.sh` also starts Immich's machine learning and runs the test that needs real face detection: three photos of the same face are recognised by Immich, the person is named, library mode converts them, and each copy must end up with that person exactly once after Immich has processed the new files. It downloads the machine-learning image and a model, so it takes a few minutes longer. CI runs it this way.
 
+**Where downloads and test devices go.** The tests download a few things (the Immich Android app, test videos, `immich-go`) and create an Android test device. By default these go to the system's cache and temp folders. To keep them on a disk of your choice, create a file `.dev.env` at the top of the checkout (it is not in git):
+
+```sh
+IO_DEV_DIR=/path/to/a/big/disk/immich-optimizer
+ANDROID_HOME=/path/to/android/sdk
+```
+
+The test scripts read it, so neither has to be typed with each command.
+
 `E2E_VIDEO=1 scripts/e2e-test.sh` also runs the video test. It takes two real, public-domain phone clips from Immich's test assets (an iPhone and a Pixel portrait video, both with a position), converts them with `profile1`'s own command, uploads original and result to Immich and compares what Immich reads: date, time zone, position, camera and upright shape must be the same. It downloads about 90 MB and transcodes 4K in software, so it takes minutes and all the CPU Docker has. CI runs it when the profiles, the image or the test change, and always on `main`.
 
 `E2E_ANDROID=1 scripts/e2e-test.sh` also boots an Android emulator, installs the real Immich app and drives it: it logs in through the proxy, backs up an album and reads the app's own database to see what the app considers backed up. This is the test for [app sync](app-sync.md). Add `-run TestAndroid` to run only this.

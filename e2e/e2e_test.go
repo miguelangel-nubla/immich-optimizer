@@ -57,6 +57,21 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// downloadsDir is where what the tests download is kept between runs:
+// $IO_DEV_DIR/downloads when that is set (see scripts/dev-env.sh), and the
+// system's cache folder otherwise.
+func downloadsDir(t *testing.T) string {
+	t.Helper()
+	if dev := os.Getenv("IO_DEV_DIR"); dev != "" {
+		return filepath.Join(dev, "downloads")
+	}
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(cache, "immich-optimizer")
+}
+
 func randomName() string {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)

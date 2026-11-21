@@ -23,6 +23,7 @@ IMAGE="${1:-ghcr.io/miguelangel-nubla/immich-optimizer:dev}"
 shift || true
 
 cd "$(dirname "$0")/.."
+. scripts/dev-env.sh
 export E2E_PORT="${E2E_PORT:-12383}"
 COMPOSE=(docker compose -f e2e/docker-compose.yml)
 if [ -n "${E2E_ML:-}" ]; then
