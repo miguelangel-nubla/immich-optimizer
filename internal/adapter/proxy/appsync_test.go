@@ -110,7 +110,9 @@ func TestMarkerLineGetsAHiddenEntry(t *testing.T) {
 	stream := asset + marker(realAsset, map[string]any{"v": 1, "sha1": abcHex, "task": "jpeg-xl"}) + other
 
 	lines, in := run(t, "AssetV2", stream)
-	if len(lines) != 4 || in.Injected != 1 {
+	// Four lines of the stream, the hidden entry, and (last) the copy of the
+	// app's own record for it.
+	if len(lines) != 5 || in.Injected != 1 || !strings.Contains(string(lines[4].Data), hiddenID(realAsset)) {
 		t.Fatalf("%d lines, %d injected: %+v", len(lines), in.Injected, lines)
 	}
 	// The original lines pass untouched, in order; the hidden entry follows its marker.
@@ -427,5 +429,77 @@ func TestHiddenIDsInRequestBodies(t *testing.T) {
 	send(http.MethodPost, "/api/other", "text/plain", text)
 	if len(got) != 2 || got[0].body != plain || got[1].body != text {
 		t.Fatalf("untouched bodies reached Immich as %+v", got)
+	}
+}
+
+// The iOS app keeps a photo's iCloud id on the server asset it matches, and
+// keeps sending it for assets that have none. A hidden entry matches a photo,
+// so it is given a copy of the real asset's record.
+func TestHiddenEntryGetsTheICloudRecord(t *testing.T) {
+	cloud := line("AssetMetadataV1", map[string]any{"assetId": realAsset, "key": "mobile-app", "value": map[string]any{"iCloudId": "X:1", "latitude": "40.4"}}, "AssetMetadataV1|u3")
+	mark := marker(realAsset, map[string]any{"sha1": abcHex})
+	other := line("AssetMetadataV1", map[string]any{"assetId": "5f908a71-185e-4fb6-960c-278a8d87e66b", "key": "mobile-app", "value": map[string]any{"iCloudId": "Y:1"}}, "AssetMetadataV1|u4")
+
+	// records returns, in order, what the output says about hidden things:
+	// "asset" for the hidden entry, "cloud" for its record.
+	records := func(lines []syncLine) string {
+		var out []string
+		for _, l := range lines {
+			var d struct {
+				ID      string         `json:"id"`
+				AssetID string         `json:"assetId"`
+				Key     string         `json:"key"`
+				Value   map[string]any `json:"value"`
+			}
+			_ = json.Unmarshal(l.Data, &d)
+			switch {
+			case d.ID == hiddenID(realAsset):
+				out = append(out, "asset")
+			case d.AssetID == hiddenID(realAsset) && d.Key == "mobile-app":
+				if d.Value["iCloudId"] != "X:1" || d.Value["latitude"] != "40.4" || !strings.HasPrefix(l.Ack, hiddenAckPrefix) {
+					t.Errorf("hidden record = %v, ack %q", d.Value, l.Ack)
+				}
+				out = append(out, "cloud")
+			case strings.Contains(string(l.Data), hiddenID("5f908a71-185e-4fb6-960c-278a8d87e66b")):
+				out = append(out, "WRONG")
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	withMarker := func(has bool) *syncInjector {
+		return &syncInjector{assetType: "AssetV2", ownerID: func() (string, error) { return owner, nil },
+			marker: func(id string) *entity.Marker {
+				if has && id == realAsset {
+					return &entity.Marker{V: 1, SHA1: abcHex}
+				}
+				return nil
+			}}
+	}
+
+	// Marker first, record after: the entry, then its record.
+	lines, _ := runWith(t, withMarker(false), mark+cloud)
+	if got := records(lines); got != "asset cloud" {
+		t.Errorf("marker then record: %q", got)
+	}
+	// Record first: the entry has to exist before its record, so both come
+	// with the record's line, and the marker's line adds nothing.
+	lines, _ = runWith(t, withMarker(true), cloud+mark)
+	if got := records(lines); got != "asset cloud" {
+		t.Errorf("record then marker: %q", got)
+	}
+	// The record alone, as after the app wrote it: the marker is asked for.
+	lines, _ = runWith(t, withMarker(true), cloud)
+	if got := records(lines); got != "asset cloud" {
+		t.Errorf("record alone: %q", got)
+	}
+	// Record first and nothing known about a marker yet: it comes with the marker.
+	lines, _ = runWith(t, withMarker(false), cloud+other+mark)
+	if got := records(lines); got != "asset cloud" {
+		t.Errorf("record, then the marker later: %q", got)
+	}
+	// An asset without a marker gets neither.
+	lines, _ = runWith(t, withMarker(false), cloud+other)
+	if got := records(lines); got != "" || len(lines) != 2 {
+		t.Errorf("no marker: %q (%d lines)", got, len(lines))
 	}
 }

@@ -157,9 +157,27 @@ type syncInjector struct {
 	done    map[string]bool
 	lookups int
 
+	// cloud holds, for this one stream, the iOS app's own record of each
+	// asset it was told about (its iCloud id), and cloudSent the hidden
+	// entries that were given theirs.
+	cloud     map[string]json.RawMessage
+	cloudSent map[string]bool
+
 	// Injected counts the hidden entries added.
 	Injected int
 }
+
+// mobileAppKey is the asset metadata key under which the iOS app keeps a
+// photo's iCloud id.
+//
+// The app wants every server asset that matches one of its photos to have
+// that record, and keeps sending it for the ones that have none. A hidden
+// entry matches a photo, so it gets a copy of the real asset's record: the
+// app then leaves it alone.
+const mobileAppKey = "mobile-app"
+
+// maxCloudRecords bounds how many of those records one stream remembers.
+const maxCloudRecords = 50000
 
 // maxLookups bounds how many markers are asked for in one stream for assets
 // that are not in the trash. A first sync has a line for every asset, and
@@ -227,10 +245,13 @@ func (in *syncInjector) extra(line []byte) [][]byte {
 			Key     string        `json:"key"`
 			Value   entity.Marker `json:"value"`
 		}
-		if json.Unmarshal(l.Data, &d) != nil || d.Key != entity.MarkerKey {
+		if json.Unmarshal(l.Data, &d) != nil {
 			return nil
 		}
-		if in.done[d.AssetID] {
+		if d.Key == mobileAppKey {
+			return in.cloudRecord(l.Data)
+		}
+		if d.Key != entity.MarkerKey || in.done[d.AssetID] {
 			return nil
 		}
 		return in.entry(d.AssetID, &d.Value, hiddenAckPrefix+d.AssetID)
@@ -282,7 +303,52 @@ func (in *syncInjector) entry(assetID string, m *entity.Marker, ack string) [][]
 	}
 	in.done[assetID] = true
 	in.Injected++
-	return [][]byte{encodeLine(syncLine{Type: in.assetType, Data: data, Ack: ack})}
+	lines := [][]byte{encodeLine(syncLine{Type: in.assetType, Data: data, Ack: ack})}
+	return append(lines, in.cloudLine(assetID)...)
+}
+
+// cloudRecord handles the app's own record of an asset going by. When the
+// asset has a hidden entry, the entry gets a copy.
+func (in *syncInjector) cloudRecord(data json.RawMessage) [][]byte {
+	var d struct {
+		AssetID string          `json:"assetId"`
+		Value   json.RawMessage `json:"value"`
+	}
+	if json.Unmarshal(data, &d) != nil || hiddenID(d.AssetID) == "" || len(d.Value) == 0 {
+		return nil
+	}
+	if in.cloud == nil {
+		in.cloud = map[string]json.RawMessage{}
+	}
+	if len(in.cloud) < maxCloudRecords {
+		in.cloud[d.AssetID] = d.Value
+	}
+	if in.done[d.AssetID] {
+		return in.cloudLine(d.AssetID)
+	}
+	// The hidden entry was not sent in this stream. It may have been in an
+	// earlier one, or may follow with the marker (which then brings the
+	// record along). Ask, within the limit: with a marker, the entry is
+	// sent again so that the record certainly has something to belong to.
+	if in.marker == nil || in.lookups >= maxLookups {
+		return nil
+	}
+	in.lookups++
+	return in.entry(d.AssetID, in.marker(d.AssetID), hiddenAckPrefix+d.AssetID)
+}
+
+// cloudLine returns the record line for the hidden entry of an asset, once.
+func (in *syncInjector) cloudLine(assetID string) [][]byte {
+	value, ok := in.cloud[assetID]
+	if !ok || in.cloudSent[assetID] {
+		return nil
+	}
+	if in.cloudSent == nil {
+		in.cloudSent = map[string]bool{}
+	}
+	in.cloudSent[assetID] = true
+	data, _ := json.Marshal(map[string]any{"assetId": hiddenID(assetID), "key": mobileAppKey, "value": value})
+	return [][]byte{encodeLine(syncLine{Type: "AssetMetadataV1", Data: data, Ack: hiddenAckPrefix + "cloud|" + assetID})}
 }
 
 // hiddenAsset is the asset entry the app gets for the original of a converted
