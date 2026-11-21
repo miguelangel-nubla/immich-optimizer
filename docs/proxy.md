@@ -40,9 +40,23 @@ Point your clients at the optimizer instead of Immich. If Immich sits behind you
 
 ## The mobile app
 
-The official app decides that a photo is backed up by comparing the checksum of the file on the phone with the checksums Immich reports. A converted file has a different checksum. What follows from that depends on one setting.
+The official app decides that a photo is backed up by comparing the checksum of the file on the phone with the checksums Immich reports. A converted file has a different checksum, so on its own the app does not recognise its photos once they are converted.
 
-**With [`IO_PROXY_EXPERIMENTAL_APP_SYNC=true`](#experimental-making-the-mobile-app-see-converted-photos-as-backed-up)** the app sees converted photos as backed up and uploads each one once. This is tested with the real Android app in an emulator; it has not been tried on iOS. It is off by default because it depends on the format of Immich's sync, which can change with any release.
+**Set `IO_PROXY_EXPERIMENTAL_APP_SYNC=true`** and the proxy tells the app the checksums of the originals. The app then counts converted photos as backed up and uploads each one once.
+
+It is off by default and called experimental for two reasons: it has been tested with the real Android app (Immich v3.4.2, in an emulator) but not on an iPhone, and it relies on the way the app and Immich talk to each other, which Immich can change in any release.
+
+What to know when it is on:
+
+- **The app must reach Immich through the proxy** for everything, not only for uploads.
+- **Turning it on later works.** A phone that already knows your photos catches up by itself. At worst it uploads each converted photo one more time: nothing is stored twice, and after that it counts them as backed up.
+- **"Free up space" will trust it.** The app considers those photos safely backed up and offers to delete them from the phone, although the server holds the converted file, not the original. It does not offer photos whose converted copy is in Immich's trash.
+- **It follows what you do in Immich.** Trash a converted photo, restore it or delete it for good, and the app treats the photo on the phone as it would with any other photo.
+- **It covers [library mode](library.md#phones) too**: photos converted there are not uploaded again either.
+- **If Immich changes and the proxy no longer understands it**, the proxy passes everything through untouched. The worst case is that the app goes back to uploading again.
+- **Turning it off** does not undo it on a phone that already has it; logging out and in again in the app does.
+
+How it does this is described in [How app sync works](app-sync.md).
 
 **Without it** the app never sees a converted photo as backed up:
 
@@ -53,27 +67,3 @@ The official app decides that a photo is backed up by comparing the checksum of 
 Everything else works either way: the web interface, `immich-go`, the Immich CLI and uploads through a shared link upload a file once.
 
 If you would rather keep the app out of uploading altogether, use [watcher mode for phones](watcher.md#using-it-for-phone-backup): a sync tool brings the photos, and the app is a viewer only.
-
-## Experimental: making the mobile app see converted photos as backed up
-
-`IO_PROXY_EXPERIMENTAL_APP_SYNC=true` makes the proxy tell the app the checksums of the originals. It is off by default. It is tested with the real Android app in an emulator (Immich app v3.4.2): without it the app sends every converted photo again each time it looks for things to back up, with it the app counts them as backed up and uploads each one once. It has not been tried on iOS.
-
-**How it works.** The app keeps its own list of what is on the server, filled from Immich's sync, and treats a photo as backed up when that list has an entry with the photo's checksum. Every converted asset carries a [marker](marker.md) with the checksum of its original, and the marker is part of the same sync. When a marker passes through the proxy, the proxy adds one hidden entry with the original's checksum to the answer. The app finds its match and stops uploading the photo.
-
-- The proxy keeps no list of its own. It works out each hidden entry from the marker Immich sends, every time.
-- The real asset's entry is not changed.
-- The hidden entry is never shown.
-- **It arrives at once.** Immich tells the app about a finished upload over a websocket, and the proxy adds the hidden entry there too, so the app's backup page counts the photo as backed up right away.
-- **It follows its asset.** It is in the trash while the converted asset is, and it is deleted from the phone when the converted asset is deleted for good or loses its marker. The app then treats the photo as it treats any photo whose server copy was trashed or deleted.
-- If the app ever asks for a hidden entry, for a thumbnail say, it gets the converted photo.
-- **It covers [library mode](library.md#phones) too.** Assets that library mode converted carry the same marker, so the phone does not upload their originals again after they leave the trash.
-
-**What to know before trying it**
-
-- **The app must reach Immich through the proxy**, for everything: uploads, sync and the websocket.
-- **Turning it on later works.** A phone that already knows your photos catches up by itself. At worst it uploads each converted photo one more time: nothing is stored twice, and after that it counts them as backed up.
-- **"Free up space" will trust it.** The app considers those photos safely backed up and offers to delete them from the phone, although the server holds the converted file, not the original. It does not offer photos whose converted asset is in the trash.
-- **It costs a little extra work.** For each photo the app is told about, the proxy asks Immich one more question, to learn whether the photo has a marker. In a sync with thousands of changes it asks for the first 200 only; the others get their hidden entry from their marker, as usual. It also reads the live connection between the app and Immich, which it therefore asks Immich not to compress.
-- It depends on the format of Immich's sync and websocket messages, which can change with any Immich release. What the proxy does not recognise it passes through unchanged, so the worst case is that the app goes back to uploading again.
-- Turning it off again does not remove hidden entries already on a phone; a full resync does (log out and in again).
-

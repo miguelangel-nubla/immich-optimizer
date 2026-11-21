@@ -53,6 +53,7 @@ services:
 |---|---|
 | [Quick start](docs/quickstart.md) | the recommended setup, step by step |
 | [Proxy mode](docs/proxy.md) · [Watcher mode](docs/watcher.md) · [Library mode](docs/library.md) | setting up and understanding each mode |
+| [How app sync works](docs/app-sync.md) | what the proxy does for the mobile app, in detail |
 | [Tasks](docs/tasks.md) | the tasks file, bundled profiles, motion photos, converting downloads back |
 | [Configuration](docs/configuration.md) | every setting |
 | [Undone folder](docs/undone.md) · [Audit log](docs/audit-log.md) · [Marker](docs/marker.md) | what the optimizer keeps and records |
