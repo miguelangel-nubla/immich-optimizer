@@ -118,7 +118,7 @@ func TestLibraryReplacesAssetAndCarriesEverythingOver(t *testing.T) {
 
 	// The marker records where it came from and is no longer pending.
 	m := u.marker(t, newID)
-	if m == nil || m["library.replaces"] != r.a.ID || m["original.sha1"] != hexChecksum(t, r.a.Checksum) || m["conversion.source"] != "library" || m["library.state"] != nil {
+	if m == nil || m["library.replaces"] != r.a.ID || m["original.sha1"] != hexChecksum(t, r.a.Checksum) || m["latest.source"] != "library" || m["library.state"] != nil {
 		t.Errorf("marker = %v", m)
 	}
 
@@ -754,5 +754,64 @@ func TestProxyPassesUploadsAndLibraryConvertsOnDemand(t *testing.T) {
 	}
 	if !found {
 		t.Error("the phone was not told that the converted photo is the one it has")
+	}
+}
+
+// Converting a conversion again: from the converted file, with every version
+// in the record, and the first original still the one phones have.
+func TestLibraryReconvert(t *testing.T) {
+	u := newUser(t)
+	a := u.add(t, "plain.jpg", nil)
+	cfg := sharedDir(t)
+	tasks := `tasks:
+- name: jpeg-xl
+  command: cjxl --lossless_jpeg=1 -d 0 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
+  extensions: [jpg, jpeg]
+- name: jxl-again
+  command: |
+    djxl "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/pixels.png" \
+    && cjxl "{{.dst_folder}}/pixels.png" -q 40 "{{.dst_folder}}/{{.name}}.jxl" \
+    && rm "{{.dst_folder}}/pixels.png"
+  extensions: [jxl]
+`
+	if err := os.WriteFile(filepath.Join(cfg, "tasks.yaml"), []byte(tasks), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logDir := sharedDir(t)
+	env := map[string]string{"IO_TASKS_FILE": "/custom/tasks.yaml"}
+
+	// First conversion: the JPEG becomes a JPEG XL.
+	code, out, log := runLibrary(t, u, logDir, env, cfg+":/custom:ro")
+	conv := replacedBy(log, a.ID)
+	if code != 0 || conv == "" {
+		t.Fatalf("first conversion (exit %d):\n%s", code, out)
+	}
+	convAsset := u.asset(t, conv)
+
+	// Tagged convert again, it is left alone: it is a conversion.
+	env["E2E_TAGS"] = "own"
+	u.tag(t, tagConvert, conv)
+	if _, out, log = runLibrary(t, u, logDir, env, cfg+":/custom:ro"); replacedBy(log, conv) != "" {
+		t.Fatalf("convert re-converted a conversion:\n%s", out)
+	}
+
+	// Tagged reconvert, it is converted again from the JPEG XL.
+	u.tag(t, tagReconvert, conv)
+	code, out, log = runLibrary(t, u, logDir, env, cfg+":/custom:ro")
+	again := replacedBy(log, conv)
+	if code != 0 || again == "" {
+		t.Fatalf("reconvert (exit %d):\n%s", code, out)
+	}
+	if !u.asset(t, conv).IsTrashed {
+		t.Error("the earlier conversion is not in the trash")
+	}
+	m := u.marker(t, again)
+	if m == nil || m["versions.count"] != float64(3) || m["original.sha1"] != hexChecksum(t, a.Checksum) ||
+		m["versions.1.sha1"] != hexChecksum(t, convAsset.Checksum) || m["versions.1.task.name"] != "jpeg-xl" ||
+		m["latest.task.name"] != "jxl-again" || m["latest.source"] != "library" {
+		t.Errorf("record of the version made again: %v", m)
+	}
+	if contains(u.tags(t, conv), tagReconvert) {
+		t.Error("the reconvert tag was not removed")
 	}
 }

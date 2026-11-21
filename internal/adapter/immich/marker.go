@@ -38,6 +38,9 @@ func DuplicateAssetID(body []byte) string {
 // With refresh, a marker that is already there is written again unchanged.
 // Immich then sends it to its sync clients once more, which is how a phone
 // that missed it gets it.
+//
+// A marker that is there but cannot be read (it does not even give the
+// original's checksum) counts as none: the new one replaces it.
 func EnsureMarker(ctx context.Context, hc *http.Client, baseURL string, auth http.Header, assetID string, marker *entity.Marker, refresh bool) error {
 	base := strings.TrimRight(baseURL, "/") + "/api/assets/" + url.PathEscape(assetID) + "/metadata"
 
@@ -70,16 +73,24 @@ func EnsureMarker(ctx context.Context, hc *http.Client, baseURL string, auth htt
 	resp.Body.Close()
 	var value json.RawMessage
 	if resp.StatusCode == http.StatusOK {
-		if !refresh {
-			return nil
-		}
 		var item struct {
 			Value json.RawMessage `json:"value"`
 		}
-		if json.Unmarshal(existing, &item) != nil || len(item.Value) == 0 {
+		var stored entity.Marker
+		usable := json.Unmarshal(existing, &item) == nil && len(item.Value) > 0 &&
+			json.Unmarshal(item.Value, &stored) == nil && stored.SHA1 != ""
+		switch {
+		case usable && !refresh:
 			return nil
+		case usable:
+			value = item.Value
+		default:
+			// A record the optimizer cannot read (not even its original's
+			// checksum) is no use to anyone: the new one replaces it.
+			if value, err = json.Marshal(marker); err != nil {
+				return err
+			}
 		}
-		value = item.Value
 	} else if value, err = json.Marshal(marker); err != nil {
 		return err
 	}

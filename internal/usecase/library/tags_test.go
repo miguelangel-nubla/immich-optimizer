@@ -1,7 +1,9 @@
 package library
 
 import (
+	"encoding/json"
 	"errors"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	"strings"
 	"testing"
 )
@@ -314,5 +316,123 @@ func TestTaggedUnfinishedCopyIsSettledFirst(t *testing.T) {
 	}
 	if m := h.marker(n.ID); m == nil || m.Kept || m.Replaces != old.ID {
 		t.Errorf("the conversion's marker changed: %+v", m)
+	}
+}
+
+// Converting a conversion again: from the converted file, with the record of
+// every version kept, and the first original still the one phones have.
+func TestReconvertAppendsAVersion(t *testing.T) {
+	h := newHarness(t)
+	data := photo(1)
+	old, conv := convertOne(t, h, data)
+	h.im.convertAll = false
+	h.conv.jxlToo = true
+	first := h.marker(conv.ID)
+
+	// A plain convert tag leaves a conversion alone.
+	h.im.tag(conv, TagConvert)
+	if sum, err := h.run(); err != nil || sum.Replaced != 0 || conv.IsTrashed {
+		t.Fatalf("convert on a conversion: %+v, %v", sum, err)
+	}
+
+	h.im.tag(conv, TagReconvert)
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 1 || !conv.IsTrashed {
+		t.Fatalf("reconvert: %+v, %v", sum, err)
+	}
+	again := h.convertedFrom(conv)
+	if again == nil {
+		t.Fatal("no new copy")
+	}
+	m := h.marker(again.ID)
+	if m.SHA1 != old.Checksum || m.Size != first.Size || m.OriginalName != first.OriginalName {
+		t.Errorf("the original changed: %+v", m)
+	}
+	if len(m.Earlier) != 1 || m.Earlier[0].SHA1 != conv.Checksum || m.Earlier[0].Size != conv.Size || m.Earlier[0].Task != "jpeg-xl" {
+		t.Errorf("the earlier conversion was not kept: %+v", m.Earlier)
+	}
+	if m.OutputSHA1 != again.Checksum && m.OutputSHA1 != "" || m.State != "" || m.Replaces != conv.ID {
+		t.Errorf("latest version: %+v", m)
+	}
+	if h.im.hasTag(conv, TagReconvert) || h.im.hasTag(again, TagReconvert) {
+		t.Error("the reconvert tag was not settled")
+	}
+	// The audit log ties the new asset to the first original, as the
+	// second-copy check and the phones need.
+	found := false
+	for _, e := range h.entries() {
+		if e.Event == "replaced" && e.NewAsset == again.ID {
+			found = e.OriginalSHA1 == old.Checksum && strings.Contains(e.Detail, "converted again")
+		}
+	}
+	if !found {
+		t.Error("the replacement is not logged against the first original")
+	}
+
+	// Once more: a third version.
+	h.im.tag(again, TagReconvert)
+	if sum, err := h.run(); err != nil || sum.Replaced != 1 {
+		t.Fatalf("third version: %+v, %v", sum, err)
+	}
+	third := h.convertedFrom(again)
+	if m := h.marker(third.ID); m == nil || len(m.Earlier) != 2 || m.SHA1 != old.Checksum {
+		t.Errorf("third version record: %+v", m)
+	}
+}
+
+// When converting again gives nothing better, the asset and its record stay
+// exactly as they are; no "kept" mark replaces its history.
+func TestReconvertWithoutGainChangesNothing(t *testing.T) {
+	h := newHarness(t)
+	_, conv := convertOne(t, h, photo(1))
+	h.im.convertAll = false
+	h.conv.jxlToo, h.conv.noGain = true, true
+	before := string(conv.metadata[entity.MarkerKey])
+	h.im.tag(conv, TagReconvert)
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 0 || sum.Kept != 0 || sum.Skipped != 1 || conv.IsTrashed {
+		t.Fatalf("%+v, %v", sum, err)
+	}
+	if string(conv.metadata[entity.MarkerKey]) != before {
+		t.Errorf("the record changed:\n%s\nwas\n%s", conv.metadata[entity.MarkerKey], before)
+	}
+	if h.im.hasTag(conv, TagReconvert) {
+		t.Error("the tag was not settled")
+	}
+}
+
+// Reconvert on something kept as it is says how to convert it instead; on
+// something never converted it converts it.
+func TestReconvertOnKeptAndOnUnconverted(t *testing.T) {
+	h := tagged(t)
+	kept := h.im.add("IMG_1.jpg", photo(1))
+	h.im.tag(kept, TagKeep)
+	if _, err := h.run(); err != nil {
+		t.Fatal(err)
+	}
+	before := string(kept.metadata[entity.MarkerKey])
+	h.im.tag(kept, TagReconvert)
+	plain := h.im.add("IMG_2.jpg", photo(2))
+	h.im.tag(plain, TagReconvert)
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 1 || !plain.IsTrashed || kept.IsTrashed {
+		t.Fatalf("%+v, %v", sum, err)
+	}
+	if string(kept.metadata[entity.MarkerKey]) != before || h.im.hasTag(kept, TagReconvert) {
+		t.Errorf("kept asset: marker %s, tags %v", kept.metadata[entity.MarkerKey], kept.TagIDs)
+	}
+}
+
+// A record from an earlier version, which does not say what the original
+// was, is not built on: phones would lose the photo.
+func TestReconvertNeedsAReadableRecord(t *testing.T) {
+	h := tagged(t)
+	h.conv.jxlToo = true
+	a := h.im.add("IMG_1.jxl", photo(1))
+	old := `{"v":1,"original":{"sha1":"aa","size":1},"conversion":{"task":{"name":"jpeg-xl"}}}`
+	a.metadata[entity.MarkerKey] = json.RawMessage(old)
+	h.im.tag(a, TagReconvert)
+	if sum, err := h.run(); err != nil || sum.Replaced != 0 || sum.Skipped != 1 || a.IsTrashed || string(a.metadata[entity.MarkerKey]) != old {
+		t.Fatalf("%+v, %v", sum, err)
 	}
 }

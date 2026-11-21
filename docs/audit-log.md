@@ -11,7 +11,7 @@ It records what happened to your files, and only that:
 | `proxy`, `watcher` | `failed` | conversion failed; `undone` is the folder the original was saved to |
 | `proxy`, `watcher` | `refused` | no task handles the file type |
 | `proxy`, `watcher` | `upload_failed` | converted, but Immich did not accept it |
-| `library` | `converted`, `uploaded`, `verified`, `replaced` | the steps of one replacement; `replaced` means the original is in the trash |
+| `library` | `converted`, `uploaded`, `verified`, `replaced` | the steps of one replacement; `replaced` means the original is in the trash. For a photo converted again (`immich-optimizer/reconvert`), `detail` says so and `original_sha1` is still the first original's |
 | `library` | `kept` | looked at and left as it is |
 | `library` | `marked_keep` | tagged `immich-optimizer/keep`: marked as handled, file untouched |
 | `library` | `marker_removed` | tagged `immich-optimizer/redo`: its "left as it is" mark was removed |

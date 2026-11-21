@@ -2,6 +2,7 @@ package entity
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -55,18 +56,19 @@ func TestMarkerShape(t *testing.T) {
 	full := Marker{
 		V: 1, SHA1: "aa", Size: 29293, OriginalName: "IMG_1.jpg",
 		Task: "jpeg-xl", TaskCommand: `cjxl "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"`,
-		ConfigSHA256: "cc", MotionPhotos: "drop_video", Source: "library", Optimizer: "v0.3.0",
-		At: time.Date(2026, 11, 21, 10, 0, 0, 500, time.UTC), OutputSize: 21961,
+		ConfigSHA256: "cc", MotionPhotos: "drop_video", Source: "proxy", Optimizer: "v0.3.0",
+		At:         time.Date(2026, 11, 21, 10, 0, 0, 500, time.UTC),
+		OutputSize: 21961, OutputName: "IMG_1.jxl", OutputSHA1: "bb",
 		Replaces: "asset-1", State: MarkerStatePending,
 	}
 	got, err := json.Marshal(full)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"v":1,"original":{"sha1":"aa","size":29293,"name":"IMG_1.jpg"},` +
-		`"conversion":{"at":"2026-11-21T10:00:00Z","source":"library","optimizer":"v0.3.0",` +
+	want := `{"v":1,"versions":[{"sha1":"aa","size":29293,"name":"IMG_1.jpg"},` +
+		`{"sha1":"bb","size":21961,"name":"IMG_1.jxl","at":"2026-11-21T10:00:00Z","source":"proxy","optimizer":"v0.3.0",` +
 		`"task":{"name":"jpeg-xl","command":"cjxl \"{{.src_folder}}/{{.name}}.{{.extension}}\" \"{{.dst_folder}}/{{.name}}.jxl\"","motion_photos":"drop_video"},` +
-		`"config":{"sha256":"cc"},"output":{"size":21961}},` +
+		`"config":{"sha256":"cc"}}],` +
 		`"library":{"replaces":"asset-1","state":"pending"}}`
 	if string(got) != want {
 		t.Errorf("marker =\n%s\nwant\n%s", got, want)
@@ -76,16 +78,41 @@ func TestMarkerShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	full.At = full.At.Truncate(time.Second)
-	if back != full {
+	if !reflect.DeepEqual(back, full) {
 		t.Errorf("read back\n%+v\nwant\n%+v", back, full)
 	}
 
-	// An original that was kept as it is.
-	kept, _ := json.Marshal(Marker{V: 1, SHA1: "aa", Size: 5, Source: "library", Kept: true, Note: "no gain"})
-	if want := `{"v":1,"original":{"sha1":"aa","size":5},"conversion":{"source":"library"},"kept":{"note":"no gain"}}`; string(kept) != want {
+	// Converted again: the original stays first, the earlier conversion
+	// moves into the middle, the new one is last.
+	again := full.Then(Marker{V: 1, SHA1: "bb", Size: 21961, OriginalName: "IMG_1.jxl", Task: "smaller", Source: "library",
+		Optimizer: "v0.4.0", At: time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC), OutputSize: 15000, OutputName: "IMG_1.jxl", OutputSHA1: "cc"})
+	if again.SHA1 != "aa" || again.State != "" || again.Replaces != "" || len(again.Earlier) != 1 || again.Earlier[0].SHA1 != "bb" ||
+		again.Earlier[0].Task != "jpeg-xl" || again.OutputSHA1 != "cc" || again.Task != "smaller" {
+		t.Fatalf("converted again: %+v", again)
+	}
+	got, _ = json.Marshal(again)
+	var v struct {
+		Versions []struct {
+			SHA1   string `json:"sha1"`
+			Source string `json:"source"`
+		} `json:"versions"`
+	}
+	if err := json.Unmarshal(got, &v); err != nil || len(v.Versions) != 3 || v.Versions[0].SHA1 != "aa" ||
+		v.Versions[1].SHA1 != "bb" || v.Versions[1].Source != "proxy" || v.Versions[2].SHA1 != "cc" {
+		t.Errorf("versions of the converted-again record: %s", got)
+	}
+	var back2 Marker
+	if err := json.Unmarshal(got, &back2); err != nil || !reflect.DeepEqual(back2, again) {
+		t.Errorf("converted-again record read back as\n%+v\nwant\n%+v", back2, again)
+	}
+
+	// An original that was kept as it is: only the original, and why.
+	kept, _ := json.Marshal(Marker{V: 1, SHA1: "aa", Size: 5, Source: "library", Optimizer: "v0.4.0", Kept: true, Note: "no gain",
+		At: time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)})
+	if want := `{"v":1,"versions":[{"sha1":"aa","size":5}],"kept":{"note":"no gain","at":"2026-11-21T10:00:00Z","optimizer":"v0.4.0"}}`; string(kept) != want {
 		t.Errorf("kept marker =\n%s\nwant\n%s", kept, want)
 	}
-	if err := json.Unmarshal(kept, &back); err != nil || !back.Kept || back.Note != "no gain" || back.State != "" {
+	if err := json.Unmarshal(kept, &back); err != nil || !back.Kept || back.Note != "no gain" || back.State != "" || back.SHA1 != "aa" {
 		t.Errorf("kept marker read back as %+v (%v)", back, err)
 	}
 	// A very long command is cut, not refused.

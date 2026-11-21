@@ -70,7 +70,7 @@ func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
 			Connected: poke,
 			AssetUpdated: func(_ string, tags []string) {
 				for _, t := range tags {
-					if t == TagConvert || t == TagKeep || t == TagRedo {
+					if t == TagConvert || t == TagKeep || t == TagRedo || t == TagReconvert {
 						poke()
 						return
 					}
@@ -86,7 +86,7 @@ func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
 	}
 	safety := time.NewTicker(SafetyInterval)
 	defer safety.Stop()
-	s.infof("Library: waiting for tags (%s, %s, %s)", TagConvert, TagKeep, TagRedo)
+	s.infof("Library: waiting for tags (%s, %s, %s, %s)", TagConvert, TagKeep, TagRedo, TagReconvert)
 	for {
 		var err error
 		select {
@@ -182,8 +182,8 @@ func (s *Service) taggedPass(ctx context.Context, me string) error {
 	if err != nil {
 		return err
 	}
-	ids := make([]string, 0, len(rt.convert)+len(rt.keep)+len(rt.redo))
-	for _, set := range []map[string]bool{rt.convert, rt.keep, rt.redo} {
+	ids := make([]string, 0, len(rt.convert)+len(rt.keep)+len(rt.redo)+len(rt.reconvert))
+	for _, set := range []map[string]bool{rt.convert, rt.keep, rt.redo, rt.reconvert} {
 		for id := range set {
 			ids = append(ids, id)
 		}

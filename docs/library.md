@@ -117,6 +117,7 @@ You choose in Immich, with tags. Library mode creates them the first time it run
 | `immich-optimizer/convert` | you | converts the asset, then removes the tag |
 | `immich-optimizer/keep` | you | keeps the asset as it is: marks it, without touching the file, and removes the tag. It is never converted, also if it is tagged `convert` later |
 | `immich-optimizer/redo` | you | removes a `keep` mark (or the mark of an asset that was kept because converting it did not help), and removes the tag. Tag it `convert` too to have it converted in the same run |
+| `immich-optimizer/reconvert` | you | converts a photo that is **already converted** again, from the converted file, with your current tasks, then removes the tag. Its [record](marker.md) keeps every version, and the first one is still the original your phone has. The result is used only when it is smaller; otherwise the photo stays exactly as it is. With a lossy task, quality is lost a second time |
 | `immich-optimizer/failed` | the optimizer | the conversion failed: the reason is in the [audit log](audit-log.md) and the optimizer's own log. Tag it `convert` again to try once more |
 | `immich-optimizer/review` | the optimizer | a [second copy](#second-copies-of-converted-originals) was left alone because it has something of its own: merge the two by hand |
 
@@ -132,6 +133,7 @@ You choose in Immich, with tags. Library mode creates them the first time it run
 
 - **What a tag asks for happens once.** The tag is removed as soon as it is settled: converted, kept, marked, or skipped for good (no task handles its type, for example). It stays only when the reason may go away by itself, such as a file Immich has not finished reading: a later run tries again.
 - **`keep` wins over `convert`.** An asset with both is kept as it is.
+- **`convert` never converts a conversion again**, so tagging in bulk is safe. Only `reconvert` does, and it needs a task in your tasks file that takes the converted file's type (JPEG XL, for example). Without one, the tag is removed and nothing happens.
 - **Tags are settled once a batch is finished.** A batch that is stopped (the container is restarted, for example) leaves them as they are, and they are acted on again after the restart.
 - **The optimizer's tags are never carried over** to a converted copy, and are not counted as a difference when the copy is compared with its original. Your own tags are carried over as usual.
 - **Cleaning up does not depend on tags.** [Second copies](#second-copies-of-converted-originals) are moved to the trash and replacements an earlier run left unfinished are completed, all over the library.

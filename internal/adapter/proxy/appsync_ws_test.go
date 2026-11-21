@@ -98,9 +98,9 @@ func TestWebsocketThroughTheProxy(t *testing.T) {
 			}
 			switch {
 			case strings.Contains(r.URL.Path, realAsset):
-				_, _ = io.WriteString(w, `{"key":"immich-optimizer","value":{"v":1,"original":{"sha1":"`+abcHex+`","size":3}}}`)
+				_, _ = io.WriteString(w, `{"key":"immich-optimizer","value":{"v":1,"versions":[{"sha1":"`+abcHex+`","size":3},{"size":2}]}}`)
 			case strings.Contains(r.URL.Path, kept):
-				_, _ = io.WriteString(w, `{"key":"immich-optimizer","value":{"v":1,"original":{"sha1":"`+abcHex+`","size":3},"kept":{}}}`)
+				_, _ = io.WriteString(w, `{"key":"immich-optimizer","value":{"v":1,"versions":[{"sha1":"`+abcHex+`","size":3}],"kept":{}}}`)
 			default:
 				w.WriteHeader(http.StatusBadRequest)
 			}

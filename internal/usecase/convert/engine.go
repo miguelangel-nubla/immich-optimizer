@@ -185,6 +185,11 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 			release()
 			return nil, e.fail(in, entity.Failure{Stage: entity.StageConvert, Err: fmt.Errorf("hashing the original: %w", err), At: e.now()}, true)
 		}
+		outSum, err := originalSHA1(entity.ConvertInput{Path: res.ProcessedFilePath})
+		if err != nil {
+			release()
+			return nil, e.fail(in, entity.Failure{Stage: entity.StageConvert, Err: fmt.Errorf("hashing the converted file: %w", err), At: e.now()}, true)
+		}
 		r.Marker = &entity.Marker{
 			V:            entity.MarkerVersion,
 			SHA1:         sum,
@@ -198,6 +203,8 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 			Optimizer:    e.cfg.Version,
 			At:           e.now(),
 			OutputSize:   res.ProcessedSize,
+			OutputName:   r.DeliverName,
+			OutputSHA1:   outSum,
 		}
 		note := ""
 		if res.MotionPhotos != "" {
@@ -225,6 +232,7 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 
 // originalSHA1 returns the lowercase hex SHA-1 of the input, the checksum
 // Immich would store for it. Sources that already hashed the file pass it in.
+// originalSHA1 returns in.SHA1 when it is a checksum, else hashes in.Path.
 func originalSHA1(in entity.ConvertInput) (string, error) {
 	if len(in.SHA1) == sha1.Size*2 {
 		if _, err := hex.DecodeString(in.SHA1); err == nil {

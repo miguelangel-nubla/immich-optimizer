@@ -63,11 +63,18 @@ func line(typ string, data any, ack string) string {
 // form (sha1, kept, state, task), which is laid out as the record really is.
 func marker(assetID string, short map[string]any) string {
 	value := map[string]any{"v": 1}
+	var versions []any
 	if s, ok := short["sha1"]; ok {
-		value["original"] = map[string]any{"sha1": s, "size": 3}
+		versions = append(versions, map[string]any{"sha1": s, "size": 3})
 	}
 	if task, ok := short["task"]; ok {
-		value["conversion"] = map[string]any{"task": map[string]any{"name": task}}
+		if versions == nil {
+			versions = append(versions, map[string]any{})
+		}
+		versions = append(versions, map[string]any{"size": 2, "task": map[string]any{"name": task}})
+	}
+	if versions != nil {
+		value["versions"] = versions
 	}
 	if state, ok := short["state"]; ok {
 		value["library"] = map[string]any{"state": state}

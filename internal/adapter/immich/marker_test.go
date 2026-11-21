@@ -48,7 +48,7 @@ func TestEnsureMarkerWritesOnlyWhenNeeded(t *testing.T) {
 	}
 
 	// An existing marker is left alone...
-	stored = `{"v":1,"original":{"sha1":"bb","size":1},"conversion":{"task":{"name":"old"}},"library":{"replaces":"x"}}`
+	stored = `{"v":1,"versions":[{"sha1":"bb","size":1},{"size":1,"task":{"name":"old"}}],"library":{"replaces":"x"}}`
 	ensure(false)
 	if len(puts) != 1 {
 		t.Fatalf("an existing marker was overwritten: %q", puts)
@@ -58,6 +58,18 @@ func TestEnsureMarkerWritesOnlyWhenNeeded(t *testing.T) {
 	if len(puts) != 2 || !strings.Contains(puts[1], stored) || strings.Contains(puts[1], "new") {
 		t.Fatalf("refresh must write the existing marker back unchanged: %q", puts)
 	}
+
+	// A record the optimizer cannot read (here the shape written before
+	// versions) is replaced by the new one, with or without refresh.
+	for _, refresh := range []bool{false, true} {
+		stored = `{"v":1,"original":{"sha1":"bb","size":1},"conversion":{"task":{"name":"old"}}}`
+		n := len(puts)
+		ensure(refresh)
+		if len(puts) != n+1 || !strings.Contains(puts[n], `"name":"new"`) || strings.Contains(puts[n], `"original"`) {
+			t.Fatalf("refresh %v: an unreadable marker was not replaced: %q", refresh, puts[n:])
+		}
+	}
+	stored = `{"v":1,"versions":[{"sha1":"bb","size":1},{"size":1,"task":{"name":"old"}}],"library":{"replaces":"x"}}`
 
 	got, err := GetMarker(context.Background(), srv.Client(), srv.URL, auth, "id")
 	if err != nil || got == nil || got.SHA1 != "bb" {

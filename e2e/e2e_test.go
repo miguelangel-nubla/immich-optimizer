@@ -298,8 +298,8 @@ func (u *user) live(t *testing.T) []asset {
 }
 
 // marker returns the asset's optimizer marker, or nil. The record is nested;
-// here its fields are addressed by their path, such as "original.sha1" or
-// "conversion.task.name".
+// here its fields are addressed by their path, such as "original.sha1" (the
+// first version) or "latest.task.name" (the last), or "versions.1.sha1".
 func (u *user) marker(t *testing.T, id string) map[string]any {
 	t.Helper()
 	var items []struct {
@@ -321,6 +321,21 @@ func (u *user) marker(t *testing.T, id string) map[string]any {
 				}
 			}
 			walk("", it.Value)
+			// The versions of the file, oldest first: the original is
+			// the first, the file as it is now the last.
+			versions, _ := it.Value["versions"].([]any)
+			flat["versions.count"] = float64(len(versions))
+			for i, v := range versions {
+				if vm, ok := v.(map[string]any); ok {
+					walk(fmt.Sprintf("versions.%d.", i), vm)
+					if i == 0 {
+						walk("original.", vm)
+					}
+					if i == len(versions)-1 && i > 0 {
+						walk("latest.", vm)
+					}
+				}
+			}
 			return flat
 		}
 	}
@@ -427,10 +442,11 @@ func dockerArgs(env map[string]string, mounts ...string) []string {
 
 // The optimizer's tags, as library mode names them.
 const (
-	tagConvert = "immich-optimizer/convert"
-	tagKeep    = "immich-optimizer/keep"
-	tagRedo    = "immich-optimizer/redo"
-	tagFailed  = "immich-optimizer/failed"
+	tagConvert   = "immich-optimizer/convert"
+	tagKeep      = "immich-optimizer/keep"
+	tagRedo      = "immich-optimizer/redo"
+	tagReconvert = "immich-optimizer/reconvert"
+	tagFailed    = "immich-optimizer/failed"
 )
 
 // tagID returns the id of the user's tag with this value, creating it.

@@ -375,7 +375,7 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 				meta, m, err = s.classify(ctx, me, a)
 			}
 		default:
-			meta, m, err = s.classify(ctx, me, a)
+			meta, m, err = s.classify(ctx, me, a, rt.reconvert[a.ID])
 		}
 		if errors.Is(err, errPendingCopy) {
 			meta, m, err = s.classify(ctx, me, a)
@@ -384,6 +384,13 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 		if errors.As(err, &sk) && sk.converted != nil && !sk.converted.Kept && sk.converted.SHA1 != "" {
 			mu.Lock()
 			convertedFrom[strings.ToLower(sk.converted.SHA1)] = a.ID
+			mu.Unlock()
+		}
+		if mk := markerOf(meta); err == nil && m == nil && mk != nil && mk.SHA1 != "" {
+			// A conversion about to be converted again is still the
+			// conversion of its original.
+			mu.Lock()
+			convertedFrom[strings.ToLower(mk.SHA1)] = a.ID
 			mu.Unlock()
 		}
 		if err == nil {
@@ -410,7 +417,7 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 		}
 		t := &tally{}
 		// A tag on the unfinished copy waits for a later run.
-		t.item.retry = rt.keep[p.asset.ID] || rt.redo[p.asset.ID] || rt.convert[p.asset.ID]
+		t.item.retry = rt.keep[p.asset.ID] || rt.redo[p.asset.ID] || rt.convert[p.asset.ID] || rt.reconvert[p.asset.ID]
 		outcome(p.asset, t, s.resumePending(ctx, p.asset, p.marker, t))
 	}
 
@@ -425,7 +432,8 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 			break
 		}
 		convertedID, second := convertedFrom[strings.ToLower(c.asset.Checksum)]
-		if !second && s.idx != nil {
+		second = second && markerOf(c.items) == nil
+		if !second && s.idx != nil && markerOf(c.items) == nil {
 			convertedID, second = s.idx.convertedFrom(c.asset.Checksum)
 			second = second && convertedID != c.asset.ID
 		}
@@ -438,7 +446,7 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 			// The conversion it pointed at is not this user's: an
 			// ordinary candidate.
 		}
-		if !rt.convert[c.asset.ID] {
+		if !rt.convert[c.asset.ID] && !rt.reconvert[c.asset.ID] {
 			outcome(c.asset, &tally{}, skip("it is not tagged %s", TagConvert))
 			continue
 		}
@@ -524,7 +532,10 @@ func markerItem(m *entity.Marker) (entity.MetadataItem, error) {
 // classify decides, from the listing and the asset's metadata, whether an
 // asset is a candidate. It returns the marker instead when the asset is the
 // unfinished copy of an interrupted replacement.
-func (s *Service) classify(ctx context.Context, me string, listed entity.LibraryAsset) ([]entity.MetadataItem, *entity.Marker, error) {
+//
+// With again (the asset is tagged reconvert), a finished conversion is a
+// candidate too: it is converted again from the converted file.
+func (s *Service) classify(ctx context.Context, me string, listed entity.LibraryAsset, again ...bool) ([]entity.MetadataItem, *entity.Marker, error) {
 	if err := basicChecks(me, listed); err != nil {
 		return nil, nil, err
 	}
@@ -537,7 +548,16 @@ func (s *Service) classify(ctx context.Context, me string, listed entity.Library
 		if m.State == entity.MarkerStatePending {
 			return nil, m, nil
 		}
-		return nil, nil, &errSkip{reason: "it was already handled by the optimizer", converted: m}
+		switch {
+		case len(again) == 0 || !again[0]:
+			return nil, nil, &errSkip{reason: "it was already handled by the optimizer", converted: m}
+		case m.Kept:
+			return nil, nil, skip("tagged %s, but it was left as it is, not converted: tag it %s and %s to convert it", TagReconvert, TagRedo, TagConvert)
+		case m.SHA1 == "":
+			// Without the original's checksum the new record could not
+			// say which file phones have.
+			return nil, nil, skip("tagged %s, but its record is from an earlier version and does not say what its original was", TagReconvert)
+		}
 	}
 	if ok, reason := s.conv.Converts(listed.OriginalFileName); !ok {
 		return nil, nil, skip("%s", reason)
@@ -704,8 +724,19 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 	}
 	defer res.Release()
 
+	// A conversion converted again (tagged reconvert): its record goes on,
+	// and when the result is no better it stays exactly as it is. Writing
+	// "kept" over its record would lose its original.
+	prior := markerOf(oldItems)
+	keep := func(note string) error {
+		if prior != nil {
+			return skip("converting it again: %s; it stays as it is", note)
+		}
+		return s.keep(ctx, old, oldItems, t, note)
+	}
+
 	if res.Outcome != entity.OutcomeOptimized || res.Marker == nil {
-		return s.keep(ctx, old, oldItems, t, "conversion gave no size reduction")
+		return keep("conversion gave no size reduction")
 	}
 	// Motion photos (a photo with an embedded video). Immich extracts the
 	// video of such an upload into an asset of its own and pairs it with the
@@ -713,11 +744,11 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 	// pairing exists: the copy is paired with the same video.
 	switch {
 	case res.Marker.MotionPhotos == entity.MotionPhotosDropPhoto:
-		return s.keep(ctx, old, oldItems, t, "motion photo whose task keeps only the video")
+		return keep("motion photo whose task keeps only the video")
 	case res.Marker.MotionPhotos == entity.MotionPhotosDropVideo && old.LivePhotoVideoID == "":
-		return s.keep(ctx, old, oldItems, t, "motion photo whose video Immich did not extract: converting it would lose the video")
+		return keep("motion photo whose video Immich did not extract: converting it would lose the video")
 	case res.Marker.MotionPhotos == "" && s.cfg.IsMotionPhoto != nil && s.cfg.IsMotionPhoto(src):
-		return s.keep(ctx, old, oldItems, t, "motion photo converted as a whole (motion_photos: keep): the result would hide its video")
+		return keep("motion photo converted as a whole (motion_photos: keep): the result would hide its video")
 	}
 	if err := s.conv.CheckOutput(ctx, in, res); err != nil {
 		return fmt.Errorf("the converted file does not look valid: %w", err)
@@ -731,6 +762,11 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 		OriginalBytes: res.OriginalSize, ConvertedBytes: res.OutputSize,
 		OriginalSHA1: sum1, ConvertedSHA1: convertedSHA1,
 	}
+	if prior != nil {
+		// The original is the first version, not the file converted now.
+		entry.OriginalSHA1 = prior.SHA1
+		entry.Detail = "converted again, from " + old.OriginalFileName
+	}
 	e := entry
 	e.Event = "converted"
 	if err := s.record(e); err != nil {
@@ -740,6 +776,19 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 	// 3. Upload as a new asset, marked pending, carrying the original's own
 	// metadata items.
 	marker := *res.Marker
+	if prior != nil {
+		p := *prior
+		if p.OutputSHA1 == "" {
+			p.OutputSHA1 = old.Checksum
+		}
+		if p.OutputSize == 0 {
+			p.OutputSize = old.Size
+		}
+		if p.OutputName == "" {
+			p.OutputName = old.OriginalFileName
+		}
+		marker = p.Then(*res.Marker)
+	}
 	marker.Replaces = old.ID
 	marker.State = entity.MarkerStatePending
 	mi, err := markerItem(&marker)

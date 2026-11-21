@@ -590,6 +590,7 @@ func (f *fakeImmich) Delete(_ context.Context, ids []string) error {
 // fakeConv "converts" by keeping the first half of the file.
 type fakeConv struct {
 	noGain     bool
+	jxlToo     bool // a task also converts .jxl, as one that converts again does
 	convertErr error
 	verifyErr  error
 	motion     string
@@ -637,7 +638,8 @@ func (c *fakeConv) CheckOutput(context.Context, entity.ConvertInput, *entity.Con
 }
 
 func (c *fakeConv) Converts(filename string) (bool, string) {
-	if strings.HasSuffix(strings.ToLower(filename), ".jpg") {
+	name := strings.ToLower(filename)
+	if strings.HasSuffix(name, ".jpg") || c.jxlToo && strings.HasSuffix(name, ".jxl") {
 		return true, ""
 	}
 	return false, "no task handles this file type"
@@ -960,7 +962,7 @@ func TestSkips(t *testing.T) {
 		h.im.activity["shared-1/"+a.ID] = 2
 	})
 	mk("done.jpg", func(a *fakeAsset) {
-		a.metadata[entity.MarkerKey] = json.RawMessage(`{"v":1,"original":{"sha1":"aa","size":1},"conversion":{"task":{"name":"jpeg-xl"}}}`)
+		a.metadata[entity.MarkerKey] = json.RawMessage(`{"v":1,"versions":[{"sha1":"aa","size":1},{"size":1,"task":{"name":"jpeg-xl"}}]}`)
 	})
 
 	sum, err := h.run()

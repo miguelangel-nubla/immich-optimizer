@@ -48,8 +48,16 @@ type Marker struct {
 	Optimizer string
 	// At is when the conversion was made.
 	At time.Time
-	// OutputSize is the size of the converted file in bytes.
+	// OutputSize, OutputName and OutputSHA1 describe the converted file.
+	// OutputSHA1 is the checksum Immich has for the asset.
 	OutputSize int64
+	OutputName string
+	OutputSHA1 string
+
+	// Earlier are the versions between the original and the latest
+	// conversion, oldest first: each a file and how it was made. They are
+	// there when an asset was converted again.
+	Earlier []MarkerStep
 
 	// Replaces is the id of the asset this one replaced (library mode).
 	Replaces string
@@ -64,47 +72,80 @@ type Marker struct {
 	Note string
 }
 
+// MarkerStep is one version of a file: the file, and how it was made from
+// the version before it.
+type MarkerStep struct {
+	SHA1         string
+	Size         int64
+	Name         string
+	At           time.Time
+	Source       string
+	Optimizer    string
+	Task         string
+	TaskCommand  string
+	MotionPhotos string
+	ConfigSHA256 string
+}
+
+// Latest returns the latest conversion as a step.
+func (m Marker) Latest() MarkerStep {
+	return MarkerStep{SHA1: m.OutputSHA1, Size: m.OutputSize, Name: m.OutputName, At: m.At, Source: m.Source,
+		Optimizer: m.Optimizer, Task: m.Task, TaskCommand: m.TaskCommand, MotionPhotos: m.MotionPhotos, ConfigSHA256: m.ConfigSHA256}
+}
+
+// Then returns the record of a file converted again from the one m
+// describes, by the conversion next records: the original stays, m's
+// latest conversion becomes an earlier version, and next's is the latest.
+// Library state is not carried over.
+func (m Marker) Then(next Marker) Marker {
+	out := next
+	out.V = MarkerVersion
+	out.SHA1, out.Size, out.OriginalName = m.SHA1, m.Size, m.OriginalName
+	out.Earlier = append(append([]MarkerStep(nil), m.Earlier...), m.Latest())
+	out.Replaces, out.State, out.Kept, out.Note = "", "", false, ""
+	return out
+}
+
 // MarkerVersion is the schema version written.
 const MarkerVersion = 1
 
 // maxMarkerCommand bounds the command text kept in a record.
 const maxMarkerCommand = 4096
 
-// The record as it is stored:
+// The record as it is stored: the versions of the file, oldest first. The
+// first is the original, as it was before any conversion; each one after it
+// was made from the one before. The last is the file as it is in Immich.
 //
 //	{
 //	  "v": 1,
-//	  "original":   {"sha1": "...", "size": 29293, "name": "IMG_1234.jpg"},
-//	  "conversion": {
-//	    "at": "2026-11-21T10:00:00Z", "source": "proxy", "optimizer": "v0.3.0",
-//	    "task":   {"name": "jpeg-xl", "command": "cjxl ...", "motion_photos": "drop_video"},
-//	    "config": {"sha256": "..."},
-//	    "output": {"size": 21961}
-//	  },
+//	  "versions": [
+//	    {"sha1": "...", "size": 29293, "name": "IMG_1234.jpg"},
+//	    {"sha1": "...", "size": 21961, "name": "IMG_1234.jxl",
+//	     "at": "2026-11-21T10:00:00Z", "source": "proxy", "optimizer": "v0.4.0",
+//	     "task":   {"name": "jpeg-xl", "command": "cjxl ...", "motion_photos": "drop_video"},
+//	     "config": {"sha256": "..."}}
+//	  ],
 //	  "library": {"replaces": "<asset id>", "state": "pending"},
-//	  "kept":    {"note": "..."}
+//	  "kept":    {"note": "...", "at": "...", "optimizer": "v0.4.0"}
 //	}
+//
+// An asset that was left as it is has only its original, and "kept".
 type markerJSON struct {
-	V          int               `json:"v"`
-	Original   *markerOriginal   `json:"original,omitempty"`
-	Conversion *markerConversion `json:"conversion,omitempty"`
-	Library    *markerLibrary    `json:"library,omitempty"`
-	Kept       *markerKept       `json:"kept,omitempty"`
+	V        int             `json:"v"`
+	Versions []markerVersion `json:"versions,omitempty"`
+	Library  *markerLibrary  `json:"library,omitempty"`
+	Kept     *markerKept     `json:"kept,omitempty"`
 }
 
-type markerOriginal struct {
-	SHA1 string `json:"sha1"`
-	Size int64  `json:"size"`
-	Name string `json:"name,omitempty"`
-}
-
-type markerConversion struct {
+type markerVersion struct {
+	SHA1      string        `json:"sha1,omitempty"`
+	Size      int64         `json:"size,omitempty"`
+	Name      string        `json:"name,omitempty"`
 	At        *time.Time    `json:"at,omitempty"`
 	Source    string        `json:"source,omitempty"`
 	Optimizer string        `json:"optimizer,omitempty"`
 	Task      *markerTask   `json:"task,omitempty"`
 	Config    *markerConfig `json:"config,omitempty"`
-	Output    *markerOutput `json:"output,omitempty"`
 }
 
 type markerTask struct {
@@ -117,46 +158,68 @@ type markerConfig struct {
 	SHA256 string `json:"sha256"`
 }
 
-type markerOutput struct {
-	Size int64 `json:"size"`
-}
-
 type markerLibrary struct {
 	Replaces string `json:"replaces,omitempty"`
 	State    string `json:"state,omitempty"`
 }
 
 type markerKept struct {
-	Note string `json:"note,omitempty"`
+	Note      string     `json:"note,omitempty"`
+	At        *time.Time `json:"at,omitempty"`
+	Optimizer string     `json:"optimizer,omitempty"`
 }
 
-// MarshalJSON writes the record in its nested form.
-func (m Marker) MarshalJSON() ([]byte, error) {
-	out := markerJSON{V: MarkerVersion, Original: &markerOriginal{SHA1: m.SHA1, Size: m.Size, Name: m.OriginalName}}
-	c := &markerConversion{Source: m.Source, Optimizer: m.Optimizer}
-	if !m.At.IsZero() {
-		at := m.At.UTC().Truncate(time.Second)
-		c.At = &at
+func jsonTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
 	}
-	if m.Task != "" || m.TaskCommand != "" || m.MotionPhotos != "" {
-		cmd := m.TaskCommand
+	t = t.UTC().Truncate(time.Second)
+	return &t
+}
+
+func (st MarkerStep) toJSON() markerVersion {
+	v := markerVersion{SHA1: st.SHA1, Size: st.Size, Name: st.Name, At: jsonTime(st.At), Source: st.Source, Optimizer: st.Optimizer}
+	if st.Task != "" || st.TaskCommand != "" || st.MotionPhotos != "" {
+		cmd := st.TaskCommand
 		if len(cmd) > maxMarkerCommand {
 			cmd = cmd[:maxMarkerCommand]
 		}
-		c.Task = &markerTask{Name: m.Task, Command: cmd, MotionPhotos: m.MotionPhotos}
+		v.Task = &markerTask{Name: st.Task, Command: cmd, MotionPhotos: st.MotionPhotos}
 	}
-	if m.ConfigSHA256 != "" {
-		c.Config = &markerConfig{SHA256: m.ConfigSHA256}
+	if st.ConfigSHA256 != "" {
+		v.Config = &markerConfig{SHA256: st.ConfigSHA256}
 	}
-	if m.OutputSize > 0 {
-		c.Output = &markerOutput{Size: m.OutputSize}
+	return v
+}
+
+func (v markerVersion) step() MarkerStep {
+	st := MarkerStep{SHA1: v.SHA1, Size: v.Size, Name: v.Name, Source: v.Source, Optimizer: v.Optimizer}
+	if v.At != nil {
+		st.At = *v.At
 	}
-	out.Conversion = c
+	if v.Task != nil {
+		st.Task, st.TaskCommand, st.MotionPhotos = v.Task.Name, v.Task.Command, v.Task.MotionPhotos
+	}
+	if v.Config != nil {
+		st.ConfigSHA256 = v.Config.SHA256
+	}
+	return st
+}
+
+// MarshalJSON writes the record in its stored form.
+func (m Marker) MarshalJSON() ([]byte, error) {
+	out := markerJSON{V: MarkerVersion}
+	out.Versions = append(out.Versions, markerVersion{SHA1: m.SHA1, Size: m.Size, Name: m.OriginalName})
+	if m.Kept {
+		out.Kept = &markerKept{Note: m.Note, At: jsonTime(m.At), Optimizer: m.Optimizer}
+	} else {
+		for _, st := range m.Earlier {
+			out.Versions = append(out.Versions, st.toJSON())
+		}
+		out.Versions = append(out.Versions, m.Latest().toJSON())
+	}
 	if m.Replaces != "" || m.State != "" {
 		out.Library = &markerLibrary{Replaces: m.Replaces, State: m.State}
-	}
-	if m.Kept {
-		out.Kept = &markerKept{Note: m.Note}
 	}
 	return json.Marshal(out)
 }
@@ -168,29 +231,27 @@ func (m *Marker) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*m = Marker{V: in.V}
-	if o := in.Original; o != nil {
+	if len(in.Versions) > 0 {
+		o := in.Versions[0]
 		m.SHA1, m.Size, m.OriginalName = o.SHA1, o.Size, o.Name
 	}
-	if c := in.Conversion; c != nil {
-		m.Source, m.Optimizer = c.Source, c.Optimizer
-		if c.At != nil {
-			m.At = *c.At
+	if n := len(in.Versions); n > 1 {
+		for _, v := range in.Versions[1 : n-1] {
+			m.Earlier = append(m.Earlier, v.step())
 		}
-		if c.Task != nil {
-			m.Task, m.TaskCommand, m.MotionPhotos = c.Task.Name, c.Task.Command, c.Task.MotionPhotos
-		}
-		if c.Config != nil {
-			m.ConfigSHA256 = c.Config.SHA256
-		}
-		if c.Output != nil {
-			m.OutputSize = c.Output.Size
-		}
+		last := in.Versions[n-1].step()
+		m.OutputSHA1, m.OutputSize, m.OutputName, m.At = last.SHA1, last.Size, last.Name, last.At
+		m.Source, m.Optimizer, m.Task, m.TaskCommand = last.Source, last.Optimizer, last.Task, last.TaskCommand
+		m.MotionPhotos, m.ConfigSHA256 = last.MotionPhotos, last.ConfigSHA256
 	}
 	if l := in.Library; l != nil {
 		m.Replaces, m.State = l.Replaces, l.State
 	}
-	if in.Kept != nil {
-		m.Kept, m.Note = true, in.Kept.Note
+	if k := in.Kept; k != nil {
+		m.Kept, m.Note, m.Optimizer = true, k.Note, k.Optimizer
+		if k.At != nil {
+			m.At = *k.At
+		}
 	}
 	return nil
 }

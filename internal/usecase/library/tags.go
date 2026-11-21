@@ -24,6 +24,9 @@ const (
 	// converting it did not help), so that the asset can be
 	// converted again.
 	TagRedo = TagPrefix + "redo"
+	// TagReconvert asks for an asset that is already converted to be
+	// converted again, from the converted file, with the current tasks.
+	TagReconvert = TagPrefix + "reconvert"
 	// TagFailed is set on an asset whose conversion failed.
 	TagFailed = TagPrefix + "failed"
 	// TagReview is set on a second copy that was left alone because it has
@@ -34,7 +37,7 @@ const (
 // commandTags are created when library mode starts, so that they can be
 // found in Immich before they were ever used. The status tags appear when
 // they are first set.
-var commandTags = []string{TagConvert, TagKeep, TagRedo}
+var commandTags = []string{TagConvert, TagKeep, TagRedo, TagReconvert}
 
 // errPendingCopy says a tagged asset is the unfinished copy of an
 // interrupted replacement. Settling that comes first, whatever the tag says;
@@ -51,7 +54,7 @@ type runTags struct {
 	// own is the set of those ids: they are never carried over or compared.
 	own map[string]bool
 	// convert, keep and redo are the assets that carry each command.
-	convert, keep, redo map[string]bool
+	convert, keep, redo, reconvert map[string]bool
 }
 
 // loadTags makes sure the command tags exist and reads which assets have
@@ -108,7 +111,10 @@ func (s *Service) loadTags(ctx context.Context) (*runTags, error) {
 	if rt.redo, err = tagged(TagRedo); err != nil {
 		return nil, err
 	}
-	s.infof("Library: tagged %s: %d, %s: %d, %s: %d", TagConvert, len(rt.convert), TagKeep, len(rt.keep), TagRedo, len(rt.redo))
+	if rt.reconvert, err = tagged(TagReconvert); err != nil {
+		return nil, err
+	}
+	s.infof("Library: tagged %s: %d, %s: %d, %s: %d, %s: %d", TagConvert, len(rt.convert), TagKeep, len(rt.keep), TagRedo, len(rt.redo), TagReconvert, len(rt.reconvert))
 	return rt, nil
 }
 
@@ -250,7 +256,12 @@ func (s *Service) settleTags(ctx context.Context, rt *runTags, items []*Item) er
 	for _, it := range items {
 		status[it.ID] = it
 	}
-	var untagConvert, untagKeep, untagRedo, untagFailed, failed, review []string
+	var untagConvert, untagKeep, untagRedo, untagReconvert, untagFailed, failed, review []string
+	for id := range rt.reconvert {
+		if it := status[id]; it != nil && !it.retry {
+			untagReconvert = append(untagReconvert, id)
+		}
+	}
 	for id := range rt.convert {
 		if it := status[id]; it != nil && !it.retry {
 			untagConvert = append(untagConvert, id)
@@ -314,6 +325,7 @@ func (s *Service) settleTags(ctx context.Context, rt *runTags, items []*Item) er
 	change(false, TagConvert, untagConvert)
 	change(false, TagKeep, untagKeep)
 	change(false, TagRedo, untagRedo)
+	change(false, TagReconvert, untagReconvert)
 	change(false, TagFailed, untagFailed)
 	change(true, TagFailed, failed)
 	change(true, TagReview, review)

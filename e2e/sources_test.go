@@ -49,16 +49,16 @@ func TestProxyConvertsUploads(t *testing.T) {
 		t.Errorf("stored asset: %+v", a)
 	}
 	m := u.marker(t, a.ID)
-	if m == nil || m["original.sha1"] != fileSHA1(t, src) || m["conversion.source"] != "proxy" || m["conversion.task.name"] != "jpeg-xl" {
+	if m == nil || m["original.sha1"] != fileSHA1(t, src) || m["latest.source"] != "proxy" || m["latest.task.name"] != "jpeg-xl" {
 		t.Errorf("marker = %v", m)
 	}
 	// It says what was done, not only under which name: the command as it is
 	// in the tasks file, and which configuration it came from.
-	command, _ := m["conversion.task.command"].(string)
-	config, _ := m["conversion.config.sha256"].(string)
-	size, _ := m["conversion.output.size"].(float64)
+	command, _ := m["latest.task.command"].(string)
+	config, _ := m["latest.config.sha256"].(string)
+	size, _ := m["latest.size"].(float64)
 	if !strings.HasPrefix(command, "cjxl --lossless_jpeg=1") || !strings.Contains(command, "{{.src_folder}}") || len(config) != 64 ||
-		m["original.name"] != "photo.jpg" || int64(size) != a.ExifInfo.Size || m["conversion.at"] == nil || m["v"] != float64(1) {
+		m["original.name"] != "photo.jpg" || int64(size) != a.ExifInfo.Size || m["latest.at"] == nil || m["v"] != float64(1) {
 		t.Errorf("marker details = %v", m)
 	}
 	// The client's own metadata item survived next to it.
@@ -81,7 +81,7 @@ func TestProxyConvertsUploads(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("motion photo upload: %d %s", status, out["_body"])
 	}
-	if mm := u.marker(t, out["id"]); mm == nil || mm["conversion.task.motion_photos"] != "drop_video" {
+	if mm := u.marker(t, out["id"]); mm == nil || mm["latest.task.motion_photos"] != "drop_video" {
 		t.Errorf("motion photo marker = %v", mm)
 	}
 
@@ -193,7 +193,7 @@ func TestWatcherUploadsAndCleansUp(t *testing.T) {
 	if a.FileCreatedAt != "2016-07-08T09:10:11.000Z" {
 		t.Errorf("asset date = %s, want the original file's date", a.FileCreatedAt)
 	}
-	if m := u.marker(t, a.ID); m == nil || m["conversion.source"] != "watcher" {
+	if m := u.marker(t, a.ID); m == nil || m["latest.source"] != "watcher" {
 		t.Errorf("marker = %v", m)
 	}
 	if _, err := os.Stat(final); !os.IsNotExist(err) {
