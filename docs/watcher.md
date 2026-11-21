@@ -29,6 +29,17 @@ Uploads go to the API key's user: run one container per user. Settings: [Watcher
 - The watch folder must be on a local file system: changes made on a network share by another machine are not noticed.
 - Each converted asset gets a [provenance marker](marker.md), and each upload a line in the [audit log](audit-log.md).
 
+## Importing a folder of files
+
+Watcher mode is a good fit when you have photos and videos as plain files, in a folder structure of your own (an old archive, a camera card, a disk you are clearing), and want them **converted and uploaded in one step**. Copy them into the watch folder; each one is converted and uploaded, and the folder empties as it goes. Nothing else is needed: no [Immich CLI](https://docs.immich.app/features/bulk-upload) (`immich upload`) and no [immich-go](https://github.com/simulot/immich-go) (`immich-go upload from-folder`), the tools usually used to upload folders to Immich.
+
+- **Copy, do not move, your only copy.** Each file is deleted from the watch folder once Immich has it. Keep the originals elsewhere until you have checked the result in Immich.
+- **Subfolders are fine**, at any depth. The folder structure is not turned into albums: every file simply lands in the timeline, on its own date.
+- **A file that cannot be converted is not uploaded.** It goes to the [undone folder](undone.md), with the reason, so a large import never ends up with broken or unconverted files in it.
+- **Large imports** run at the pace of the conversions ([`IO_TASKS_CONCURRENCY`](configuration.md#tasks)); copy in batches if the disk the watch folder is on is small.
+
+If you need what those tools do beyond uploading (an album per folder, importing a Google Photos takeout), use them anyway, pointed at the [proxy](proxy.md) instead of at Immich: what they upload is converted on the way in. Both are tested this way.
+
 ## Using it for phone backup
 
 Sync the phone's camera folder into the watch folder with a one-way sync tool (Syncthing "send only", FolderSync "to remote folder"), and deselect every album in the Immich app's backup settings. The app is then a viewer only, and its checksum-based backup, described in [The mobile app](proxy.md#the-mobile-app), plays no part.
