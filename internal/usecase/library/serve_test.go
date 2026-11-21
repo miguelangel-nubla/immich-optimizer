@@ -248,3 +248,27 @@ var errRefused = &refusedErr{}
 type refusedErr struct{}
 
 func (*refusedErr) Error() string { return "connection refused" }
+
+// Library entries say whose they are; a file that is another user's
+// converted original is converted like any other.
+func TestServeWithAnotherUsersConversionInTheLog(t *testing.T) {
+	h := tagged(t)
+	data := photo(1)
+	sum := sha([]byte(data))
+	writeLog(t, h.logPath, `{"source":"library","user":"someone-else","event":"replaced","asset":"x","new_asset":"their-copy","original_sha1":"`+sum+`"}`+"\n"+
+		`{"source":"proxy","event":"uploaded","asset":"not-mine-either","outcome":"optimized","original_sha1":"`+sum+`"}`+"\n")
+	a := h.im.add("IMG_1.jpg", data)
+	h.im.tag(a, TagConvert)
+	h.serve()
+	h.waitFor("the photo to be converted", func() bool { return a.IsTrashed })
+	h.waitFor("the replacement to be logged with its user", func() bool {
+		h.im.mu.Unlock()
+		defer h.im.mu.Lock()
+		for _, e := range h.entries() {
+			if e.Event == "replaced" && e.Asset == a.ID {
+				return e.User == me
+			}
+		}
+		return false
+	})
+}

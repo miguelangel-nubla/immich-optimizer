@@ -1,15 +1,21 @@
 # Library mode
 
-Proxy and watcher mode only handle new uploads. Library mode (`IO_MODE=library`) converts the assets **already in Immich**, replacing each one with its converted copy. **You choose which ones in Immich itself, with a tag:** it converts only what is tagged `immich-optimizer/convert`. See [Choosing what to convert](#choosing-what-to-convert). It needs an API key and works for that key's user only: run it once per user.
+Proxy and watcher mode only handle new uploads. Library mode (`IO_MODE=library`) converts the assets **already in Immich**, replacing each one with its converted copy. **You choose which ones in Immich itself, with a tag:** it converts only what is tagged `immich-optimizer/convert`. See [Choosing what to convert](#choosing-what-to-convert). It needs an API key for each user whose photos it should convert.
+
+> **Using the Immich mobile app to back up?** Run library mode together with [proxy mode](proxy.md), and have the phones reach Immich through the proxy. The proxy tells the app that a converted photo is still the photo it has, so the app does not upload the original again. Without it, every converted photo that is still on a phone is uploaded again once its original has left Immich's trash. See [Phones](#phones).
+
+The recommended setup, proxy and library mode in one container (see the [quick start](quickstart.md) for the proxy part):
 
 ```yaml
 services:
-  immich-optimizer-library:
+  immich-optimizer:
     image: ghcr.io/miguelangel-nubla/immich-optimizer:latest
     environment:
-      - IO_MODE=library
+      - IO_MODE=proxy,library
       - IO_IMMICH_URL=http://immich-server:2283
-      - IO_IMMICH_API_KEY=your-api-key   # a key with all permissions
+      - IO_IMMICH_API_KEY=key-of-alice,key-of-bob   # one key per user, all permissions
+    ports:
+      - '2283:2283'
     volumes:
       - ./undone:/undone                # the audit log is written here
     restart: unless-stopped
@@ -17,7 +23,12 @@ services:
 
 It keeps running and waits. **Nothing happens until you tag something** in Immich: tag a few photos `immich-optimizer/convert` and they are converted within seconds. Everything it replaces can be undone from Immich's trash.
 
-**The API key** needs every permission library mode uses: reading, downloading and uploading assets, changing them and their metadata, tags, albums and memories. The simplest is a key created with all permissions. A key acts as its owner, so library mode works on that user's photos only: for several users, run one library container per user, each with their own key.
+**The API keys.** Immich lets a key act on its owner's photos only, and has no key that works for every user. So each user whose photos should be converted creates a key once, in Immich under Account Settings → API Keys, with **all permissions**, and gives it to you.
+
+- **One key per user**, all in one container: separate them with commas in `IO_IMMICH_API_KEY`, or put one per line in the file named by `IO_IMMICH_API_KEY_FILE` (blank lines and lines starting with `#` are ignored, so you can note whose each key is).
+- Library mode then works for each user separately: each one's tags act on that user's photos only. In the log, each user's lines are marked `[user 1]`, `[user 2]` and so on, in the order of the keys.
+- All users share the conversions running at the same time ([`IO_TASKS_CONCURRENCY`](configuration.md#tasks)) and one [audit log](audit-log.md), in which each library entry names its user.
+- Watcher mode uploads with the first key.
 
 **To try it**, tag three or four photos and look at the result in Immich. Each converted photo is a new asset, and its original is in the trash, where you can compare the two or restore the original.
 
@@ -92,7 +103,7 @@ These assets are left exactly as they are. The reason for each is written to the
 | In the trash, hidden, or offline | not part of the visible library |
 | Belongs to another user or a partner | each user runs library mode with their own key |
 | Not tagged `immich-optimizer/convert` | see [Choosing what to convert](#choosing-what-to-convert) |
-| Already converted, already looked at, or tagged done | recognised by its [marker](marker.md) |
+| Already converted, already looked at, or tagged `keep` | recognised by its [marker](marker.md) |
 | A second copy of a converted original that has something of its own 📝 | see [Second copies](#second-copies-of-converted-originals) |
 | Immich has not finished reading it yet | it is picked up by a later run |
 | It changed while it was being replaced | you edited it, or Immich was still analysing it. The copy is removed and a later run converts it |
@@ -104,8 +115,8 @@ You choose in Immich, with tags. Library mode creates them the first time it run
 | Tag | Set by | What the next run does |
 |---|---|---|
 | `immich-optimizer/convert` | you | converts the asset, then removes the tag |
-| `immich-optimizer/done` | you | marks the asset as handled, without touching it, and removes the tag. It is never converted, also if it is tagged `convert` later |
-| `immich-optimizer/redo` | you | removes a `done` mark (or the mark of an asset that was kept because converting it did not help), and removes the tag. Tag it `convert` too to have it converted in the same run |
+| `immich-optimizer/keep` | you | keeps the asset as it is: marks it, without touching the file, and removes the tag. It is never converted, also if it is tagged `convert` later |
+| `immich-optimizer/redo` | you | removes a `keep` mark (or the mark of an asset that was kept because converting it did not help), and removes the tag. Tag it `convert` too to have it converted in the same run |
 | `immich-optimizer/failed` | the optimizer | the conversion failed: the reason is in the [audit log](audit-log.md) and the optimizer's own log. Tag it `convert` again to try once more |
 | `immich-optimizer/review` | the optimizer | a [second copy](#second-copies-of-converted-originals) was left alone because it has something of its own: merge the two by hand |
 
@@ -117,11 +128,11 @@ You choose in Immich, with tags. Library mode creates them the first time it run
 
 **Tagging automatically.** Immich's own workflows (Administration → Workflows) can tag new assets as they arrive: for example "when an asset is uploaded, if it is a video, add the tag `immich-optimizer/convert`". A workflow can test the file name, the type, the date taken, the camera and other EXIF fields, the location, existing tags and the text Immich reads in a photo. Workflows react to new uploads, to metadata and text being read, and to tagging. They do not go through what is already in your library, and Immich has no workflow trigger for "added to an album": for those, tag by hand as above.
 
-**Files converted by an earlier version.** Versions before 0.4 did not mark what they converted. Library mode cannot tell those files from originals, and would convert them a second time. Converting an already converted file almost never makes it smaller, and a result that is not smaller is never used, so nothing is lost, but it costs time. Tag such files `immich-optimizer/done` to skip them. For example, if your earlier setup turned videos into `.mkv`, search Immich for `.mkv`, select all and tag them done.
+**Files converted by an earlier version.** Versions before 0.4 did not mark what they converted. Library mode cannot tell those files from originals, and would convert them a second time. Converting an already converted file almost never makes it smaller, and a result that is not smaller is never used, so nothing is lost, but it costs time. Tag such files `immich-optimizer/keep` to skip them. For example, if your earlier setup turned videos into `.mkv`, search Immich for `.mkv`, select all and tag them `keep`.
 
-- **What a tag asks for is done once.** The tag is removed as soon as it is settled: converted, kept, marked, or skipped for good (no task handles its type, for example). It stays only when the reason may go away by itself, such as a file Immich has not finished reading: a later run tries again.
-- **`done` wins over `convert`.** An asset with both is marked done.
-- **Tags are settled once a batch is done.** A batch that is stopped (the container is restarted, for example) leaves them as they are, and they are acted on again after the restart.
+- **What a tag asks for happens once.** The tag is removed as soon as it is settled: converted, kept, marked, or skipped for good (no task handles its type, for example). It stays only when the reason may go away by itself, such as a file Immich has not finished reading: a later run tries again.
+- **`keep` wins over `convert`.** An asset with both is kept as it is.
+- **Tags are settled once a batch is finished.** A batch that is stopped (the container is restarted, for example) leaves them as they are, and they are acted on again after the restart.
 - **The optimizer's tags are never carried over** to a converted copy, and are not counted as a difference when the copy is compared with its original. Your own tags are carried over as usual.
 - **Cleaning up does not depend on tags.** [Second copies](#second-copies-of-converted-originals) are moved to the trash and replacements an earlier run left unfinished are completed, all over the library.
 
@@ -140,7 +151,7 @@ Library mode recognises such a file without converting it again. Every converted
 
 The official mobile app decides what to back up by checksum: a photo counts as backed up while the server has a file with the same checksum, in the timeline or in the trash. A converted file has another checksum.
 
-**When the phone goes through the proxy, you can ignore this.** A phone that reaches Immich through [proxy mode](proxy.md#the-mobile-app) is told the original's checksum together with each converted photo, whether the proxy or library mode converted it. So it keeps counting a photo as backed up after library mode has replaced it, also once the original has left the trash, and does not upload it again. You can tag the whole library for conversion without thinking about which photos are still on a phone. This is tested with the real Android app in an emulator: library mode converts photos the phone has, the trash is emptied, and the app uploads nothing.
+**When the phone goes through the proxy, you can ignore this.** This is why library mode is best run together with proxy mode. A phone that reaches Immich through [proxy mode](proxy.md#the-mobile-app) is told the original's checksum together with each converted photo, whether the proxy or library mode converted it. So it keeps counting a photo as backed up after library mode has replaced it, also once the original has left the trash, and does not upload it again. You can tag the whole library for conversion without thinking about which photos are still on a phone. This is tested with the real Android app in an emulator: library mode converts photos the phone has, the trash is emptied, and the app uploads nothing.
 
 **Without it**, a photo that is still on a phone with backup on comes back:
 

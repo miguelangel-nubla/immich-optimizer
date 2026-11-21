@@ -562,13 +562,13 @@ func TestLibrarySecondCopies(t *testing.T) {
 func TestLibraryTags(t *testing.T) {
 	u := newUser(t)
 	conv := u.add(t, "plain.jpg", nil)
-	done := u.add(t, "photo.jpg", nil)
+	kept := u.add(t, "photo.jpg", nil)
 	broken := u.add(t, "photo.png", nil)
 	untouched := u.add(t, "photo.heic", nil)
 	// One of the person's own tags, which has to travel to the copy.
 	u.tagWith(t, []string{"holiday", tagConvert}, conv.ID)
 	u.tag(t, tagConvert, broken.ID)
-	u.tag(t, tagDone, done.ID)
+	u.tag(t, tagKeep, kept.ID)
 
 	// JPEGs convert; the only PNG task fails, so that the failed tag is set.
 	cfg := sharedDir(t)
@@ -605,7 +605,7 @@ func TestLibraryTags(t *testing.T) {
 	for _, tg := range all {
 		values = append(values, tg.Value)
 	}
-	for _, want := range []string{tagConvert, tagDone, tagRedo} {
+	for _, want := range []string{tagConvert, tagKeep, tagRedo} {
 		if !contains(values, want) {
 			t.Errorf("tag %s does not exist after a run: %v", want, values)
 		}
@@ -617,9 +617,9 @@ func TestLibraryTags(t *testing.T) {
 	if got := u.tags(t, newID); !contains(got, "holiday") || contains(got, tagConvert) {
 		t.Errorf("tags of the converted copy = %v, want holiday and none of the optimizer's", got)
 	}
-	m := u.marker(t, done.ID)
-	if m == nil || m["kept.note"] != "marked as done in Immich" || u.asset(t, done.ID).IsTrashed || has(done.ID, tagDone) {
-		t.Errorf("done: marker %v, tags %v", m, u.tags(t, done.ID))
+	m := u.marker(t, kept.ID)
+	if m == nil || m["kept.note"] != "tagged keep in Immich" || u.asset(t, kept.ID).IsTrashed || has(kept.ID, tagKeep) {
+		t.Errorf("keep: marker %v, tags %v", m, u.tags(t, kept.ID))
 	}
 	if !has(broken.ID, tagFailed) || has(broken.ID, tagConvert) || u.asset(t, broken.ID).IsTrashed {
 		t.Errorf("failed conversion: tags %v", u.tags(t, broken.ID))
@@ -628,11 +628,11 @@ func TestLibraryTags(t *testing.T) {
 		t.Error("an untagged asset was touched")
 	}
 
-	// Redo frees the done photo, and convert converts it in the same run.
-	u.tagWith(t, []string{tagRedo, tagConvert}, done.ID)
+	// Redo frees the kept photo, and convert converts it in the same run.
+	u.tagWith(t, []string{tagRedo, tagConvert}, kept.ID)
 	out, log = run()
-	if replacedBy(log, done.ID) == "" || !contains(events(log, done.ID), "marker_removed") {
-		t.Fatalf("redo and convert: %v\n%s", events(log, done.ID), out)
+	if replacedBy(log, kept.ID) == "" || !contains(events(log, kept.ID), "marker_removed") {
+		t.Fatalf("redo and convert: %v\n%s", events(log, kept.ID), out)
 	}
 
 	// While library mode runs, tagging a photo is enough: Immich tells it.
@@ -683,5 +683,40 @@ func TestLibraryCarriesMemoriesOver(t *testing.T) {
 	}
 	if contains(ids, newB) {
 		t.Errorf("a photo that was in no memory was put into one: %v", ids)
+	}
+}
+
+// One container works for several users, one API key each: each user's
+// tags act on that user's photos only.
+func TestLibrarySeveralUsers(t *testing.T) {
+	alice, bob := newUser(t), newUser(t)
+	a := alice.add(t, "plain.jpg", nil)
+	aUntagged := alice.add(t, "photo.jpg", nil)
+	b := bob.add(t, "photo.jpg", nil)
+	logDir := sharedDir(t)
+	name, _ := startOptimizer(t, map[string]string{"IO_MODE": "library", "IO_IMMICH_API_KEY": alice.keyS + "," + bob.keyS},
+		false, logDir+":/undone")
+	eventually(t, 5*time.Minute, "both users' workers to start", func() bool {
+		out, _ := exec.Command("docker", "logs", name).CombinedOutput()
+		return strings.Count(string(out), libraryReady) == 2
+	})
+	alice.tag(t, tagConvert, a.ID)
+	bob.tag(t, tagConvert, b.ID)
+	eventually(t, 2*time.Minute, "both tagged photos to be converted", func() bool {
+		return alice.asset(t, a.ID).IsTrashed && bob.asset(t, b.ID).IsTrashed
+	})
+	if alice.asset(t, aUntagged.ID).IsTrashed {
+		t.Error("alice's untagged photo was converted")
+	}
+	// Each replacement is logged with its user.
+	users := map[string]string{}
+	for _, e := range readLog(t, filepath.Join(logDir, "audit.log")) {
+		if e["event"] == "replaced" {
+			asset, _ := e["asset"].(string)
+			users[asset], _ = e["user"].(string)
+		}
+	}
+	if users[a.ID] != alice.id || users[b.ID] != bob.id {
+		t.Errorf("replacements logged for users %v, want alice %s and bob %s", users, alice.id, bob.id)
 	}
 }

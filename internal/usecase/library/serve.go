@@ -35,11 +35,7 @@ var retryDelay = 30 * time.Second
 // converted into what, comes from the audit log; only when the log knows
 // nothing is the whole library read (see Run).
 func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
-	s.idx = newLogIndex(s.journal.Path())
 	defer func() { s.idx = nil }()
-	if err := s.idx.refresh(); err != nil && s.log != nil {
-		s.log.Warnf("Library: could not read the audit log (%v); reading the whole library instead", err)
-	}
 
 	// Start: retried until Immich answers.
 	var me string
@@ -74,7 +70,7 @@ func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
 			Connected: poke,
 			AssetUpdated: func(_ string, tags []string) {
 				for _, t := range tags {
-					if t == TagConvert || t == TagDone || t == TagRedo {
+					if t == TagConvert || t == TagKeep || t == TagRedo {
 						poke()
 						return
 					}
@@ -90,7 +86,7 @@ func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
 	}
 	safety := time.NewTicker(SafetyInterval)
 	defer safety.Stop()
-	s.infof("Library: waiting for tags (%s, %s, %s)", TagConvert, TagDone, TagRedo)
+	s.infof("Library: waiting for tags (%s, %s, %s)", TagConvert, TagKeep, TagRedo)
 	for {
 		var err error
 		select {
@@ -134,7 +130,15 @@ func (s *Service) start(ctx context.Context, me *string) error {
 	if err != nil {
 		return fmt.Errorf("identifying the API key's user: %w", err)
 	}
-	*me = id
+	*me, s.me = id, id
+	if s.idx == nil {
+		// The log is shared by everyone library mode works for: this
+		// user's part of it.
+		s.idx = newLogIndex(s.journal.Path(), id)
+		if err := s.idx.refresh(); err != nil && s.log != nil {
+			s.log.Warnf("Library: could not read the audit log (%v); reading the whole library instead", err)
+		}
+	}
 	if !s.idx.isKnown() {
 		s.infof("Library: the audit log has no record of earlier conversions; reading the whole library once")
 		_, err := s.Run(ctx)
@@ -163,8 +167,8 @@ func (s *Service) taggedPass(ctx context.Context, me string) error {
 	if err != nil {
 		return err
 	}
-	ids := make([]string, 0, len(rt.convert)+len(rt.done)+len(rt.redo))
-	for _, set := range []map[string]bool{rt.convert, rt.done, rt.redo} {
+	ids := make([]string, 0, len(rt.convert)+len(rt.keep)+len(rt.redo))
+	for _, set := range []map[string]bool{rt.convert, rt.keep, rt.redo} {
 		for id := range set {
 			ids = append(ids, id)
 		}

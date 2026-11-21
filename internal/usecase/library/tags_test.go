@@ -70,7 +70,7 @@ func TestCommandTagsAreCreated(t *testing.T) {
 	if _, err := h.run(); err != nil {
 		t.Fatal(err)
 	}
-	for _, v := range []string{TagConvert, TagDone, TagRedo} {
+	for _, v := range []string{TagConvert, TagKeep, TagRedo} {
 		if h.im.tags[v] == "" {
 			t.Errorf("%s was not created", v)
 		}
@@ -87,62 +87,62 @@ func TestCommandTagsAreCreated(t *testing.T) {
 	}
 }
 
-func TestDoneMarksWithoutConverting(t *testing.T) {
+func TestKeepMarksWithoutConverting(t *testing.T) {
 	h := tagged(t)
-	a := h.im.add("IMG_1.mkv", photo(1)) // a type no task converts: done works anyway
+	a := h.im.add("IMG_1.mkv", photo(1)) // a type no task converts: keep works anyway
 	b := h.im.add("IMG_2.jpg", photo(2))
-	h.im.tag(a, TagDone)
-	h.im.tag(b, TagDone)
-	h.im.tag(b, TagConvert) // done wins
+	h.im.tag(a, TagKeep)
+	h.im.tag(b, TagKeep)
+	h.im.tag(b, TagConvert) // keep wins
 
 	sum, err := h.run()
-	if err != nil || sum.MarkedDone != 2 || sum.Replaced != 0 {
+	if err != nil || sum.MarkedKeep != 2 || sum.Replaced != 0 {
 		t.Fatalf("%+v, %v", sum, err)
 	}
 	for _, x := range []*fakeAsset{a, b} {
 		m := h.marker(x.ID)
-		if m == nil || !m.Kept || m.Note != DoneNote || m.SHA1 != x.Checksum {
+		if m == nil || !m.Kept || m.Note != KeepNote || m.SHA1 != x.Checksum {
 			t.Errorf("%s: marker %+v", x.OriginalFileName, m)
 		}
-		if x.IsTrashed || h.im.hasTag(x, TagDone) || h.im.hasTag(x, TagConvert) {
+		if x.IsTrashed || h.im.hasTag(x, TagKeep) || h.im.hasTag(x, TagConvert) {
 			t.Errorf("%s: trashed %v, tags %v", x.OriginalFileName, x.IsTrashed, x.TagIDs)
 		}
 	}
 	if n := strings.Count(strings.Join(h.im.calls, " "), "upload:"); n != 0 {
-		t.Errorf("%d uploads: done converts nothing", n)
+		t.Errorf("%d uploads: keep converts nothing", n)
 	}
 	ev := strings.Join(h.events(), " ")
-	if !strings.Contains(ev, "marked_done") {
+	if !strings.Contains(ev, "marked_keep") {
 		t.Errorf("events: %s", ev)
 	}
 
-	// Tagging it to convert later does nothing: it is done.
+	// Tagging it to convert later does nothing: it is kept.
 	h.im.tag(b, TagConvert)
 	if sum, err = h.run(); err != nil || sum.Replaced != 0 || b.IsTrashed || h.im.hasTag(b, TagConvert) {
-		t.Errorf("convert after done: %+v, %v", sum, err)
+		t.Errorf("convert after keep: %+v, %v", sum, err)
 	}
 }
 
-// Done on an asset the optimizer already converted leaves its marker as it
+// Keep on an asset the optimizer already converted leaves its marker as it
 // is: that marker carries the original's checksum.
-func TestDoneOnAConversionKeepsItsMarker(t *testing.T) {
+func TestKeepOnAConversionKeepsItsMarker(t *testing.T) {
 	h := newHarness(t)
 	_, conv := convertOne(t, h, photo(1))
 	h.im.convertAll = false
 	before := string(conv.metadata["immich-optimizer"])
-	h.im.tag(conv, TagDone)
+	h.im.tag(conv, TagKeep)
 	sum, err := h.run()
-	if err != nil || sum.MarkedDone != 0 || string(conv.metadata["immich-optimizer"]) != before || h.im.hasTag(conv, TagDone) {
+	if err != nil || sum.MarkedKeep != 0 || string(conv.metadata["immich-optimizer"]) != before || h.im.hasTag(conv, TagKeep) {
 		t.Fatalf("%+v, %v, marker %s", sum, err, conv.metadata["immich-optimizer"])
 	}
 }
 
-func TestRedoRemovesADoneMarkAndAllowsConverting(t *testing.T) {
+func TestRedoRemovesAKeepMarkAndAllowsConverting(t *testing.T) {
 	h := tagged(t)
 	a := h.im.add("IMG_1.jpg", photo(1))
-	h.im.tag(a, TagDone)
+	h.im.tag(a, TagKeep)
 	if _, err := h.run(); err != nil || h.marker(a.ID) == nil {
-		t.Fatalf("done: %v", err)
+		t.Fatalf("keep: %v", err)
 	}
 
 	h.im.tag(a, TagRedo)
@@ -297,19 +297,19 @@ func TestTaggedUnfinishedCopyIsSettledFirst(t *testing.T) {
 	old := h.im.add("IMG_1.jpg", photo(1))
 	old.IsTrashed = true // the interrupted run got as far as the trash
 	n := pendingCopy(h, old)
-	h.im.tag(n, TagDone)
+	h.im.tag(n, TagKeep)
 	sum, err := h.run()
-	if err != nil || sum.Finalized != 1 || sum.MarkedDone != 0 {
+	if err != nil || sum.Finalized != 1 || sum.MarkedKeep != 0 {
 		t.Fatalf("%+v, %v", sum, err)
 	}
 	if m := h.marker(n.ID); m == nil || m.State != "" || m.Kept {
 		t.Errorf("marker after finishing = %+v", m)
 	}
-	if !h.im.hasTag(n, TagDone) {
+	if !h.im.hasTag(n, TagKeep) {
 		t.Error("the tag was removed before it was acted on")
 	}
 	// The next run acts on it: the copy is a conversion, so its marker stays.
-	if sum, err = h.run(); err != nil || h.im.hasTag(n, TagDone) {
+	if sum, err = h.run(); err != nil || h.im.hasTag(n, TagKeep) {
 		t.Fatalf("next run: %+v, %v", sum, err)
 	}
 	if m := h.marker(n.ID); m == nil || m.Kept || m.Replaces != old.ID {

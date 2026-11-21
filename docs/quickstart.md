@@ -66,6 +66,6 @@ The app would normally not recognise its own photos once they are converted, and
 
 ## The next step
 
-- **Shrink the photos you already have:** [Library mode](library.md). You pick the photos in Immich by giving them a tag, and it replaces each one with its smaller version, keeping the original in Immich's trash.
+- **Shrink the photos you already have:** [Library mode](library.md). You pick the photos in Immich by giving them a tag, and it replaces each one with its smaller version, keeping the original in Immich's trash. Add it to the container you just set up (`IO_MODE=proxy,library`): with the proxy in front, the phone app does not upload the converted photos again.
 - **Convert more, or differently** (smaller files with some loss, videos): [Tasks](tasks.md).
 - **Everything else:** the [documentation overview](../README.md#documentation).

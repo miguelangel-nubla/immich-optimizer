@@ -106,6 +106,10 @@ func parseConfig(args []string) (*entity.AppConfig, error) {
 		}
 		ac.ImmichAPIKey = key
 	}
+	ac.ImmichAPIKeys = splitKeys(ac.ImmichAPIKey)
+	if len(ac.ImmichAPIKeys) > 0 {
+		ac.ImmichAPIKey = ac.ImmichAPIKeys[0]
+	}
 
 	if err := validateAppConfig(ac); err != nil {
 		return nil, err
@@ -181,6 +185,19 @@ func isWithin(parent, child string) bool {
 // readSecretFile reads a secret value from path (Docker secrets style),
 // stripping a single trailing newline. Errors name the setting and the path,
 // never the file contents.
+// splitKeys reads one or more API keys: separated by commas, or one per line
+// (blank lines and lines starting with # are ignored).
+func splitKeys(v string) []string {
+	var keys []string
+	for _, line := range strings.FieldsFunc(v, func(r rune) bool { return r == '\n' || r == ',' }) {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			keys = append(keys, line)
+		}
+	}
+	return keys
+}
+
 func readSecretFile(name, path string) (string, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path is operator-supplied configuration
 	if err != nil {
@@ -276,8 +293,18 @@ func validateAppConfig(ac *entity.AppConfig) error {
 	}
 
 	if hasMode(ac.Mode, "library") {
-		if len(strings.TrimSpace(ac.ImmichAPIKey)) < 10 {
+		if len(ac.ImmichAPIKeys) == 0 {
 			return fmt.Errorf("library mode needs an Immich API key (-immich_api_key)")
+		}
+		seen := map[string]bool{}
+		for i, k := range ac.ImmichAPIKeys {
+			if len(k) < 10 {
+				return fmt.Errorf("immich_api_key: key %d appears to be too short", i+1)
+			}
+			if seen[k] {
+				return fmt.Errorf("immich_api_key: key %d is given twice", i+1)
+			}
+			seen[k] = true
 		}
 		if ac.LibraryConcurrency < 1 {
 			return fmt.Errorf("library_concurrency must be 1 or more")
@@ -592,46 +619,57 @@ func run(args []string) error {
 	libraryCtx, cancelLibrary := context.WithCancel(context.Background())
 	defer cancelLibrary()
 	if hasMode(config.Mode, "library") {
-		svc := library.New(library.Config{
-			ReadyTimeout:  config.LibraryReadyTimeout,
-			Version:       version,
-			ConfigSHA256:  configSHA256,
-			Concurrency:   config.LibraryConcurrency,
-			IsMotionPhoto: motionphoto.IsMotionJPEG,
-		}, immich.NewLibraryClient(config.ImmichURL, config.ImmichAPIKey, httpClient), engine, auditLog, logger)
-		events := immich.NewEventClient(config.ImmichURL, config.ImmichAPIKey)
-		events.Errorf = logger.Warnf
-		logger.Printf("Library mode: converting what is tagged %s in Immich; originals go to Immich's trash", library.TagConvert)
-		libraryDone = make(chan error, 1)
-		go func() { libraryDone <- svc.Serve(libraryCtx, events) }()
+		// One worker per key: Immich lets a key act on its own user's
+		// assets only. They share the conversion engine and the audit log.
+		keys := config.ImmichAPIKeys
+		libraryDone = make(chan error, len(keys))
+		for i, key := range keys {
+			wlog := logger
+			if len(keys) > 1 {
+				wlog = logger.WithPrefix(fmt.Sprintf("[user %d] ", i+1))
+			}
+			svc := library.New(library.Config{
+				ReadyTimeout:  config.LibraryReadyTimeout,
+				Version:       version,
+				ConfigSHA256:  configSHA256,
+				Concurrency:   config.LibraryConcurrency,
+				IsMotionPhoto: motionphoto.IsMotionJPEG,
+			}, immich.NewLibraryClient(config.ImmichURL, key, httpClient), engine, auditLog, wlog)
+			events := immich.NewEventClient(config.ImmichURL, key)
+			events.Errorf = wlog.Warnf
+			go func() { libraryDone <- svc.Serve(libraryCtx, events) }()
+		}
+		logger.Printf("Library mode: converting what is tagged %s in Immich, for %d user(s); originals go to Immich's trash", library.TagConvert, len(keys))
 	}
 
 	// Wait for interrupt, or for library mode to fail.
+	running := cap(libraryDone)
 	select {
 	case <-sigChan:
 	case err := <-libraryDone:
-		libraryDone = nil
+		running--
 		if err != nil {
 			if !runWatcher && !runProxy {
+				cancelLibrary()
 				return fmt.Errorf("library mode: %w", err)
 			}
 			logger.Errorf("Library mode stopped: %v", err)
 		}
-		if runWatcher || runProxy {
-			<-sigChan
-		}
+		<-sigChan
 	}
 	cancelLibrary()
-	if libraryDone != nil {
-		// Let the asset in flight be rolled back cleanly. If this times out
-		// the next start finds the unfinished copy and resolves it.
+	// Let the assets in flight be rolled back cleanly. If this times out the
+	// next start finds the unfinished copies and resolves them.
+	timeout := time.After(config.ShutdownTimeout)
+	for ; running > 0; running-- {
 		select {
 		case err := <-libraryDone:
 			if err != nil {
 				logger.Errorf("Library mode stopped: %v", err)
 			}
-		case <-time.After(config.ShutdownTimeout):
-			logger.Warnf("Library mode did not stop in time; the next start will resolve the asset that was in progress")
+		case <-timeout:
+			logger.Warnf("Library mode did not stop in time; the next start will resolve what was in progress")
+			running = 0
 		}
 	}
 

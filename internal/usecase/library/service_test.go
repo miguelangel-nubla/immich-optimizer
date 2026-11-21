@@ -666,6 +666,25 @@ func (h *harness) run() (Summary, error) {
 	return New(h.cfg, h.im, h.conv, j, nil).Run(context.Background())
 }
 
+// entries returns the parsed audit log.
+func (h *harness) entries() []Entry {
+	h.t.Helper()
+	f, err := os.Open(h.logPath)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer f.Close()
+	var out []Entry
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var e Entry
+		if json.Unmarshal(sc.Bytes(), &e) == nil {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // events returns the logged event names, in order.
 func (h *harness) events() []string {
 	h.t.Helper()

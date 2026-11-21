@@ -221,14 +221,48 @@ func TestParseConfigAPIKeyFileTrailingNewlineStripped(t *testing.T) {
 		})
 	}
 
-	// Only one trailing newline is stripped.
+	// Blank lines are not keys.
 	t.Setenv("IO_IMMICH_API_KEY_FILE", writeTestSecretFile(t, testAPIKeyFile+"\n\n"))
 	key, err := parseAPIKeyTestConfig(t)
 	if err != nil {
 		t.Fatalf("parseConfig failed: %v", err)
 	}
-	if key != testAPIKeyFile+"\n" {
-		t.Fatalf("expected exactly one trailing newline to be stripped, got %q", key)
+	if key != testAPIKeyFile {
+		t.Fatalf("expected the key alone, got %q", key)
+	}
+}
+
+// Library mode takes one key per user: one per line in the file, or
+// separated by commas.
+func TestSeveralAPIKeys(t *testing.T) {
+	clearConfigEnv(t)
+	base := []string{"-mode", "library", "-undone_dir", filepath.Join(t.TempDir(), "undone"),
+		"-immich_url", "http://immich.example", "-tasks_file", writeTestTasksFile(t)}
+	parse := func(extra ...string) ([]string, string, error) {
+		t.Helper()
+		cfg, err := parseConfig(append(append([]string(nil), base...), extra...))
+		if err != nil {
+			return nil, "", err
+		}
+		return cfg.ImmichAPIKeys, cfg.ImmichAPIKey, nil
+	}
+	file := writeTestSecretFile(t, "# Alice\nkey-of-alice-0001\r\n\n# Bob\n  key-of-bob-00002  \n")
+	keys, first, err := parse("-immich_api_key_file", file)
+	if err != nil || len(keys) != 2 || keys[0] != "key-of-alice-0001" || keys[1] != "key-of-bob-00002" || first != keys[0] {
+		t.Fatalf("from a file: %q, %q, %v", keys, first, err)
+	}
+	keys, _, err = parse("-immich_api_key", "key-of-alice-0001, key-of-bob-00002")
+	if err != nil || len(keys) != 2 || keys[1] != "key-of-bob-00002" {
+		t.Fatalf("with commas: %q, %v", keys, err)
+	}
+	if _, _, err = parse("-immich_api_key", "key-of-alice-0001,key-of-alice-0001"); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("a key given twice: %v", err)
+	}
+	if _, _, err = parse("-immich_api_key", "key-of-alice-0001,short"); err == nil || !strings.Contains(err.Error(), "key 2") {
+		t.Errorf("a short key: %v", err)
+	}
+	if _, _, err = parse("-immich_api_key", " , "); err == nil || !strings.Contains(err.Error(), "needs an Immich API key") {
+		t.Errorf("no key at all: %v", err)
 	}
 }
 

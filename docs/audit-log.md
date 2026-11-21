@@ -13,7 +13,7 @@ It records what happened to your files, and only that:
 | `proxy`, `watcher` | `upload_failed` | converted, but Immich did not accept it |
 | `library` | `converted`, `uploaded`, `verified`, `replaced` | the steps of one replacement; `replaced` means the original is in the trash |
 | `library` | `kept` | looked at and left as it is |
-| `library` | `marked_done` | tagged `immich-optimizer/done`: marked as handled, file untouched |
+| `library` | `marked_keep` | tagged `immich-optimizer/keep`: marked as handled, file untouched |
 | `library` | `marker_removed` | tagged `immich-optimizer/redo`: its "left as it is" mark was removed |
 | `library` | `verify_failed`, `rolled_back`, `failed` | a replacement was abandoned and the original left untouched; `differences` lists what did not match |
 | `library` | `second_copy_trashed` | an original that was uploaded again after its conversion was moved to the trash; `new_asset` is the conversion. |

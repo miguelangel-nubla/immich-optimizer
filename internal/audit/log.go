@@ -24,7 +24,10 @@ type Entry struct {
 	Run string `json:"run"`
 	// Source is the mode the event comes from: proxy, watcher or library.
 	Source string `json:"source"`
-	Event  string `json:"event"`
+	// User is the Immich user library mode worked for, when there are
+	// several.
+	User  string `json:"user,omitempty"`
+	Event string `json:"event"`
 	// Asset is the Immich asset the event is about: the one created by an
 	// upload, or the original that library mode works on.
 	Asset string `json:"asset,omitempty"`

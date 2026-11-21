@@ -25,9 +25,8 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 | Environment variable | Flag | Default | Description |
 |---|---|---|---|
 | `IO_IMMICH_URL` | `-immich_url` |  | Address of the Immich server, for example `http://immich-server:2283`. Required |
-| `IO_IMMICH_API_KEY` | `-immich_api_key` |  | Immich API key. Required in watcher and library mode; not used by proxy mode |
-| `IO_IMMICH_API_KEY_FILE` | `-immich_api_key_file` |  | File that contains the API key, for example a Docker secret. Wins over `immich_api_key` |
-| `IO_IMMICH_PUBLIC_URL` | `-immich_public_url` | same as `IO_IMMICH_URL` | Address of Immich as you open it in a browser, for example `https://photos.example.com`. Used for the links in the library report |
+| `IO_IMMICH_API_KEY` | `-immich_api_key` |  | Immich API key. Required in watcher and library mode; not used by proxy mode. For library mode, several keys (one per user) separated by commas |
+| `IO_IMMICH_API_KEY_FILE` | `-immich_api_key_file` |  | File that contains the API key, for example a Docker secret; for several keys, one per line. Wins over `immich_api_key` |
 | `IO_IMMICH_TIMEOUT` | `-immich_timeout` | `2m` | How long to wait when connecting to Immich, for an upload that stops making progress, and for Immich's answer after an upload. It does not limit how long an upload may take in total. A [duration](#durations) |
 
 ### Tasks

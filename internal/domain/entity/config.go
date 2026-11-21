@@ -39,19 +39,21 @@ type Config struct {
 }
 
 type AppConfig struct {
-	ShowVersion      bool
-	HealthCheck      bool
-	Mode             string
-	BindAddr         string
-	ImmichURL        string
-	ImmichAPIKey     string
+	ShowVersion  bool
+	HealthCheck  bool
+	Mode         string
+	BindAddr     string
+	ImmichURL    string
+	ImmichAPIKey string
+	// ImmichAPIKeys are all the keys given; ImmichAPIKey is the first one.
+	// Library mode works for each key's user.
+	ImmichAPIKeys    []string
 	ImmichAPIKeyFile string
 	WatchDir         string
 	UndoneDir        string
 	UndoneUnmatched  bool
 	AuditLogFile     string
 	// Library mode.
-	ImmichPublicURL       string
 	LibraryConcurrency    int
 	LibraryReadyTimeout   time.Duration
 	ConfigFile            string

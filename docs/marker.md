@@ -42,7 +42,7 @@ For every file it converts, the optimizer stores a record in Immich's asset meta
 | `conversion.output.size` | size of the converted file in bytes |
 | `library.replaces` | the id of the asset this one replaced (library mode) |
 | `library.state` | `pending` while library mode is still replacing the original with this asset; absent once it is done |
-| `kept` | present on an original that library mode looked at and left as it is, with the reason in `note`: for example it did not get smaller, or it was tagged [`immich-optimizer/done`](library.md#choosing-what-to-convert) (`"marked as done in Immich"`). Such a record has no `task` |
+| `kept` | present on an original that library mode looked at and left as it is, with the reason in `note`: for example it did not get smaller, or it was tagged [`immich-optimizer/keep`](library.md#choosing-what-to-convert) (`"tagged keep in Immich"`). Such a record has no `task` |
 
 Only `v` and `original` are always there; a part that does not apply is left out.
 

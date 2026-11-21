@@ -21,6 +21,10 @@ import (
 type logIndex struct {
 	mu   sync.Mutex
 	path string
+	// user is the Immich user this index is for. Entries of other users
+	// are left out; entries without a user (proxy and watcher conversions,
+	// and library mode before several users) count for everyone.
+	user string
 	// offset is how far the file has been read; rest is an incomplete last
 	// line, kept until it is finished.
 	offset int64
@@ -40,8 +44,8 @@ type logIndex struct {
 // eventFullRead is logged after library mode read the whole library.
 const eventFullRead = "full_read"
 
-func newLogIndex(path string) *logIndex {
-	return &logIndex{path: path, originals: map[string]string{}, pending: map[string]bool{}}
+func newLogIndex(path, user string) *logIndex {
+	return &logIndex{path: path, user: user, originals: map[string]string{}, pending: map[string]bool{}}
 }
 
 // refresh reads what was added to the log since the last call.
@@ -89,7 +93,7 @@ func (x *logIndex) add(line []byte) {
 		return
 	}
 	var e Entry
-	if json.Unmarshal(line, &e) != nil {
+	if json.Unmarshal(line, &e) != nil || e.User != "" && x.user != "" && e.User != x.user {
 		return
 	}
 	sha := strings.ToLower(e.OriginalSHA1)

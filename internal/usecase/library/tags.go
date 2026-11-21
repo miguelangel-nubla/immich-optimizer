@@ -18,9 +18,10 @@ const (
 	TagPrefix = "immich-optimizer/"
 	// TagConvert asks for the asset to be converted.
 	TagConvert = TagPrefix + "convert"
-	// TagDone marks the asset as handled: it is never converted.
-	TagDone = TagPrefix + "done"
-	// TagRedo removes a "done" (or "kept") mark, so that the asset can be
+	// TagKeep marks the asset as handled: it is never converted.
+	TagKeep = TagPrefix + "keep"
+	// TagRedo removes a "keep" mark (or the mark of an asset kept because
+	// converting it did not help), so that the asset can be
 	// converted again.
 	TagRedo = TagPrefix + "redo"
 	// TagFailed is set on an asset whose conversion failed.
@@ -33,15 +34,15 @@ const (
 // commandTags are created when library mode starts, so that they can be
 // found in Immich before they were ever used. The status tags appear when
 // they are first set.
-var commandTags = []string{TagConvert, TagDone, TagRedo}
+var commandTags = []string{TagConvert, TagKeep, TagRedo}
 
 // errPendingCopy says a tagged asset is the unfinished copy of an
 // interrupted replacement. Settling that comes first, whatever the tag says;
 // the tag waits for a later run.
 var errPendingCopy = errors.New("the unfinished copy of an interrupted replacement")
 
-// DoneNote is the note of the marker written for TagDone.
-const DoneNote = "marked as done in Immich"
+// KeepNote is the note of the marker written for TagKeep.
+const KeepNote = "tagged keep in Immich"
 
 // runTags is what one run knows about the optimizer's tags.
 type runTags struct {
@@ -49,8 +50,8 @@ type runTags struct {
 	ids map[string]string
 	// own is the set of those ids: they are never carried over or compared.
 	own map[string]bool
-	// convert, done and redo are the assets that carry each command.
-	convert, done, redo map[string]bool
+	// convert, keep and redo are the assets that carry each command.
+	convert, keep, redo map[string]bool
 }
 
 // loadTags makes sure the command tags exist and reads which assets have
@@ -101,13 +102,13 @@ func (s *Service) loadTags(ctx context.Context) (*runTags, error) {
 	if rt.convert, err = tagged(TagConvert); err != nil {
 		return nil, err
 	}
-	if rt.done, err = tagged(TagDone); err != nil {
+	if rt.keep, err = tagged(TagKeep); err != nil {
 		return nil, err
 	}
 	if rt.redo, err = tagged(TagRedo); err != nil {
 		return nil, err
 	}
-	s.infof("Library: tagged %s: %d, %s: %d, %s: %d", TagConvert, len(rt.convert), TagDone, len(rt.done), TagRedo, len(rt.redo))
+	s.infof("Library: tagged %s: %d, %s: %d, %s: %d", TagConvert, len(rt.convert), TagKeep, len(rt.keep), TagRedo, len(rt.redo))
 	return rt, nil
 }
 
@@ -182,9 +183,9 @@ func basicChecks(me string, listed entity.LibraryAsset) error {
 	return nil
 }
 
-// markDone writes the "done" marker on an asset tagged TagDone. The file is
+// markKeep writes the "keep" marker on an asset tagged TagKeep. The file is
 // not touched. An asset the optimizer already handled keeps its marker.
-func (s *Service) markDone(ctx context.Context, me string, listed entity.LibraryAsset, t *tally) error {
+func (s *Service) markKeep(ctx context.Context, me string, listed entity.LibraryAsset, t *tally) error {
 	if err := basicChecks(me, listed); err != nil {
 		return err
 	}
@@ -199,17 +200,17 @@ func (s *Service) markDone(ctx context.Context, me string, listed entity.Library
 		return &errSkip{reason: "it was already handled by the optimizer", converted: m}
 	}
 	t.item.Size = listed.Size
-	if err := s.writeKept(ctx, &listed, DoneNote); err != nil {
+	if err := s.writeKept(ctx, &listed, KeepNote); err != nil {
 		return err
 	}
-	t.MarkedDone++
-	t.item.Status, t.item.Reason = statusMarkedDone, "tagged "+TagDone
-	s.infof("Library: marked %s (%s) as done", listed.OriginalFileName, listed.ID)
-	return s.record(Entry{Event: "marked_done", Asset: listed.ID, File: listed.OriginalFileName, OriginalBytes: listed.Size})
+	t.MarkedKeep++
+	t.item.Status, t.item.Reason = statusMarkedKeep, "tagged "+TagKeep
+	s.infof("Library: keeping %s (%s) as it is, as tagged %s", listed.OriginalFileName, listed.ID, TagKeep)
+	return s.record(Entry{Event: "marked_keep", Asset: listed.ID, File: listed.OriginalFileName, OriginalBytes: listed.Size})
 }
 
 // redo removes the marker of an asset tagged TagRedo, when that marker only
-// says the asset was left as it is ("done", or kept because converting it
+// says the asset was left as it is ("keep", or kept because converting it
 // did not help). The marker of a conversion stays: it is what tells phones
 // and later runs about the original.
 //
@@ -249,16 +250,16 @@ func (s *Service) settleTags(ctx context.Context, rt *runTags, items []*Item) er
 	for _, it := range items {
 		status[it.ID] = it
 	}
-	var untagConvert, untagDone, untagRedo, untagFailed, failed, review []string
+	var untagConvert, untagKeep, untagRedo, untagFailed, failed, review []string
 	for id := range rt.convert {
 		if it := status[id]; it != nil && !it.retry {
 			untagConvert = append(untagConvert, id)
 		}
 	}
-	for id := range rt.done {
+	for id := range rt.keep {
 		if it := status[id]; it != nil && !it.retry {
-			untagDone = append(untagDone, id)
-			// Done wins over convert: both commands are settled.
+			untagKeep = append(untagKeep, id)
+			// Keep wins over convert: both commands are settled.
 			if rt.convert[id] {
 				untagConvert = append(untagConvert, id)
 			}
@@ -275,7 +276,7 @@ func (s *Service) settleTags(ctx context.Context, rt *runTags, items []*Item) er
 			failed = append(failed, it.ID)
 		case it.review:
 			review = append(review, it.ID)
-		case it.Status == statusKept || it.Status == statusMarkedDone:
+		case it.Status == statusKept || it.Status == statusMarkedKeep:
 			untagFailed = append(untagFailed, it.ID)
 		}
 	}
@@ -311,7 +312,7 @@ func (s *Service) settleTags(ctx context.Context, rt *runTags, items []*Item) er
 		}
 	}
 	change(false, TagConvert, untagConvert)
-	change(false, TagDone, untagDone)
+	change(false, TagKeep, untagKeep)
 	change(false, TagRedo, untagRedo)
 	change(false, TagFailed, untagFailed)
 	change(true, TagFailed, failed)

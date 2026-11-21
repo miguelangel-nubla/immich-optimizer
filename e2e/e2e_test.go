@@ -428,7 +428,7 @@ func dockerArgs(env map[string]string, mounts ...string) []string {
 // The optimizer's tags, as library mode names them.
 const (
 	tagConvert = "immich-optimizer/convert"
-	tagDone    = "immich-optimizer/done"
+	tagKeep    = "immich-optimizer/keep"
 	tagRedo    = "immich-optimizer/redo"
 	tagFailed  = "immich-optimizer/failed"
 )

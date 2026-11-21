@@ -78,9 +78,9 @@ type Summary struct {
 	// SecondCopies are originals that were uploaded again after their
 	// conversion and were moved to the trash.
 	SecondCopies int `json:"second_copies,omitempty"`
-	// MarkedDone are assets tagged "done" that got their marker, and
+	// MarkedKeep are assets tagged "done" that got their marker, and
 	// Forgotten those tagged "redo" whose marker was removed.
-	MarkedDone  int   `json:"marked_done,omitempty"`
+	MarkedKeep  int   `json:"marked_keep,omitempty"`
 	Forgotten   int   `json:"forgotten,omitempty"`
 	BytesBefore int64 `json:"bytes_before"`
 	BytesAfter  int64 `json:"bytes_after"`
@@ -93,6 +93,8 @@ type Service struct {
 	base port.LibraryAPI
 	// own are the ids of the optimizer's tags, during a run.
 	own map[string]bool
+	// me is the API key's user, once known.
+	me string
 	// idx is what the audit log knows, while Serve runs.
 	idx     *logIndex
 	conv    port.CheckingConverter
@@ -135,7 +137,7 @@ func (sum *Summary) add(o Summary) {
 	sum.Finalized += o.Finalized
 	sum.RolledBack += o.RolledBack
 	sum.SecondCopies += o.SecondCopies
-	sum.MarkedDone += o.MarkedDone
+	sum.MarkedKeep += o.MarkedKeep
 	sum.Forgotten += o.Forgotten
 	sum.BytesBefore += o.BytesBefore
 	sum.BytesAfter += o.BytesAfter
@@ -176,6 +178,10 @@ func later(format string, args ...any) error {
 	return &errSkip{reason: fmt.Sprintf(format, args...), retry: true}
 }
 
+// errNotSecondCopy says an asset whose file is a converted original is not
+// a second copy after all: the conversion is not this user's, or is gone.
+var errNotSecondCopy = errors.New("not a second copy")
+
 // errChanged means the original was modified (by the user, or by Immich
 // still analysing it) while its replacement was under way. The copy is
 // removed and the asset is left for a later run: nothing went wrong.
@@ -198,6 +204,9 @@ func (s *Service) infof(format string, args ...any) {
 // record writes a log entry; a log that cannot be written stops the run.
 func (s *Service) record(e Entry) error {
 	e.Source = string(entity.SourceLibrary)
+	if e.User == "" {
+		e.User = s.me
+	}
 	if err := s.journal.Write(e); err != nil {
 		return &errFatal{err}
 	}
@@ -242,6 +251,7 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 // replacements, trashes second copies and converts what is tagged.
 func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []entity.LibraryAsset) (Summary, error) {
 	var sum Summary
+	s.me = me
 	if err := s.record(Entry{Event: "run_started", Detail: "user " + me}); err != nil {
 		return sum, err
 	}
@@ -341,9 +351,9 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 		var err error
 		t := &tally{Summary: Summary{Seen: 1}}
 		switch {
-		case rt.done[a.ID]:
+		case rt.keep[a.ID]:
 			// "Done" wins over every other tag.
-			err = s.markDone(ctx, me, a, t)
+			err = s.markKeep(ctx, me, a, t)
 			if err == nil {
 				outcome(a, t, nil)
 				return
@@ -389,7 +399,7 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 		}
 		t := &tally{}
 		// A tag on the unfinished copy waits for a later run.
-		t.item.retry = rt.done[p.asset.ID] || rt.redo[p.asset.ID] || rt.convert[p.asset.ID]
+		t.item.retry = rt.keep[p.asset.ID] || rt.redo[p.asset.ID] || rt.convert[p.asset.ID]
 		outcome(p.asset, t, s.resumePending(ctx, p.asset, p.marker, t))
 	}
 
@@ -410,8 +420,12 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 		}
 		if second && c.asset.Checksum != "" {
 			t := &tally{}
-			outcome(c.asset, t, s.secondCopy(ctx, c.asset, convertedID, t))
-			continue
+			if err := s.secondCopy(ctx, c.asset, convertedID, t); !errors.Is(err, errNotSecondCopy) {
+				outcome(c.asset, t, err)
+				continue
+			}
+			// The conversion it pointed at is not this user's: an
+			// ordinary candidate.
 		}
 		if !rt.convert[c.asset.ID] {
 			outcome(c.asset, &tally{}, skip("it is not tagged %s", TagConvert))
@@ -446,8 +460,8 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 	if err := s.record(Entry{Event: "run_finished", Summary: &sum}); err != nil {
 		return sum, err
 	}
-	s.infof("Library: pass finished: %d seen, %d replaced, %d kept, %d marked done, %d second copies trashed, %d skipped, %d failed (%d -> %d bytes)",
-		sum.Seen, sum.Replaced, sum.Kept, sum.MarkedDone, sum.SecondCopies, sum.Skipped, sum.Failed, sum.BytesBefore, sum.BytesAfter)
+	s.infof("Library: pass finished: %d seen, %d replaced, %d kept, %d tagged keep, %d second copies trashed, %d skipped, %d failed (%d -> %d bytes)",
+		sum.Seen, sum.Replaced, sum.Kept, sum.MarkedKeep, sum.SecondCopies, sum.Skipped, sum.Failed, sum.BytesBefore, sum.BytesAfter)
 	return sum, ctx.Err()
 }
 
@@ -534,6 +548,11 @@ func (s *Service) secondCopy(ctx context.Context, listed entity.LibraryAsset, co
 	}
 	// Both are read again: the listing is from the start of the run.
 	conv, err := s.api.GetAsset(ctx, convertedID)
+	if errors.Is(err, entity.ErrAssetNotFound) {
+		// Gone, or another user's: the audit log is shared by everyone
+		// library mode works for, and it is only a cache.
+		return errNotSecondCopy
+	}
 	if err != nil {
 		return fmt.Errorf("reading the converted asset %s: %w", convertedID, err)
 	}
