@@ -908,7 +908,10 @@ func TestDocsLinksAndSettingNames(t *testing.T) {
 		}
 		return out
 	}
-	known := map[string]bool{"IO_MOTION_PHOTOS": true, "IO_UPDATE_DOCS": true}
+	known := map[string]bool{"IO_UPDATE_DOCS": true,
+		// Given to task commands, not settings.
+		"IO_MOTION_PHOTOS": true, "IO_SRC_FOLDER": true, "IO_DST_FOLDER": true, "IO_NAME": true, "IO_EXTENSION": true,
+		"IO_ORIGINAL_NAME": true, "IO_SOURCE": true, "IO_TASK": true}
 	for _, s := range settings {
 		known[s.Env()] = true
 	}
