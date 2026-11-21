@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,7 +24,6 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
-	"go.yaml.in/yaml/v3"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/filesystem"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/httpclient"
@@ -333,7 +331,6 @@ func validateAppConfig(ac *entity.AppConfig) error {
 
 func loadTasks(configFile string) (*entity.Config, error) {
 	var c *entity.Config
-	var err error
 	v := viper.New()
 	v.SetConfigFile(configFile)
 
@@ -346,10 +343,6 @@ func loadTasks(configFile string) (*entity.Config, error) {
 	}
 	if c == nil {
 		c = &entity.Config{}
-	}
-
-	if c.LibraryFilter, err = readLibraryFilter(configFile); err != nil {
-		return nil, fmt.Errorf("error validating config: %w", err)
 	}
 
 	if c.MotionPhotos == "" {
@@ -441,42 +434,6 @@ func configFingerprint(dir string, logger *customlogger.Logger) string {
 		h.Write(e.sum[:])
 	}
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-// readLibraryFilter returns the "library_filter" block of the tasks file as
-// JSON, or nil when there is none. It is read on its own, and not with the
-// rest of the file, because the names in it are Immich's and their case
-// matters (takenAt, fileSizeInBytes): the regular loader lowercases keys.
-func readLibraryFilter(configFile string) (json.RawMessage, error) {
-	data, err := os.ReadFile(configFile) // #nosec G304 -- the tasks file the operator configured
-	if err != nil {
-		return nil, err
-	}
-	var doc struct {
-		Filter yaml.Node `yaml:"library_filter"`
-	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		// Not YAML (the tasks file may be in another format): no filter.
-		return nil, nil //nolint:nilerr // the regular loader has already accepted the file
-	}
-	if doc.Filter.Kind == 0 || doc.Filter.Tag == "!!null" {
-		return nil, nil
-	}
-	if doc.Filter.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("library_filter must be a mapping of Immich search filter fields")
-	}
-	var filter map[string]any
-	if err := doc.Filter.Decode(&filter); err != nil {
-		return nil, fmt.Errorf("library_filter: %w", err)
-	}
-	if len(filter) == 0 {
-		return nil, nil
-	}
-	out, err := json.Marshal(filter)
-	if err != nil {
-		return nil, fmt.Errorf("library_filter: %w", err)
-	}
-	return out, nil
 }
 
 func motionPhotosError(where, got string) string {
@@ -651,7 +608,6 @@ func run(args []string) error {
 		}
 		svc := library.New(library.Config{
 			DryRun:        config.LibraryDryRun,
-			Filter:        config.Tasks.LibraryFilter,
 			ReadyTimeout:  config.LibraryReadyTimeout,
 			Version:       version,
 			ConfigSHA256:  configSHA256,

@@ -687,75 +687,96 @@ func TestLibrarySecondCopiesAndSchedule(t *testing.T) {
 	})
 }
 
-// library_filter in the tasks file is a filter of Immich's own search: Immich
-// decides what matches, and a filter it refuses stops the run.
-func TestLibraryFilter(t *testing.T) {
+// Library mode is driven by tags in Immich: the real tag API, the search by
+// tag, and what each tag does.
+func TestLibraryTags(t *testing.T) {
 	u := newUser(t)
-	// plain.jpg has no date inside, so Immich uses the given file date;
-	// photo.jpg says 2021 in its metadata.
-	oldJPG := u.add(t, "plain.jpg", map[string]string{"fileCreatedAt": "2015-01-01T10:00:00.000Z"})
-	newJPG := u.add(t, "photo.jpg", nil)
-	png := u.add(t, "photo.png", map[string]string{"fileCreatedAt": "2015-06-01T10:00:00.000Z"})
+	conv := u.add(t, "plain.jpg", nil)
+	done := u.add(t, "photo.jpg", nil)
+	broken := u.add(t, "photo.png", nil)
+	untouched := u.add(t, "photo.heic", nil)
+	// One of the person's own tags, which has to travel to the copy.
+	u.tagWith(t, []string{"holiday", tagConvert}, conv.ID)
+	u.tag(t, tagConvert, broken.ID)
+	u.tag(t, tagDone, done.ID)
 
-	base, err := os.ReadFile(filepath.Join(configDir, "lossless", "tasks.yaml"))
-	if err != nil {
+	// JPEGs convert; the only PNG task fails, so that the failed tag is set.
+	cfg := sharedDir(t)
+	tasks := `tasks:
+- name: jpeg-xl
+  command: cjxl --lossless_jpeg=1 -d 0 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
+  extensions: [jpg, jpeg]
+- name: broken-png
+  command: "false"
+  extensions: [png]
+`
+	if err := os.WriteFile(filepath.Join(cfg, "tasks.yaml"), []byte(tasks), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := sharedDir(t)
-	n := 0
-	run := func(filter string, dry bool) (int, string, []map[string]any) {
+	logDir := sharedDir(t)
+	run := func(dry bool) (string, []map[string]any) {
 		t.Helper()
-		n++
-		name := fmt.Sprintf("tasks-%d.yaml", n)
-		if err := os.WriteFile(filepath.Join(cfg, name), []byte(filter+string(base)), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		env := map[string]string{"IO_TASKS_FILE": "/custom/" + name, "IO_LIBRARY_DRY_RUN_SAMPLE": "0"}
+		env := map[string]string{"E2E_TAGS": "own", "IO_TASKS_FILE": "/custom/tasks.yaml", "IO_LIBRARY_DRY_RUN_SAMPLE": "0"}
 		if !dry {
 			env["IO_LIBRARY_DRY_RUN"] = "false"
 		}
-		return runLibrary(t, u, sharedDir(t), env, cfg+":/custom:ro")
-	}
-	trashed := func() string {
-		s := ""
-		for _, a := range []asset{oldJPG, newJPG, png} {
-			if u.asset(t, a.ID).IsTrashed {
-				s += a.OriginalFileName + " "
-			}
+		code, out, log := runLibrary(t, u, logDir, env, cfg+":/custom:ro")
+		if code != 0 {
+			t.Fatalf("library run exited %d:\n%s", code, out)
 		}
-		return strings.TrimSpace(s)
+		return out, log
+	}
+	has := func(id, tag string) bool { return contains(u.tags(t, id), tag) }
+
+	// A dry run says what each tag would do, and changes no tag.
+	_, log := run(true)
+	if !contains(events(log, conv.ID), "would_convert") || !contains(events(log, done.ID), "would_mark_done") ||
+		contains(events(log, untouched.ID), "would_convert") {
+		t.Errorf("dry run: convert %v, done %v, untagged %v", events(log, conv.ID), events(log, done.ID), events(log, untouched.ID))
+	}
+	if !has(conv.ID, tagConvert) || !has(done.ID, tagDone) || u.marker(t, done.ID) != nil {
+		t.Fatal("the dry run changed tags or marked an asset")
+	}
+	// The tags a person uses exist now, under one parent.
+	var all []struct {
+		Value string `json:"value"`
+	}
+	must(t, u.key, http.MethodGet, "/tags", nil, &all)
+	var values []string
+	for _, tg := range all {
+		values = append(values, tg.Value)
+	}
+	for _, want := range []string{tagConvert, tagDone, tagRedo} {
+		if !contains(values, want) {
+			t.Errorf("tag %s does not exist after a run: %v", want, values)
+		}
 	}
 
-	// Something Immich does not know: refused, and nothing is touched.
-	code, out, _ := run("library_filter:\n  shoeSize: {gt: 40}\n", false)
-	if code == 0 || !strings.Contains(out, "library_filter") || trashed() != "" {
-		t.Fatalf("a filter Immich refuses was accepted (exit %d, trashed %q):\n%s", code, trashed(), out)
+	// The real run.
+	out, log := run(false)
+	newID := replacedBy(log, conv.ID)
+	if newID == "" {
+		t.Fatalf("the tagged photo was not converted:\n%s", out)
+	}
+	if got := u.tags(t, newID); !contains(got, "holiday") || contains(got, tagConvert) {
+		t.Errorf("tags of the converted copy = %v, want holiday and none of the optimizer's", got)
+	}
+	m := u.marker(t, done.ID)
+	if m == nil || m["kept.note"] != "marked as done in Immich" || u.asset(t, done.ID).IsTrashed || has(done.ID, tagDone) {
+		t.Errorf("done: marker %v, tags %v", m, u.tags(t, done.ID))
+	}
+	if !has(broken.ID, tagFailed) || has(broken.ID, tagConvert) || u.asset(t, broken.ID).IsTrashed {
+		t.Errorf("failed conversion: tags %v", u.tags(t, broken.ID))
+	}
+	if u.marker(t, untouched.ID) != nil || u.asset(t, untouched.ID).IsTrashed {
+		t.Error("an untagged asset was touched")
 	}
 
-	// A dry run reports what the filter selects.
-	old := "library_filter:\n  takenAt:\n    lt: 2020-01-01T00:00:00Z\n"
-	code, out, log := run(old, true)
-	if code != 0 || trashed() != "" {
-		t.Fatalf("dry run (exit %d) trashed %q:\n%s", code, trashed(), out)
-	}
-	if !contains(events(log, oldJPG.ID), "would_convert") || !contains(events(log, png.ID), "would_convert") || contains(events(log, newJPG.ID), "would_convert") {
-		t.Errorf("the dry run did not follow the filter: old %v, png %v, new %v", events(log, oldJPG.ID), events(log, png.ID), events(log, newJPG.ID))
-	}
-
-	// Two conditions together, with Immich's own names and operators.
-	code, out, _ = run(old+"  originalFileName:\n    endsWith: .png\n", false)
-	if code != 0 || trashed() != "photo.png" {
-		t.Fatalf("date and name filter (exit %d) converted %q, want only photo.png:\n%s", code, trashed(), out)
-	}
-	// The date alone takes the other old one, and leaves the new one.
-	code, out, _ = run(old, false)
-	if code != 0 || trashed() != "plain.jpg photo.png" {
-		t.Fatalf("date filter (exit %d) converted %q, want plain.jpg and photo.png:\n%s", code, trashed(), out)
-	}
-	// No filter: everything that is left.
-	code, out, _ = run("", false)
-	if code != 0 || trashed() != "plain.jpg photo.jpg photo.png" {
-		t.Fatalf("without a filter (exit %d) converted %q:\n%s", code, trashed(), out)
+	// Redo frees the done photo, and convert converts it in the same run.
+	u.tagWith(t, []string{tagRedo, tagConvert}, done.ID)
+	out, log = run(false)
+	if replacedBy(log, done.ID) == "" || !contains(events(log, done.ID), "marker_removed") {
+		t.Fatalf("redo and convert: %v\n%s", events(log, done.ID), out)
 	}
 }
 

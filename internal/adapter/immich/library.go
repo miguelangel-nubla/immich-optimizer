@@ -250,9 +250,41 @@ func (c *LibraryClient) ListAssets(ctx context.Context, page int) ([]entity.Libr
 	return assets, next, nil
 }
 
-// MatchingAssetIDs runs Immich's asset search with the given filter and
-// returns the ids of everything it finds.
-func (c *LibraryClient) MatchingAssetIDs(ctx context.Context, filter json.RawMessage) ([]string, error) {
+type tagDTO struct {
+	ID    string `json:"id"`
+	Value string `json:"value"`
+}
+
+func (c *LibraryClient) Tags(ctx context.Context) (map[string]string, error) {
+	var out []tagDTO
+	if err := c.call(ctx, http.MethodGet, "/tags", nil, &out); err != nil {
+		return nil, err
+	}
+	tags := make(map[string]string, len(out))
+	for _, t := range out {
+		tags[t.Value] = t.ID
+	}
+	return tags, nil
+}
+
+func (c *LibraryClient) UpsertTags(ctx context.Context, values []string) (map[string]string, error) {
+	var out []tagDTO
+	if err := c.call(ctx, http.MethodPut, "/tags", map[string]any{"tags": values}, &out); err != nil {
+		return nil, err
+	}
+	tags := make(map[string]string, len(out))
+	for _, t := range out {
+		tags[t.Value] = t.ID
+	}
+	return tags, nil
+}
+
+// TaggedAssetIDs pages through Immich's asset search for the tag.
+func (c *LibraryClient) TaggedAssetIDs(ctx context.Context, tagID string) ([]string, error) {
+	filter := map[string]any{
+		"tagIds":     map[string]any{"any": []string{tagID}},
+		"visibility": map[string]any{"in": []string{"timeline", "archive"}},
+	}
 	var ids []string
 	cursor := ""
 	for {
@@ -280,6 +312,20 @@ func (c *LibraryClient) MatchingAssetIDs(ctx context.Context, filter json.RawMes
 		}
 		cursor = *out.Assets.NextCursor
 	}
+}
+
+func (c *LibraryClient) TagAssets(ctx context.Context, tagID string, assetIDs []string) error {
+	if len(assetIDs) == 0 {
+		return nil
+	}
+	return c.call(ctx, http.MethodPut, "/tags/"+url.PathEscape(tagID)+"/assets", map[string]any{"ids": assetIDs}, nil)
+}
+
+func (c *LibraryClient) UntagAssets(ctx context.Context, tagID string, assetIDs []string) error {
+	if len(assetIDs) == 0 {
+		return nil
+	}
+	return c.call(ctx, http.MethodDelete, "/tags/"+url.PathEscape(tagID)+"/assets", map[string]any{"ids": assetIDs}, nil)
 }
 
 func (c *LibraryClient) GetAsset(ctx context.Context, id string) (*entity.LibraryAsset, error) {
@@ -310,6 +356,10 @@ func (c *LibraryClient) GetMetadata(ctx context.Context, id string) ([]entity.Me
 
 func (c *LibraryClient) PutMetadata(ctx context.Context, id string, items []entity.MetadataItem) error {
 	return c.call(ctx, http.MethodPut, "/assets/"+url.PathEscape(id)+"/metadata", map[string]any{"items": items}, nil)
+}
+
+func (c *LibraryClient) DeleteMetadata(ctx context.Context, id, key string) error {
+	return c.call(ctx, http.MethodDelete, "/assets/"+url.PathEscape(id)+"/metadata/"+url.PathEscape(key), nil, nil)
 }
 
 func (c *LibraryClient) DownloadOriginal(ctx context.Context, id, dst string) (string, error) {

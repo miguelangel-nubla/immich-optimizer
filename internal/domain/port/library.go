@@ -2,7 +2,6 @@ package port
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 )
@@ -15,13 +14,23 @@ type LibraryAPI interface {
 	// ListAssets returns one page of the owner's assets (oldest first) and
 	// the next page number, 0 when there is none.
 	ListAssets(ctx context.Context, page int) ([]entity.LibraryAsset, int, error)
-	// MatchingAssetIDs returns the ids of the assets that match a filter of
-	// Immich's asset search, given as JSON.
-	MatchingAssetIDs(ctx context.Context, filter json.RawMessage) ([]string, error)
+	// Tags returns the owner's tags, by value ("parent/child") to id.
+	Tags(ctx context.Context) (map[string]string, error)
+	// UpsertTags creates the tags that do not exist yet and returns the ids
+	// of all of them, by value.
+	UpsertTags(ctx context.Context, values []string) (map[string]string, error)
+	// TaggedAssetIDs returns the owner's assets (in the timeline or the
+	// archive, not in the trash) that have the tag.
+	TaggedAssetIDs(ctx context.Context, tagID string) ([]string, error)
+	// TagAssets and UntagAssets add a tag to assets or remove it.
+	TagAssets(ctx context.Context, tagID string, assetIDs []string) error
+	UntagAssets(ctx context.Context, tagID string, assetIDs []string) error
 	GetAsset(ctx context.Context, id string) (*entity.LibraryAsset, error)
 	// GetMetadata returns all asset metadata items.
 	GetMetadata(ctx context.Context, id string) ([]entity.MetadataItem, error)
 	PutMetadata(ctx context.Context, id string, items []entity.MetadataItem) error
+	// DeleteMetadata removes one metadata item from an asset.
+	DeleteMetadata(ctx context.Context, id, key string) error
 	// DownloadOriginal writes the stored file to dst and returns its
 	// lowercase hex SHA-1.
 	DownloadOriginal(ctx context.Context, id, dst string) (string, error)

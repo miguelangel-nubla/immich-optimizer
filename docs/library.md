@@ -1,6 +1,6 @@
 # Library mode
 
-Proxy and watcher mode only handle new uploads. Library mode (`IO_MODE=library`) goes through the assets **already in Immich** and replaces each one with its converted copy. It needs an API key and works for that key's user only: run it once per user.
+Proxy and watcher mode only handle new uploads. Library mode (`IO_MODE=library`) converts the assets **already in Immich**, replacing each one with its converted copy. **You choose which ones in Immich itself, with a tag:** it converts only what is tagged `immich-optimizer/convert`. See [Choosing what to convert](#choosing-what-to-convert). It needs an API key and works for that key's user only: run it once per user.
 
 ```yaml
 services:
@@ -20,7 +20,7 @@ Everything it changes can be undone from Immich's trash, and nothing is changed 
 
 ## The dry run
 
-A dry run goes through the whole library and decides, for every asset, whether it would be converted and, if not, why. It then **downloads and converts a small random sample** of the candidates (20 by default, [`IO_LIBRARY_DRY_RUN_SAMPLE`](configuration.md#library-mode)) to find out what a real run would do: how much smaller the files get, whether any fail, and what the results look like. The converted sample is thrown away. **Nothing is uploaded, marked or moved to the trash.**
+A dry run goes through the whole library and decides, for every asset, whether it would be converted and, if not, why. It also says what it would do with each [tag](#choosing-what-to-convert). It then **downloads and converts a small random sample** of the candidates (20 by default, [`IO_LIBRARY_DRY_RUN_SAMPLE`](configuration.md#library-mode)) to find out what a real run would do: how much smaller the files get, whether any fail, and what the results look like. The converted sample is thrown away. **Nothing is uploaded, marked or moved to the trash, and no tag is removed.** The one change a dry run makes: it creates the three tags you use ([below](#choosing-what-to-convert)) if they do not exist yet, so that you can find them in Immich.
 
 Without the sample (`IO_LIBRARY_DRY_RUN_SAMPLE=0`) a dry run downloads nothing and can only say how many assets are candidates.
 
@@ -101,37 +101,39 @@ These assets are left exactly as they are. The reason for each is written to the
 | In an external library | Immich does not own those files |
 | In the trash, hidden, or offline | not part of the visible library |
 | Belongs to another user or a partner | each user runs library mode with their own key |
-| Already converted, or already looked at | recognised by its [marker](marker.md) |
-| Does not match your `library_filter` | see [Choosing what to convert](#choosing-what-to-convert) |
+| Not tagged `immich-optimizer/convert` | see [Choosing what to convert](#choosing-what-to-convert) |
+| Already converted, already looked at, or tagged done | recognised by its [marker](marker.md) |
 | A second copy of a converted original that has something of its own 📝 | see [Second copies](#second-copies-of-converted-originals) |
 | Immich has not finished reading it yet | it is picked up by a later run |
 | It changed while it was being replaced | you edited it, or Immich was still analysing it. The copy is removed and a later run converts it |
 
 ## Choosing what to convert
 
-By default library mode converts everything your tasks can handle. To limit it, add a `library_filter` block to your [tasks file](tasks.md). It is a filter of **Immich's own asset search**: the optimizer passes it to Immich unchanged, and Immich says which assets match.
+You choose in Immich, with tags. Library mode creates them the first time it runs; they are under `immich-optimizer` in Immich's tag list.
 
-```yaml
-library_filter:
-  takenAt:
-    lt: 2024-01-01T00:00:00Z        # taken before 2024
-  fileSizeInBytes:
-    gt: 2000000                     # larger than 2 MB
-  albumIds:
-    none:                           # not in this album
-      - 3fa85f64-5717-4562-b3fc-2c963f66afa6
+| Tag | Set by | What the next run does |
+|---|---|---|
+| `immich-optimizer/convert` | you | converts the asset, then removes the tag |
+| `immich-optimizer/done` | you | marks the asset as handled, without touching it, and removes the tag. It is never converted, also if it is tagged `convert` later |
+| `immich-optimizer/redo` | you | removes a `done` mark (or the mark of an asset that was kept because converting it did not help), and removes the tag. Tag it `convert` too to have it converted in the same run |
+| `immich-optimizer/failed` | the optimizer | the conversion failed: the reason is in the [report](#the-report) and the [audit log](audit-log.md). Tag it `convert` again to try once more |
+| `immich-optimizer/review` | the optimizer | a [second copy](#second-copies-of-converted-originals) was left alone because it has something of its own: merge the two by hand |
 
-tasks:
-  # ...
-```
+**Tagging by hand.** In Immich, select the photos and videos, then choose **Tag** in the selection menu. "Select all" works in an album, in search results and on a whole day or month of the timeline, so:
 
-- **Several conditions must all match.** For "either of these", list them under `or:`.
-- **The fields and operators are Immich's**, and their names are case sensitive. Among them: `takenAt`, `createdAt`, `fileSizeInBytes`, `type`, `originalFileName`, `make`, `model`, `city`, `country`, `isFavorite`, `rating`, `albumIds`, `personIds`, `tagIds`, `hasAlbums`. The operators depend on the field: `eq`/`ne`, `lt`/`lte`/`gt`/`gte`, `in`/`notIn`, `like`/`startsWith`/`endsWith`, and `any`/`all`/`none` for lists of ids. The full list of fields, each with its operators, is the [`SearchFilter` model](https://api.immich.app/models/SearchFilter) in Immich's API reference, and Immich's own [introduction to it](https://immich.app/blog/2026-august-recap#search) has more examples. What is written under `library_filter:` here is what goes into the `filter` field there.
-- **A filter Immich does not accept stops the run** before anything is changed, with Immich's own message.
-- **Check it with a dry run.** The [report](#the-report) lists what would be converted; everything else shows as skipped with "it does not match library_filter".
-- **To try library mode on a few photos first**, put them in an album and filter on `albumIds`.
-- It needs Immich v3.2 or newer. Dates are absolute; there is no "older than 90 days".
-- **The filter only chooses what gets converted.** Cleaning up still covers the whole library: [second copies](#second-copies-of-converted-originals) are moved to the trash and replacements an earlier run left unfinished are completed, also for photos the filter leaves out.
+- **To try library mode on a few photos**, put them in an album, open it, select all and tag them.
+- **To convert everything from before a date**, select those months in the timeline, or search for them.
+- **To convert your whole library**, select everything in the timeline and tag it. It takes a while in a very large library, but you only do it once.
+
+**Tagging automatically.** Immich's own workflows (Administration → Workflows) can tag new assets as they arrive: for example "when an asset is uploaded, if it is a video, add the tag `immich-optimizer/convert`". A workflow can test the file name, the type, the date taken, the camera and other EXIF fields, the location, existing tags and the text Immich reads in a photo. Workflows react to new uploads, to metadata and text being read, and to tagging. They do not go through what is already in your library, and Immich has no workflow trigger for "added to an album": for those, tag by hand as above.
+
+**Files converted by an earlier version.** Versions before 0.4 did not mark what they converted. Library mode cannot tell those files from originals, and would convert them a second time. Converting an already converted file almost never makes it smaller, and a result that is not smaller is never used, so nothing is lost, but it costs time. Tag such files `immich-optimizer/done` to skip them. For example, if your earlier setup turned videos into `.mkv`, search Immich for `.mkv`, select all and tag them done.
+
+- **What a tag asks for is done once.** The tag is removed as soon as it is settled: converted, kept, marked, or skipped for good (no task handles its type, for example). It stays only when the reason may go away by itself, such as a file Immich has not finished reading: a later run tries again.
+- **`done` wins over `convert`.** An asset with both is marked done.
+- **Tags are settled at the end of a run.** A dry run, or a run that is stopped, leaves them as they are.
+- **The optimizer's tags are never carried over** to a converted copy, and are not counted as a difference when the copy is compared with its original. Your own tags are carried over as usual.
+- **Cleaning up does not depend on tags.** [Second copies](#second-copies-of-converted-originals) are moved to the trash and replacements an earlier run left unfinished are completed, all over the library.
 
 ## Second copies of converted originals
 
@@ -141,14 +143,14 @@ Library mode recognises such a file without converting it again. Every converted
 
 - **It is moved to the trash**, and the audit log gets a `second_copy_trashed` entry that names both assets. The converted asset is not touched.
 - **The optimizer keeps no list of its own.** It recognises second copies from the markers in Immich, afresh on every run.
-- **It is left alone when it has something the converted asset lacks**: it is a favorite, has a description, a rating, tags or edits, or is in an album, stack or shared link the converted asset is not in. The report says which, so you can merge the two by hand.
+- **It is left alone when it has something the converted asset lacks**: it is a favorite, has a description, a rating, tags or edits, or is in an album, stack or shared link the converted asset is not in. It is tagged `immich-optimizer/review`, and the report says which, so you can merge the two by hand.
 - **A dry run** only reports it (`would_trash_second_copy`).
 
 ## Phones
 
 The official mobile app decides what to back up by checksum: a photo counts as backed up while the server has a file with the same checksum, in the timeline or in the trash. A converted file has another checksum.
 
-**When the phone goes through the proxy, you can ignore this.** A phone that reaches Immich through [proxy mode](proxy.md#the-mobile-app) is told the original's checksum together with each converted photo, whether the proxy or library mode converted it. So it keeps counting a photo as backed up after library mode has replaced it, also once the original has left the trash, and does not upload it again. You can run library mode on the whole library without thinking about which photos are still on a phone. This is tested with the real Android app in an emulator: library mode converts photos the phone has, the trash is emptied, and the app uploads nothing.
+**When the phone goes through the proxy, you can ignore this.** A phone that reaches Immich through [proxy mode](proxy.md#the-mobile-app) is told the original's checksum together with each converted photo, whether the proxy or library mode converted it. So it keeps counting a photo as backed up after library mode has replaced it, also once the original has left the trash, and does not upload it again. You can tag the whole library for conversion without thinking about which photos are still on a phone. This is tested with the real Android app in an emulator: library mode converts photos the phone has, the trash is emptied, and the app uploads nothing.
 
 **Without it**, a photo that is still on a phone with backup on comes back:
 
@@ -160,13 +162,13 @@ Nothing is lost, but such a photo saves no space: its original is in the trash m
 
 ## Running it on a schedule
 
-`IO_LIBRARY_INTERVAL` keeps library mode running: one run, then another that long after it ends, such as `24h`. Use it with `restart: unless-stopped` instead of `restart: "no"`.
+`IO_LIBRARY_INTERVAL` keeps library mode running: one run, then another that long after it ends, such as `1h`. Use it with `restart: unless-stopped` instead of `restart: "no"`. Together with a workflow that tags new uploads, this converts new assets on its own.
 
 ```yaml
     environment:
       - IO_MODE=library
       - IO_LIBRARY_DRY_RUN=false
-      - IO_LIBRARY_INTERVAL=24h
+      - IO_LIBRARY_INTERVAL=1h
     restart: unless-stopped
 ```
 

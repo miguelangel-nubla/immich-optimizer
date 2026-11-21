@@ -424,14 +424,89 @@ func dockerArgs(env map[string]string, mounts ...string) []string {
 	return args
 }
 
+// The optimizer's tags, as library mode names them.
+const (
+	tagConvert = "immich-optimizer/convert"
+	tagDone    = "immich-optimizer/done"
+	tagRedo    = "immich-optimizer/redo"
+	tagFailed  = "immich-optimizer/failed"
+)
+
+// tagID returns the id of the user's tag with this value, creating it.
+func (u *user) tagID(t *testing.T, value string) string {
+	t.Helper()
+	var out []struct {
+		ID    string `json:"id"`
+		Value string `json:"value"`
+	}
+	must(t, u.key, http.MethodPut, "/tags", map[string]any{"tags": []string{value}}, &out)
+	for _, tg := range out {
+		if tg.Value == value {
+			return tg.ID
+		}
+	}
+	t.Fatalf("Immich did not return the tag %s: %+v", value, out)
+	return ""
+}
+
+// tag gives assets a tag, in Immich, as a person would.
+func (u *user) tag(t *testing.T, value string, ids ...string) {
+	t.Helper()
+	u.tagWith(t, []string{value}, ids...)
+}
+
+// tagWith gives assets several tags in one call, as Immich's interface does.
+// Separate calls in quick succession on the same asset are not safe: Immich
+// mirrors each change into the asset's metadata and sidecar in the
+// background, and a change can be lost in between.
+func (u *user) tagWith(t *testing.T, values []string, ids ...string) {
+	t.Helper()
+	var tagIDs []string
+	for _, v := range values {
+		tagIDs = append(tagIDs, u.tagID(t, v))
+	}
+	must(t, u.key, http.MethodPut, "/tags/assets", map[string]any{"tagIds": tagIDs, "assetIds": ids}, nil)
+}
+
+// tags returns the values of an asset's tags.
+func (u *user) tags(t *testing.T, id string) []string {
+	t.Helper()
+	var a struct {
+		Tags []struct {
+			Value string `json:"value"`
+		} `json:"tags"`
+	}
+	must(t, u.key, http.MethodGet, "/assets/"+id, nil, &a)
+	var out []string
+	for _, tg := range a.Tags {
+		out = append(out, tg.Value)
+	}
+	return out
+}
+
 // runLibrary runs one library pass and returns the container's exit code,
 // its output and the parsed log file.
+//
+// Library mode converts only what is tagged immich-optimizer/convert. Unless
+// env has "E2E_TAGS": "own", every asset the user has is tagged so before the
+// run, which is what the tests about converting itself want; the test of the
+// tags tags its assets itself.
 func runLibrary(t *testing.T, u *user, logDir string, env map[string]string, mounts ...string) (int, string, []map[string]any) {
 	t.Helper()
 	all := map[string]string{"IO_MODE": "library", "IO_IMMICH_API_KEY": u.keyS, "IO_LIBRARY_READY_TIMEOUT": "2m"}
 	for k, v := range env {
 		all[k] = v
 	}
+	if all["E2E_TAGS"] != "own" {
+		var ids []string
+		for _, a := range u.live(t) {
+			ids = append(ids, a.ID)
+		}
+		if len(ids) > 0 {
+			u.tag(t, tagConvert, ids...)
+		}
+	}
+	delete(all, "E2E_TAGS")
 	args := append([]string{"run", "--rm"}, dockerArgs(all, append(mounts, logDir+":/undone")...)...)
 	out, err := exec.Command("docker", append(args, image)...).CombinedOutput()
 	code := 0

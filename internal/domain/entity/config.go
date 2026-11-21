@@ -1,9 +1,6 @@
 package entity
 
-import (
-	"encoding/json"
-	"time"
-)
+import "time"
 
 type Task struct {
 	Name       string   `mapstructure:"name"`
@@ -39,10 +36,6 @@ type Config struct {
 	// MotionPhotos is the default for tasks that do not set their own
 	// "motion_photos". Empty means MotionPhotosKeep.
 	MotionPhotos string `mapstructure:"motion_photos"`
-	// LibraryFilter is the "library_filter" block as JSON: a filter of
-	// Immich's own asset search, which library mode passes on unchanged.
-	// Nil when the tasks file has none.
-	LibraryFilter json.RawMessage `mapstructure:"-"`
 }
 
 type AppConfig struct {

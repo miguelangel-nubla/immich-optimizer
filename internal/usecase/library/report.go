@@ -28,6 +28,10 @@ const (
 	statusRolledBack   = "rolled_back"
 	statusSecondCopy   = "second_copy"
 	statusWouldTrash   = "would_trash"
+	// Tags: "done" and "redo".
+	statusMarkedDone    = "marked_done"
+	statusWouldMarkDone = "would_mark_done"
+	statusWouldForget   = "would_remove_marker"
 )
 
 // Item is one asset's row in the report.
@@ -47,6 +51,9 @@ type Item struct {
 	NewSize int64   `json:"new_size,omitempty"`
 	Task    string  `json:"task,omitempty"`
 	Sample  *Sample `json:"sample,omitempty"`
+
+	// retry and review carry errSkip's flags to the tags at the end.
+	retry, review bool
 }
 
 // fill sets what the listing knows about the asset, without overwriting what

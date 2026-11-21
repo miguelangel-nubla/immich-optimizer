@@ -42,9 +42,6 @@ import (
 type Config struct {
 	// DryRun reports what would be converted without changing anything.
 	DryRun bool
-	// Filter, when set, is a filter of Immich's asset search (JSON). Only
-	// assets it matches are converted.
-	Filter json.RawMessage
 	// ReadyTimeout is how long to wait for Immich to finish reading a newly
 	// uploaded asset before giving up on it.
 	ReadyTimeout time.Duration
@@ -95,15 +92,26 @@ type Summary struct {
 	// SecondCopies are originals that were uploaded again after their
 	// conversion and were moved to the trash; WouldTrash counts them in a
 	// dry run.
-	SecondCopies int   `json:"second_copies,omitempty"`
-	WouldTrash   int   `json:"would_trash,omitempty"`
-	BytesBefore  int64 `json:"bytes_before"`
-	BytesAfter   int64 `json:"bytes_after"`
+	SecondCopies int `json:"second_copies,omitempty"`
+	WouldTrash   int `json:"would_trash,omitempty"`
+	// MarkedDone are assets tagged "done" that got their marker, and
+	// Forgotten those tagged "redo" whose marker was removed; the Would
+	// fields count them in a dry run.
+	MarkedDone    int   `json:"marked_done,omitempty"`
+	WouldMarkDone int   `json:"would_mark_done,omitempty"`
+	Forgotten     int   `json:"forgotten,omitempty"`
+	WouldForget   int   `json:"would_forget,omitempty"`
+	BytesBefore   int64 `json:"bytes_before"`
+	BytesAfter    int64 `json:"bytes_after"`
 }
 
 type Service struct {
-	cfg     Config
-	api     port.LibraryAPI
+	cfg Config
+	// api is base during a run with the optimizer's own tags hidden.
+	api  port.LibraryAPI
+	base port.LibraryAPI
+	// own are the ids of the optimizer's tags, during a run.
+	own     map[string]bool
 	conv    port.CheckingConverter
 	log     *logger.Logger
 	journal *audit.Log
@@ -146,6 +154,10 @@ func (sum *Summary) add(o Summary) {
 	sum.RolledBack += o.RolledBack
 	sum.SecondCopies += o.SecondCopies
 	sum.WouldTrash += o.WouldTrash
+	sum.MarkedDone += o.MarkedDone
+	sum.WouldMarkDone += o.WouldMarkDone
+	sum.Forgotten += o.Forgotten
+	sum.WouldForget += o.WouldForget
 	sum.BytesBefore += o.BytesBefore
 	sum.BytesAfter += o.BytesAfter
 }
@@ -160,7 +172,7 @@ func New(cfg Config, api port.LibraryAPI, conv port.CheckingConverter, journal *
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = 1
 	}
-	return &Service{cfg: cfg, api: api, conv: conv, log: log, journal: journal}
+	return &Service{cfg: cfg, api: api, base: api, conv: conv, log: log, journal: journal}
 }
 
 // errSkip is returned for assets library mode leaves alone on purpose.
@@ -169,11 +181,21 @@ type errSkip struct {
 	// converted is the marker of an asset that is skipped because it is a
 	// finished conversion.
 	converted *entity.Marker
+	// retry means the reason may go away by itself: a tag asking for the
+	// asset stays, so that a later run tries again.
+	retry bool
+	// review means the person should look at the asset.
+	review bool
 }
 
 func (e *errSkip) Error() string { return e.reason }
 
 func skip(format string, args ...any) error { return &errSkip{reason: fmt.Sprintf(format, args...)} }
+
+// later is a skip whose reason may go away by itself.
+func later(format string, args ...any) error {
+	return &errSkip{reason: fmt.Sprintf(format, args...), retry: true}
+}
 
 // errChanged means the original was modified (by the user, or by Immich
 // still analysing it) while its replacement was under way. The copy is
@@ -215,6 +237,17 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	if err := s.record(Entry{Event: "run_started", Detail: "user " + me}); err != nil {
 		return sum, err
 	}
+	// The tags say what to do. The optimizer's own tags are then hidden from
+	// every read of an asset for the rest of the run.
+	rt, err := s.loadTags(ctx)
+	if err != nil {
+		return sum, err
+	}
+	s.api, s.own = withoutOwnTags{s.base, rt.own}, rt.own
+	defer func() { s.api, s.own = s.base, nil }()
+	if len(rt.convert) == 0 {
+		s.infof("Library: no asset is tagged %s: nothing will be converted. Tag assets in Immich to convert them", TagConvert)
+	}
 
 	// List everything first: replacing assets while paging through them
 	// would shift the pages.
@@ -237,22 +270,6 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 		if s.memories, err = s.api.MemoryIDs(ctx); err != nil {
 			return sum, fmt.Errorf("listing memories: %w", err)
 		}
-	}
-
-	// The filter is Immich's own: Immich says which assets match. It only
-	// limits what is converted. Unfinished replacements and second copies
-	// are settled whatever it says.
-	var matches map[string]bool
-	if len(s.cfg.Filter) > 0 {
-		ids, err := s.api.MatchingAssetIDs(ctx, s.cfg.Filter)
-		if err != nil {
-			return sum, fmt.Errorf("applying library_filter: %w", err)
-		}
-		matches = make(map[string]bool, len(ids))
-		for _, id := range ids {
-			matches[id] = true
-		}
-		s.infof("Library: library_filter matches %d asset(s)", len(matches))
 	}
 
 	// outcome folds one asset's result into the summary. It returns a fatal
@@ -285,9 +302,11 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 		case ctx.Err() != nil:
 			// Interrupted: whatever was in flight has been rolled back or
 			// will be finished by the next run.
+			it.retry = true
 		case errors.As(err, &sk):
 			sum.Skipped++
 			it.Status, it.Reason = statusSkipped, sk.reason
+			it.retry, it.review = it.retry || sk.retry, it.review || sk.review
 			if s.log != nil {
 				s.log.Debugf("Library: skipping %s (%s): %s", a.OriginalFileName, a.ID, sk.reason)
 			}
@@ -326,7 +345,34 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	convertedFrom := map[string]string{}
 	s.forEach(len(assets), stopped, func(i int) {
 		a := assets[i]
-		meta, m, err := s.classify(ctx, me, a)
+		var meta []entity.MetadataItem
+		var m *entity.Marker
+		var err error
+		t := &tally{Summary: Summary{Seen: 1}}
+		switch {
+		case rt.done[a.ID]:
+			// "Done" wins over every other tag.
+			err = s.markDone(ctx, me, a, t)
+			if err == nil {
+				outcome(a, t, nil)
+				return
+			}
+		case rt.redo[a.ID]:
+			err = s.redo(ctx, me, a, t)
+			if err == nil && t.item.Status == statusWouldForget {
+				// A dry run removed nothing: the asset stays as it is.
+				outcome(a, t, nil)
+				return
+			}
+			if err == nil {
+				meta, m, err = s.classify(ctx, me, a)
+			}
+		default:
+			meta, m, err = s.classify(ctx, me, a)
+		}
+		if errors.Is(err, errPendingCopy) {
+			meta, m, err = s.classify(ctx, me, a)
+		}
 		var sk *errSkip
 		if errors.As(err, &sk) && sk.converted != nil && !sk.converted.Kept && sk.converted.SHA1 != "" {
 			mu.Lock()
@@ -334,9 +380,10 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 			mu.Unlock()
 		}
 		if err == nil {
-			// Decided later, in step 2 or 3: only count it as seen here.
+			// Decided later, in step 2 or 3: only count it as seen here
+			// (and a "redo" that freed it).
 			mu.Lock()
-			sum.Seen++
+			sum.add(t.Summary)
 			if m != nil {
 				pendings = append(pendings, pendingCopy{a, m})
 			} else {
@@ -345,7 +392,7 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 			mu.Unlock()
 			return
 		}
-		outcome(a, &tally{Summary: Summary{Seen: 1}}, err)
+		outcome(a, t, err)
 	})
 
 	// 2. Unfinished replacements of an earlier run are settled first, one by
@@ -355,6 +402,8 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 			break
 		}
 		t := &tally{}
+		// A tag on the unfinished copy waits for a later run.
+		t.item.retry = rt.done[p.asset.ID] || rt.redo[p.asset.ID] || rt.convert[p.asset.ID]
 		outcome(p.asset, t, s.resumePending(ctx, p.asset, p.marker, t))
 	}
 
@@ -374,8 +423,8 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 			outcome(c.asset, t, s.secondCopy(ctx, c.asset, convertedID, t))
 			continue
 		}
-		if matches != nil && !matches[c.asset.ID] {
-			outcome(c.asset, &tally{}, skip("it does not match library_filter"))
+		if !rt.convert[c.asset.ID] {
+			outcome(c.asset, &tally{}, skip("it is not tagged %s", TagConvert))
 			continue
 		}
 		rest = append(rest, c)
@@ -397,6 +446,12 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	if s.cfg.DryRun && s.cfg.Sample > 0 && !stopped() {
 		estimate = s.sample(ctx, items)
 	}
+	// 6. The tags of what was acted on are settled.
+	if !s.cfg.DryRun && fatalErr == nil && ctx.Err() == nil {
+		if err := s.settleTags(ctx, rt, items); err != nil && s.log != nil {
+			s.log.Warnf("Library: %v; the next run tries again", err)
+		}
+	}
 	s.writeReport(me, started, sum, items, estimate)
 	if fatalErr != nil {
 		return sum, fatalErr
@@ -405,8 +460,8 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	if err := s.record(Entry{Event: "run_finished", Summary: &sum}); err != nil {
 		return sum, err
 	}
-	s.infof("Library: run finished: %d seen, %d replaced, %d would be replaced, %d kept, %d second copies trashed, %d skipped, %d failed (%d -> %d bytes)",
-		sum.Seen, sum.Replaced, sum.WouldReplace, sum.Kept, sum.SecondCopies, sum.Skipped, sum.Failed, sum.BytesBefore, sum.BytesAfter)
+	s.infof("Library: run finished: %d seen, %d replaced, %d would be replaced, %d kept, %d marked done, %d second copies trashed, %d skipped, %d failed (%d -> %d bytes)",
+		sum.Seen, sum.Replaced, sum.WouldReplace, sum.Kept, sum.MarkedDone+sum.WouldMarkDone, sum.SecondCopies, sum.Skipped, sum.Failed, sum.BytesBefore, sum.BytesAfter)
 	return sum, ctx.Err()
 }
 
@@ -459,17 +514,8 @@ func markerItem(m *entity.Marker) (entity.MetadataItem, error) {
 // asset is a candidate. It returns the marker instead when the asset is the
 // unfinished copy of an interrupted replacement.
 func (s *Service) classify(ctx context.Context, me string, listed entity.LibraryAsset) ([]entity.MetadataItem, *entity.Marker, error) {
-	switch {
-	case listed.OwnerID != me:
-		return nil, nil, skip("it belongs to another user")
-	case listed.LibraryID != "":
-		return nil, nil, skip("it is in an external library")
-	case listed.IsTrashed:
-		return nil, nil, skip("it is in the trash")
-	case listed.IsOffline:
-		return nil, nil, skip("its file is offline")
-	case listed.Visibility != "timeline" && listed.Visibility != "archive":
-		return nil, nil, skip("its visibility is %q", listed.Visibility)
+	if err := basicChecks(me, listed); err != nil {
+		return nil, nil, err
 	}
 
 	items, err := s.api.GetMetadata(ctx, listed.ID)
@@ -512,7 +558,7 @@ func (s *Service) secondCopy(ctx context.Context, listed entity.LibraryAsset, co
 	m := markerOf(convItems)
 	if conv.IsTrashed || m == nil || m.State == entity.MarkerStatePending || m.Kept ||
 		old.Checksum == "" || !strings.EqualFold(m.SHA1, old.Checksum) {
-		return skip("it looked like a second copy of the converted asset %s, which has changed since; a later run decides", convertedID)
+		return later("it looked like a second copy of the converted asset %s, which has changed since; a later run decides", convertedID)
 	}
 	t.item.NewFile, t.item.NewSize = conv.OriginalFileName, conv.Size
 
@@ -557,7 +603,7 @@ func (s *Service) secondCopy(ctx context.Context, listed entity.LibraryAsset, co
 		extra = append(extra, "it is in shared links")
 	}
 	if len(extra) > 0 {
-		return skip("it is a second copy of the converted asset %s, but %s that the converted one lacks: merge them by hand", convertedID, strings.Join(extra, ", "))
+		return &errSkip{reason: fmt.Sprintf("it is a second copy of the converted asset %s, but %s that the converted one lacks: merge them by hand", convertedID, strings.Join(extra, ", ")), review: true}
 	}
 
 	t.item.Size = old.Size
@@ -585,10 +631,10 @@ func (s *Service) work(ctx context.Context, listed entity.LibraryAsset, items []
 		return fmt.Errorf("reading asset: %w", err)
 	}
 	if !old.Ready {
-		return skip("Immich has not finished reading it yet")
+		return later("Immich has not finished reading it yet")
 	}
 	if old.IsTrashed {
-		return skip("it is in the trash")
+		return later("it is in the trash")
 	}
 	albums, err := s.api.Albums(ctx, old.ID)
 	if err != nil {
@@ -759,7 +805,7 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 		var changed *errChanged
 		if errors.As(err, &changed) && rb.Event == "rolled_back" {
 			s.infof("Library: %s (%s) changed while it was being replaced; left as it is for a later run", old.OriginalFileName, old.ID)
-			return skip("%s; a later run will convert it", changed.what)
+			return later("%s; a later run will convert it", changed.what)
 		}
 		return fmt.Errorf("replacement abandoned, original untouched: %w", err)
 	}
@@ -793,6 +839,17 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 // keep records on the original that it was looked at and left as it is, so
 // later runs do not download it again.
 func (s *Service) keep(ctx context.Context, old *entity.LibraryAsset, oldItems []entity.MetadataItem, t *tally, note string) error {
+	if err := s.writeKept(ctx, old, note); err != nil {
+		return err
+	}
+	t.Kept++
+	t.item.Status, t.item.Reason = statusKept, note
+	s.infof("Library: keeping %s (%s) as it is: %s", old.OriginalFileName, old.ID, note)
+	return s.record(Entry{Event: "kept", Asset: old.ID, File: old.OriginalFileName, Detail: note, OriginalBytes: old.Size})
+}
+
+// writeKept writes the marker of an asset that is left as it is.
+func (s *Service) writeKept(ctx context.Context, old *entity.LibraryAsset, note string) error {
 	mi, err := markerItem(&entity.Marker{
 		V: entity.MarkerVersion, SHA1: old.Checksum, Size: old.Size, OriginalName: old.OriginalFileName,
 		Source: string(entity.SourceLibrary), Optimizer: s.cfg.Version, ConfigSHA256: s.cfg.ConfigSHA256,
@@ -804,10 +861,7 @@ func (s *Service) keep(ctx context.Context, old *entity.LibraryAsset, oldItems [
 	if err := s.api.PutMetadata(ctx, old.ID, []entity.MetadataItem{mi}); err != nil {
 		return fmt.Errorf("recording that the asset was kept: %w", err)
 	}
-	t.Kept++
-	t.item.Status, t.item.Reason = statusKept, note
-	s.infof("Library: keeping %s (%s) as it is: %s", old.OriginalFileName, old.ID, note)
-	return s.record(Entry{Event: "kept", Asset: old.ID, File: old.OriginalFileName, Detail: note, OriginalBytes: old.Size})
+	return nil
 }
 
 // finish carries everything over to the new asset, verifies it and moves the
@@ -818,6 +872,12 @@ func (s *Service) finish(ctx context.Context, old *entity.LibraryAsset, oldAlbum
 	}
 	cur, err := s.waitReady(ctx, newID)
 	if err != nil {
+		return err
+	}
+	// Immich's copy brings the original's tags along through the sidecar,
+	// the optimizer's own among them, once it has read the new file: those
+	// are about the original only.
+	if err := s.dropOwnTags(ctx, newID); err != nil {
 		return err
 	}
 	if cur.Checksum != convertedSHA1 {

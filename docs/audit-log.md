@@ -15,6 +15,8 @@ It records what happened to your files, and only that:
 | `library` | `sampled` | dry run: this asset was converted as part of the sample; nothing was uploaded |
 | `library` | `converted`, `uploaded`, `verified`, `replaced` | the steps of one replacement; `replaced` means the original is in the trash |
 | `library` | `kept` | looked at and left as it is |
+| `library` | `marked_done` | tagged `immich-optimizer/done`: marked as handled, file untouched. `would_mark_done` is the dry run's |
+| `library` | `marker_removed` | tagged `immich-optimizer/redo`: its "left as it is" mark was removed. `would_remove_marker` is the dry run's |
 | `library` | `verify_failed`, `rolled_back`, `failed` | a replacement was abandoned and the original left untouched; `differences` lists what did not match |
 | `library` | `second_copy_trashed` | an original that was uploaded again after its conversion was moved to the trash; `new_asset` is the conversion. `would_trash_second_copy` is the same in a dry run |
 | `library` | `finalized` | an interrupted replacement from an earlier run was completed |
