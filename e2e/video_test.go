@@ -178,6 +178,11 @@ func convertWith(t *testing.T, profile, src string) string {
 // from an iPhone and one in the Android layout, both with a position. After
 // conversion Immich must still show the same date, place and shape.
 func TestProfileKeepsVideoDatePlaceAndRotation(t *testing.T) {
+	// It downloads about 90 MB and transcodes 4K video in software, which
+	// takes minutes and every core it is given: only on request.
+	if os.Getenv("E2E_VIDEO") == "" {
+		t.Skip("set E2E_VIDEO=1 to run the video transcoding test")
+	}
 	big := &http.Client{Timeout: 20 * time.Minute}
 	saved := httpc
 	httpc = big

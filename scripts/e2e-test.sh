@@ -10,6 +10,10 @@
 # Set E2E_KEEP=1 to leave Immich running afterwards.
 # Set E2E_ML=1 to also start Immich's machine learning and run the tests that
 # need real face detection (downloads the ML image and models: slow).
+# Set E2E_VIDEO=1 to also run the video test: it converts two real phone clips
+# with the transcoding profile and compares what Immich reads from them. It
+# downloads about 90 MB and transcodes 4K in software, so it is slow and
+# uses every core Docker has.
 # Set E2E_ANDROID=1 to also boot an Android emulator with the Immich app and
 # run the tests that drive the real app (see scripts/android-emulator.sh for
 # what it needs). An emulator that is already up is reused and left running.
