@@ -69,20 +69,19 @@ The converted copy is a new asset in Immich. This is everything the original had
 | ✅ | The video of a live photo or motion photo | the copy is paired with the same video, which is left as it is |
 | ✅ | Asset metadata written by apps (for example the mobile app's iCloud id) | copied by the optimizer |
 | ✅ | Membership in memories ("on this day") | added by the optimizer |
-| ✅ | Being the cover of one of your albums | set by the optimizer. In an album that belongs to someone else, Immich picks another cover |
 | ✅ | Owner, type, file name (with the new extension) | by upload |
 | ⚠️ | Faces not assigned to anyone | not copied: Immich detects them again |
 | ⚠️ | A face you removed by hand, or hid | may come back when Immich detects faces again |
 | ⚠️ | Thumbnails, search index, face data | generated again by Immich for the new file |
 | ❌ | The asset's id | the copy has a new one: links and bookmarks to the old asset stop working |
 | ❌ | The upload date ("recently added") | becomes the day of the conversion. Immich sets it itself and its API has no way to change it |
-| ❌ | Being a person's featured photo | Immich picks another one. Its API does not say which photo is a person's featured one, so there is nothing to carry over |
+| ❌ | Being an album's cover or a person's featured photo | Immich picks another one |
 
 Every ✅ row is checked in step 5: if the copy differs from the original in any of them, it is deleted and the original stays. A few allowances are made on purpose:
 
 - The file name is compared without its extension.
 - The copy may belong to more people than the original, never fewer.
-- Memories and album covers are not read back: adding the copy to a memory, or making it a cover, is confirmed by Immich's answer, and a refusal undoes the replacement like any other difference. The cover is moved last, once everything else has been verified.
+- Memories are not read back: adding the copy to a memory is confirmed by Immich's answer, and a refusal undoes the replacement like any other difference.
 - **Dimensions and orientation are not compared**, because a task may resize, crop or rotate. A video's length may differ by half a second or 2%.
 
 The validity check in step 2 does **not** compare the picture with the original either: a task is free to crop, resize, watermark or re-encode. It only rejects results that are broken. Library mode converts with whatever your tasks file says, and treats every task the same way.

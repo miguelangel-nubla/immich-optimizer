@@ -108,8 +108,6 @@ type Service struct {
 	log     *logger.Logger
 	journal *audit.Log
 
-	// me is the user the run works for.
-	me string
 	// memories says, for this run, which memories each asset is in.
 	memories map[string][]string
 
@@ -214,7 +212,6 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	if err != nil {
 		return sum, fmt.Errorf("identifying the API key's user: %w", err)
 	}
-	s.me = me
 	if err := s.record(Entry{Event: "run_started", Detail: "user " + me}); err != nil {
 		return sum, err
 	}
@@ -875,30 +872,9 @@ func (s *Service) finish(ctx context.Context, old *entity.LibraryAsset, oldAlbum
 		return &errChanged{"the original changed while it was being replaced (" + strings.Join(d, "; ") + ")"}
 	}
 
-	// An album whose cover was the original gets the copy as its cover.
-	// This is done last, when nothing else can fail any more: until here the
-	// original is untouched, and a cover that pointed at a copy which is
-	// then removed would be lost.
-	var covers []string
-	for _, al := range oldAlbums {
-		if al.CoverAssetID != old.ID || al.OwnerID != s.me {
-			continue
-		}
-		if err := s.api.SetAlbumCover(ctx, al.ID, newID); err != nil {
-			for _, id := range covers {
-				_ = s.api.SetAlbumCover(context.WithoutCancel(ctx), id, old.ID)
-			}
-			return fmt.Errorf("making the new asset the cover of album %q: %w", al.Name, err)
-		}
-		covers = append(covers, al.ID)
-	}
-
 	e := entry
 	e.Event, e.NewAsset = "verified", newID
 	if err := s.record(e); err != nil {
-		for _, id := range covers {
-			_ = s.api.SetAlbumCover(context.WithoutCancel(ctx), id, old.ID)
-		}
 		return err
 	}
 	// From here the swap is committed even if the process is interrupted.
