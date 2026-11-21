@@ -131,7 +131,7 @@ tasks:
 - **Check it with a dry run.** The [report](#the-report) lists what would be converted; everything else shows as skipped with "it does not match library_filter".
 - **To try library mode on a few photos first**, put them in an album and filter on `albumIds`.
 - It needs Immich v3.2 or newer. Dates are absolute; there is no "older than 90 days".
-- The filter only says what to convert. [Second copies](#second-copies-of-converted-originals) and replacements an earlier run left unfinished are settled whatever it says.
+- **The filter only chooses what gets converted.** Cleaning up still covers the whole library: [second copies](#second-copies-of-converted-originals) are moved to the trash and replacements an earlier run left unfinished are completed, also for photos the filter leaves out.
 
 ## Second copies of converted originals
 
@@ -140,7 +140,7 @@ An original can come back after it was converted: the mobile app uploads a photo
 Library mode recognises such a file without converting it again. Every converted asset carries a [marker](marker.md) with the checksum of its original, and each run reads them all. An unconverted asset whose file has that checksum is a second copy of the same photo.
 
 - **It is moved to the trash**, and the audit log gets a `second_copy_trashed` entry that names both assets. The converted asset is not touched.
-- **Nothing is remembered between runs.** The lookup is built from the markers on every run.
+- **The optimizer keeps no list of its own.** It recognises second copies from the markers in Immich, afresh on every run.
 - **It is left alone when it has something the converted asset lacks**: it is a favorite, has a description, a rating, tags or edits, or is in an album, stack or shared link the converted asset is not in. The report says which, so you can merge the two by hand.
 - **A dry run** only reports it (`would_trash_second_copy`).
 

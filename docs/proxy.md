@@ -30,10 +30,10 @@ Point your clients at the optimizer instead of Immich. If Immich sits behind you
 - **What is converted:** multipart uploads to Immich's upload endpoint (`/api/assets`). The file is handled as described in [Tasks](tasks.md#how-a-file-is-handled).
 - **Errors:** a file type no task handles answers `415`; a failed conversion answers `502`. Nothing is uploaded in either case and the original is kept in the [undone folder](undone.md). If Immich itself cannot be reached or refuses the upload, the client gets the error and nothing is kept: it still has the file and retries. `503` means "try again later": the proxy is shutting down, has no room in its temp folder, or cannot write its audit log.
 - **What the mobile app does with an error** (tested with the Android app v3.4.2 in an emulator): it tries each failed file once every time it looks for things to back up, does not retry in between, and carries on with the other files. Once the cause is gone, the file is backed up on the next round.
-- **Jobs survive client disconnects.** Once the upload has been received, converting it and sending it to Immich no longer depend on the client connection. If the phone disconnects or gives up waiting, the job continues and the asset still reaches Immich.
-- **No double uploads.** If the same user uploads the identical file again while it is being processed, or within 30 minutes afterwards, the retry gets the same result instead of a second conversion. Transient answers (`5xx`, `408`, `413`, `425`, `429`) are not replayed, and neither is an answer whose asset has since been deleted from Immich: that upload is stored again.
+- **A dropped connection does not lose the upload.** Once the proxy has received a file, it finishes converting it and stores it in Immich, even if the phone goes offline or gives up waiting in the meantime.
+- **A repeated upload is not stored twice.** If the same person sends the identical file again while it is being converted, or within 30 minutes afterwards, they get the answer to the first upload instead of a second conversion. Two exceptions, where the file is handled afresh: the first upload failed for a temporary reason (`5xx`, `408`, `413`, `425`, `429`), or the photo it created has since been deleted from Immich.
 - **Uploads wait when the temp folder is filling up.** Every upload that is waiting or being converted has files in the container's temp folder (`/tmp`), up to three times its size. Before reading a new upload, the proxy checks that there is room for it next to the ones in progress. If not, the client is held for up to 45 seconds and then answered `503` with `Retry-After`, so a phone that sends faster than your tasks convert slows down instead of making the conversions under way fail for lack of space. There is nothing to set: the limit is the free space itself.
-- **Browsers** are kept waiting with periodic redirects while a long conversion runs.
+- **A long conversion does not time out in the browser.** The proxy keeps the upload alive until the file is stored, however long the conversion takes.
 - **The file's name** is taken from the upload's `filename` field when it has one, as Immich does; the mobile app's background upload sends the real name there.
 - **Downloads can be converted back.** With a [`downloads` list](tasks.md#downloads) in the tasks file, an original stored as JPEG XL is handed out as JPEG when someone downloads it.
 - Each converted asset gets a [provenance marker](marker.md), and each upload a line in the [audit log](audit-log.md).
@@ -60,20 +60,20 @@ If you would rather keep the app out of uploading altogether, use [watcher mode 
 
 **How it works.** The app keeps its own list of what is on the server, filled from Immich's sync, and treats a photo as backed up when that list has an entry with the photo's checksum. Every converted asset carries a [marker](marker.md) with the checksum of its original, and the marker is part of the same sync. When a marker passes through the proxy, the proxy adds one hidden entry with the original's checksum to the answer. The app finds its match and stops uploading the photo.
 
-- Nothing is stored: the hidden entry is built from the marker as it goes by.
+- The proxy keeps no list of its own. It works out each hidden entry from the marker Immich sends, every time.
 - The real asset's entry is not changed.
 - The hidden entry is never shown.
 - **It arrives at once.** Immich tells the app about a finished upload over a websocket, and the proxy adds the hidden entry there too, so the app's backup page counts the photo as backed up right away.
 - **It follows its asset.** It is in the trash while the converted asset is, and it is deleted from the phone when the converted asset is deleted for good or loses its marker. The app then treats the photo as it treats any photo whose server copy was trashed or deleted.
-- Requests the app makes about a hidden entry are answered with the real asset.
+- If the app ever asks for a hidden entry, for a thumbnail say, it gets the converted photo.
 - **It covers [library mode](library.md#phones) too.** Assets that library mode converted carry the same marker, so the phone does not upload their originals again after they leave the trash.
 
 **What to know before trying it**
 
 - **The app must reach Immich through the proxy**, for everything: uploads, sync and the websocket.
-- **A phone that had already synced catches up by itself.** It gets the hidden entry of an asset the next time Immich sends it anything about that asset. Until then it uploads the photo once more; the proxy finds the conversion already in Immich and announces its marker again, which brings the hidden entry with the next sync.
+- **Turning it on later works.** A phone that already knows your photos catches up by itself. At worst it uploads each converted photo one more time: nothing is stored twice, and after that it counts them as backed up.
 - **"Free up space" will trust it.** The app considers those photos safely backed up and offers to delete them from the phone, although the server holds the converted file, not the original. It does not offer photos whose converted asset is in the trash.
-- **The proxy reads the websocket**, so it asks Immich not to compress it, and it asks Immich for the marker of each asset the app is told about. With thousands of changes in one sync it asks for the first 200 only; the rest get their hidden entry from their marker.
+- **It costs a little extra work.** For each photo the app is told about, the proxy asks Immich one more question, to learn whether the photo has a marker. In a sync with thousands of changes it asks for the first 200 only; the others get their hidden entry from their marker, as usual. It also reads the live connection between the app and Immich, which it therefore asks Immich not to compress.
 - It depends on the format of Immich's sync and websocket messages, which can change with any Immich release. What the proxy does not recognise it passes through unchanged, so the worst case is that the app goes back to uploading again.
 - Turning it off again does not remove hidden entries already on a phone; a full resync does (log out and in again).
 

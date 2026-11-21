@@ -1,34 +1,79 @@
 # Undone folder (failed files)
 
-The undone folder works the same in proxy and watcher mode. **The original is never uploaded when conversion fails.** Instead it is saved to `IO_UNDONE_DIR` together with a `metadata.json` explaining why. Each save is also recorded in the [audit log](audit-log.md).
+When a file cannot be converted, **the original is never uploaded in its place.** It is saved to the undone folder (`IO_UNDONE_DIR`, `/undone` in the image) with a note saying why, and you decide what to do with it.
 
-Library mode does not use it: its originals stay in Immich.
+This is the same in proxy and watcher mode. Library mode does not use the folder: its originals simply stay in Immich.
 
-- **When a file is saved:** every task for its extension failed, a task produced an empty output, the [task timeout](configuration.md#tasks) expired, or no task matches its extension (unless `IO_UNDONE_UNMATCHED=false`). In watcher mode, a file whose upload to Immich fails (for example quota exceeded) is also saved.
-- **Layout:** flat and content-addressed, one folder per distinct file content, named after its SHA-1 (the same checksum Immich stores for every asset):
+## When a file ends up there
 
-  ```
-  undone/
-    3f8a…c1/                 SHA-1 (40 hex characters) of the file content
-      original.file          the original, byte for byte, with its original modification time
-      metadata.json          names, sources, folders and failures
-  ```
+- Every task for its type failed, or produced an empty file.
+- A task ran longer than the [task timeout](configuration.md#tasks).
+- No task handles its type (unless `IO_UNDONE_UNMATCHED=false`).
+- In watcher mode only: the file was converted, but Immich did not accept it, for example because the quota is full.
 
-  `original.file` is literally named that (no extension), so unusual or very long client filenames can never cause problems. There are no per-source subfolders and the watch directory's tree is not mirrored: the source and the original filename and folder are recorded in `metadata.json`. A folder only appears once it is complete (it is assembled under a temporary name and renamed into place); temporary `.io-undone-*` entries left by a crash are removed at startup (leftover copies once they are over an hour old). The undone directory may be shared by several optimizer processes, for example a watcher and a proxy container mounting the same folder: they coordinate through an advisory lock file, `.io-undone.lock`, at its root (leave it in place).
-- **metadata.json** (pretty-printed JSON, `"version": 3`, written atomically) contains `sha1` (hex, the folder name), `sha1_base64` (the same checksum the way the Immich API shows it), `size`, `original_mtime`, `first_failed_at`, `last_failed_at`, `occurrences`, `original_filenames` (the distinct names this content arrived under, up to 100) and `failures`: the 20 most recent failures, each with `source` (`watcher` / `proxy`), `original_filename`, `original_dir` (the watcher's path relative to the watch directory, or the folder part of the proxy client's filename if it sent one), `failed_at`, `stage` (`no_task`, `convert` or `upload`), `error`, and every task attempted (command, exit code, duration, timeout flag, last 4 KiB of output). It contains no credentials or headers.
-- **No duplicates:** if the identical content is already there (for example a phone retrying the same upload, or the same photo arriving from both the watcher and the proxy), it is not copied again (it does not even need temporary space); `occurrences` goes up and the failure is appended to its `metadata.json`. A *different* file with the same name always gets its own folder, so nothing is ever overwritten.
-- **Finding a file in Immich:** Immich identifies every asset by the SHA-1 of its file, so the folder name is directly comparable with Immich's `checksum`. This only matches if these exact original bytes were uploaded to Immich some other way (for example from a client that bypassed the proxy), since an optimized upload has a different checksum. To check before retrying, ask Immich's API with the hex folder name or `sha1_base64`:
+Each save is also recorded in the [audit log](audit-log.md).
 
-  ```sh
-  curl -s -X POST "$IMMICH_URL/api/assets/bulk-upload-check" \
-    -H "x-api-key: $IMMICH_API_KEY" -H 'Content-Type: application/json' \
-    -d '{"assets":[{"id":"x","checksum":"<folder name>"}]}'
-  # {"results":[{"id":"x","action":"reject","reason":"duplicate","assetId":"…"}]} means Immich already has it
-  ```
+**What the sender sees**
 
-  or `POST /api/search/metadata` with `{"checksum":"<sha1_base64>"}`.
-- **Folders from earlier versions:** before metadata version 3, folders were named after the SHA-256 of the content (64 hex characters, `"sha256"` in `metadata.json`). They are left exactly as they are: never updated, cleaned up or deduplicated against. If the same content fails again it gets a new SHA-1 folder next to the old one. Retry or delete old folders by hand.
-- **Watcher:** the source file is removed from the watch directory only once it has been uploaded or saved to undone. If saving fails (for example the disk is full), the file stays in the watch directory.
-- **Proxy:** the client still gets an error (`415` for an unmatched extension, `502` for a conversion failure) and keeps its original, so it can retry. The mobile app does so by itself each time it looks for things to back up. Upload failures to Immich (network errors, Immich `5xx`) are **not** saved in proxy mode: the client keeps the original and retries, so saving would only pile up copies.
-- **Retrying a file:** fix the cause (for example the task), then copy `original.file` into the watch directory under its original name from `metadata.json` (`original_filenames`, or `original_filename` of a failure; the extension selects the task), for example `cp undone/3f8a…c1/original.file /watch/IMG_1234.HEIC`. Once it is uploaded you can delete the hash folder. In proxy mode you can instead just retry the upload from the client.
-- **Permissions:** files are created by the container user (`appuser`, uid 1001) with the default umask. The directory must be writable by that user; this is checked at startup.
+- **Proxy mode:** the client gets an error (`415` when no task handles the type, `502` when the conversion failed) and still has its file. The mobile app tries again by itself each time it looks for things to back up. A failed upload *to Immich* (network trouble, an Immich error) is not saved here: the client still has the file and retries, so saving would only pile up copies.
+- **Watcher mode:** the file leaves the watch folder only once it has been uploaded or saved here. If saving fails too, for example because the disk is full, it stays in the watch folder.
+
+## What to do with a file
+
+Each failed file has its own folder:
+
+```text
+undone/
+  3f8a…c1/
+    original.file          the file, exactly as it arrived, with its own date
+    metadata.json          its name, where it came from, and what went wrong
+```
+
+1. **Find out why.** Open `metadata.json`: `failures` lists each attempt with the command that ran and the end of its output.
+2. **Fix the cause**, usually a task in your [tasks file](tasks.md).
+3. **Send it again.**
+   - Proxy mode: upload it again from the client.
+   - Watcher mode: copy `original.file` into the watch folder under its original name, which is in `metadata.json` (`original_filenames`). The name matters because its extension selects the task:
+
+     ```sh
+     cp undone/3f8a…c1/original.file /watch/IMG_1234.HEIC
+     ```
+4. **Delete the folder** once the file is in Immich.
+
+## Details
+
+**The folder name** is the SHA-1 checksum of the file (40 characters), the same checksum Immich keeps for every asset.
+
+- The same file failing again is not saved twice: `occurrences` goes up and the new failure is added to its `metadata.json`. This is what happens when a phone retries an upload.
+- A different file with the same name gets its own folder, so nothing is ever overwritten.
+- The file is always called `original.file`, with no extension, so an unusual or very long name can never cause trouble. The real name is in `metadata.json`.
+- There are no subfolders per mode, and the watch folder's tree is not copied. Where a file came from is in `metadata.json`.
+
+**`metadata.json`** contains:
+
+| Field | Meaning |
+|---|---|
+| `sha1`, `sha1_base64` | the checksum, as the folder name and as Immich's API shows it |
+| `size`, `original_mtime` | the file's size and its own date |
+| `first_failed_at`, `last_failed_at`, `occurrences` | when and how often it failed |
+| `original_filenames` | the names it arrived under (up to 100) |
+| `failures` | the 20 most recent failures |
+
+Each failure has `source` (`watcher` or `proxy`), `original_filename`, `original_dir` (the path below the watch folder, or the folder part of the name the proxy's client sent), `failed_at`, `stage` (`no_task`, `convert` or `upload`), `error`, and every task that was tried: command, exit code, duration, whether it timed out, and the last 4 KiB of its output. It holds no passwords, keys or request headers. The format is `"version": 3`.
+
+**Checking whether Immich already has a file.** Since the folder name is the checksum Immich uses, you can ask Immich for it. This only finds the file if these exact bytes reached Immich some other way, for example from a client that did not go through the proxy; a converted upload has another checksum.
+
+```sh
+curl -s -X POST "$IMMICH_URL/api/assets/bulk-upload-check" \
+  -H "x-api-key: $IMMICH_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"assets":[{"id":"x","checksum":"<folder name>"}]}'
+# {"results":[{"id":"x","action":"reject","reason":"duplicate","assetId":"…"}]} means Immich has it
+```
+
+**Several containers can share one undone folder**, for example a watcher and a proxy. They take turns through a lock file, `.io-undone.lock`, at its top: leave it there.
+
+**Unfinished saves.** A folder only appears once it is complete. Entries named `.io-undone-*` are saves that a crash interrupted; they are removed at the next start, once they are over an hour old.
+
+**Permissions.** Files are written by the container's user (id `1001`). The folder must be writable by it, which is checked at startup.
+
+**Folders from earlier versions** have 64-character names (a SHA-256 checksum, with `"sha256"` in their `metadata.json`). They are left exactly as they are. If the same file fails again it gets a new folder next to the old one. Retry or delete the old ones by hand.
