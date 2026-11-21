@@ -66,6 +66,6 @@ The app would normally not recognise its own photos once they are converted, and
 
 ## The next step
 
-- **Shrink the photos you already have:** [Library mode](library.md). You pick the photos in Immich by giving them a tag, and it replaces each one with its smaller version. It starts with a trial run that changes nothing and shows you what it would do.
+- **Shrink the photos you already have:** [Library mode](library.md). You pick the photos in Immich by giving them a tag, and it replaces each one with its smaller version, keeping the original in Immich's trash.
 - **Convert more, or differently** (smaller files with some loss, videos): [Tasks](tasks.md).
 - **Everything else:** the [documentation overview](../README.md#documentation).

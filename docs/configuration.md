@@ -63,10 +63,6 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 
 | Environment variable | Flag | Default | Description |
 |---|---|---|---|
-| `IO_LIBRARY_DRY_RUN` | `-library_dry_run` | `true` | Only report what would be converted and change nothing |
-| `IO_LIBRARY_INTERVAL` | `-library_interval` | `0` | Run again this long after each run ends, such as `24h`; `0` runs once and exits. A [duration](#durations) |
-| `IO_LIBRARY_DRY_RUN_SAMPLE` | `-library_dry_run_sample` | `20` | In a dry run, how many candidates are downloaded and converted (nothing is uploaded) to estimate the saving and show before/after previews; `0` turns it off |
-| `IO_LIBRARY_REPORT_FILE` | `-library_report_file` | `library-report.html` in the undone folder | Where the HTML report of each run is written |
 | `IO_LIBRARY_CONCURRENCY` | `-library_concurrency` | `1` | How many assets are replaced at the same time. Each one makes Immich generate thumbnails and analyse a new file |
 | `IO_LIBRARY_READY_TIMEOUT` | `-library_ready_timeout` | `10m` | How long to wait for Immich to finish reading a converted asset. A [duration](#durations) |
 

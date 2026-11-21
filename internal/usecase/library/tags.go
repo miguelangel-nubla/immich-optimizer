@@ -30,7 +30,7 @@ const (
 	TagReview = TagPrefix + "review"
 )
 
-// commandTags are created at the start of every run, so that they can be
+// commandTags are created when library mode starts, so that they can be
 // found in Immich before they were ever used. The status tags appear when
 // they are first set.
 var commandTags = []string{TagConvert, TagDone, TagRedo}
@@ -199,11 +199,6 @@ func (s *Service) markDone(ctx context.Context, me string, listed entity.Library
 		return &errSkip{reason: "it was already handled by the optimizer", converted: m}
 	}
 	t.item.Size = listed.Size
-	if s.cfg.DryRun {
-		t.WouldMarkDone++
-		t.item.Status, t.item.Reason = statusWouldMarkDone, "tagged "+TagDone
-		return s.record(Entry{Event: "would_mark_done", Asset: listed.ID, File: listed.OriginalFileName, OriginalBytes: listed.Size})
-	}
 	if err := s.writeKept(ctx, &listed, DoneNote); err != nil {
 		return err
 	}
@@ -236,11 +231,6 @@ func (s *Service) redo(ctx context.Context, me string, listed entity.LibraryAsse
 		return errPendingCopy
 	case !m.Kept:
 		return &errSkip{reason: "tagged " + TagRedo + ", but it is a conversion: its marker stays", converted: m}
-	}
-	if s.cfg.DryRun {
-		t.WouldForget++
-		t.item.Status, t.item.Reason = statusWouldForget, "tagged "+TagRedo
-		return s.record(Entry{Event: "would_remove_marker", Asset: listed.ID, File: listed.OriginalFileName, Detail: m.Note})
 	}
 	if err := s.api.DeleteMetadata(ctx, listed.ID, entity.MarkerKey); err != nil {
 		return fmt.Errorf("removing its marker: %w", err)

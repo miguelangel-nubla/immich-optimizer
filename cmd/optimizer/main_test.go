@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/proxy"
 	"io"
 	"net"
@@ -591,7 +589,7 @@ func TestLibraryModeConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.LibraryDryRun || cfg.LibraryReadyTimeout != 10*time.Minute {
+	if cfg.LibraryReadyTimeout != 10*time.Minute {
 		t.Errorf("library defaults: %+v", cfg)
 	}
 
@@ -760,46 +758,6 @@ func TestDurationSettings(t *testing.T) {
 	delete(env, "IO_TASKS_TIMEOUT")
 	t.Setenv("IO_TASKS_TIMEOUT", "")
 
-}
-
-func TestRepeatLibrary(t *testing.T) {
-	logger := customlogger.NewWithLevel(nil, "error", "")
-	// Without an interval: one run, and its error is the result.
-	n := 0
-	boom := errors.New("boom")
-	if err := repeatLibrary(context.Background(), 0, logger, func(context.Context) error { n++; return boom }); err != boom || n != 1 {
-		t.Fatalf("once: %v after %d run(s)", err, n)
-	}
-	// With one: it keeps going, also after a failed run, until it is stopped.
-	n = 0
-	ctx, cancel := context.WithCancel(context.Background())
-	err := repeatLibrary(ctx, time.Millisecond, logger, func(context.Context) error {
-		n++
-		if n == 3 {
-			cancel()
-		}
-		if n == 1 {
-			return boom
-		}
-		return nil
-	})
-	if n != 3 || !errors.Is(err, context.Canceled) && err != nil {
-		t.Fatalf("repeated: %v after %d run(s)", err, n)
-	}
-}
-
-func TestLibraryIntervalSetting(t *testing.T) {
-	base := []string{"-mode", "library", "-immich_url", "http://immich:2283", "-immich_api_key", "0123456789abcdef",
-		"-undone_dir", t.TempDir(), "-tasks_file", "../../config/lossless/tasks.yaml"}
-	ac, err := parseConfig(append(base, "-library_interval", "24h"))
-	if err != nil || ac.LibraryInterval != 24*time.Hour {
-		t.Fatalf("%+v, %v", ac, err)
-	}
-	for _, bad := range [][]string{{"-library_interval", "-1h"}, {"-library_interval", "90"}, {"-library_taken_before", "2020-01-01"}, {"-library_older_than", "24h"}, {"-library_limit", "5"}} {
-		if _, err := parseConfig(append(append([]string(nil), base...), bad...)); err == nil {
-			t.Errorf("%v was accepted", bad)
-		}
-	}
 }
 
 func TestHealthCheck(t *testing.T) {

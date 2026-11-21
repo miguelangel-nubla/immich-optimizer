@@ -499,7 +499,7 @@ func TestAndroidAppBackup(t *testing.T) {
 		})
 
 		logDir := sharedDir(t)
-		code, out, log := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+		code, out, log := runLibrary(t, u, logDir, nil)
 		if code != 0 {
 			t.Fatalf("library run exited %d:\n%s", code, out)
 		}

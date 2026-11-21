@@ -61,3 +61,24 @@ type LibraryAPI interface {
 	// created itself, to roll a failed replacement back.
 	Delete(ctx context.Context, ids []string) error
 }
+
+// LibraryEvents delivers Immich's live events for the API key's user.
+type LibraryEvents interface {
+	// Listen connects, delivers events to h and reconnects after any
+	// failure, until ctx ends.
+	Listen(ctx context.Context, h LibraryEventHandlers)
+}
+
+// LibraryEventHandlers are called from Listen's goroutine; they must not
+// block.
+type LibraryEventHandlers struct {
+	// Connected is called on every (re)connection: events may have been
+	// missed while there was none.
+	Connected func()
+	// AssetUpdated is called when an asset changed, with the values of its
+	// tags ("parent/child").
+	AssetUpdated func(assetID string, tags []string)
+	// Uploaded is called for a new asset, with its SHA-1 as Immich gives
+	// it (base64).
+	Uploaded func(assetID, checksum string)
+}

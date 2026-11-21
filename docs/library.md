@@ -9,33 +9,23 @@ services:
     environment:
       - IO_MODE=library
       - IO_IMMICH_URL=http://immich-server:2283
-      - IO_IMMICH_API_KEY=your-api-key
-      # - IO_LIBRARY_DRY_RUN=false      # the default is a dry run that changes nothing
+      - IO_IMMICH_API_KEY=your-api-key   # a key with all permissions
     volumes:
-      - ./undone:/undone                # the log is written here
-    restart: "no"                       # it makes one pass and exits (or runs on a schedule, see below)
+      - ./undone:/undone                # the audit log is written here
+    restart: unless-stopped
 ```
 
-Everything it changes can be undone from Immich's trash, and nothing is changed until you say so: **it starts as a dry run.** Without `IO_LIBRARY_DRY_RUN=false` it changes nothing and writes a [report](#the-report) of what it would do.
+It keeps running and waits. **Nothing happens until you tag something** in Immich: tag a few photos `immich-optimizer/convert` and they are converted within seconds. Everything it replaces can be undone from Immich's trash.
 
-## The dry run
+**The API key** needs every permission library mode uses: reading, downloading and uploading assets, changing them and their metadata, tags, albums and memories. The simplest is a key created with all permissions. A key acts as its owner, so library mode works on that user's photos only: for several users, run one library container per user, each with their own key.
 
-A dry run goes through the whole library and decides, for every asset, whether it would be converted and, if not, why. It also says what it would do with each [tag](#choosing-what-to-convert). It then **downloads and converts a small random sample** of the candidates (20 by default, [`IO_LIBRARY_DRY_RUN_SAMPLE`](configuration.md#library-mode)) to find out what a real run would do: how much smaller the files get, whether any fail, and what the results look like. The converted sample is thrown away. **Nothing is uploaded, marked or moved to the trash, and no tag is removed.** The one change a dry run makes: it creates the three tags you use ([below](#choosing-what-to-convert)) if they do not exist yet, so that you can find them in Immich.
+**To try it**, tag three or four photos and look at the result in Immich. Each converted photo is a new asset, and its original is in the trash, where you can compare the two or restore the original.
 
-Without the sample (`IO_LIBRARY_DRY_RUN_SAMPLE=0`) a dry run downloads nothing and can only say how many assets are candidates.
+## How it knows what to do
 
-## The report
+Library mode keeps a live connection to Immich, the same one the web and mobile apps use. Immich tells it within a second or two when an asset is tagged, and it acts on it. Every 15 minutes it also looks for tagged assets by itself, in case a message was missed.
 
-Every run, dry or real, writes `library-report.html` to the undone folder ([`IO_LIBRARY_REPORT_FILE`](configuration.md#library-mode)). It is a single file with no outside dependencies: copy it to your computer and open it in a browser.
-
-- **Totals:** assets looked at, would be converted (or replaced), kept, skipped and failed.
-- **Estimated saving** (dry run): the sample's result applied to all candidates, each file type by its own figure. With a small sample it is a rough number.
-- **By outcome and by file type:** how many assets and how many bytes are skipped for which reason. Select a row to filter the list.
-- **Converted sample** (dry run): each sampled file with a preview of the original next to a preview of the conversion, both sizes and the task used.
-- **Every asset** in a table you can search, filter, sort and page through, with the reason it was skipped or the error it failed with.
-- **Links:** each file name opens the asset in Immich. Set [`IO_IMMICH_PUBLIC_URL`](configuration.md#immich) to the address you use in your browser, or type it into the box on the page. For a replaced asset the link goes to the new asset; its original is in Immich's trash.
-
-The report is rewritten by each run and shows that run only. The [audit log](audit-log.md) is the permanent record.
+When it starts, it settles anything an earlier run left unfinished (a replacement interrupted by a restart, for example) and then acts on whatever is tagged. To know what may be unfinished, and which originals were converted into what, it reads its [audit log](audit-log.md) instead of every asset in Immich. The log is only used to know where to look: before acting, the optimizer always checks the asset's [marker](marker.md) in Immich. If the log is missing or empty, it reads the whole library once instead, which takes a while on a large library.
 
 ## What happens to each asset
 
@@ -116,7 +106,7 @@ You choose in Immich, with tags. Library mode creates them the first time it run
 | `immich-optimizer/convert` | you | converts the asset, then removes the tag |
 | `immich-optimizer/done` | you | marks the asset as handled, without touching it, and removes the tag. It is never converted, also if it is tagged `convert` later |
 | `immich-optimizer/redo` | you | removes a `done` mark (or the mark of an asset that was kept because converting it did not help), and removes the tag. Tag it `convert` too to have it converted in the same run |
-| `immich-optimizer/failed` | the optimizer | the conversion failed: the reason is in the [report](#the-report) and the [audit log](audit-log.md). Tag it `convert` again to try once more |
+| `immich-optimizer/failed` | the optimizer | the conversion failed: the reason is in the [audit log](audit-log.md) and the optimizer's own log. Tag it `convert` again to try once more |
 | `immich-optimizer/review` | the optimizer | a [second copy](#second-copies-of-converted-originals) was left alone because it has something of its own: merge the two by hand |
 
 **Tagging by hand.** In Immich, select the photos and videos, then choose **Tag** in the selection menu. "Select all" works in an album, in search results and on a whole day or month of the timeline, so:
@@ -131,7 +121,7 @@ You choose in Immich, with tags. Library mode creates them the first time it run
 
 - **What a tag asks for is done once.** The tag is removed as soon as it is settled: converted, kept, marked, or skipped for good (no task handles its type, for example). It stays only when the reason may go away by itself, such as a file Immich has not finished reading: a later run tries again.
 - **`done` wins over `convert`.** An asset with both is marked done.
-- **Tags are settled at the end of a run.** A dry run, or a run that is stopped, leaves them as they are.
+- **Tags are settled once a batch is done.** A batch that is stopped (the container is restarted, for example) leaves them as they are, and they are acted on again after the restart.
 - **The optimizer's tags are never carried over** to a converted copy, and are not counted as a difference when the copy is compared with its original. Your own tags are carried over as usual.
 - **Cleaning up does not depend on tags.** [Second copies](#second-copies-of-converted-originals) are moved to the trash and replacements an earlier run left unfinished are completed, all over the library.
 
@@ -143,8 +133,8 @@ Library mode recognises such a file without converting it again. Every converted
 
 - **It is moved to the trash**, and the audit log gets a `second_copy_trashed` entry that names both assets. The converted asset is not touched.
 - **The optimizer keeps no list of its own.** It recognises second copies from the markers in Immich, afresh on every run.
-- **It is left alone when it has something the converted asset lacks**: it is a favorite, has a description, a rating, tags or edits, or is in an album, stack or shared link the converted asset is not in. It is tagged `immich-optimizer/review`, and the report says which, so you can merge the two by hand.
-- **A dry run** only reports it (`would_trash_second_copy`).
+- **It is left alone when it has something the converted asset lacks**: it is a favorite, has a description, a rating, tags or edits, or is in an album, stack or shared link the converted asset is not in. It is tagged `immich-optimizer/review`, and the audit log says what it has, so you can merge the two by hand.
+- **It happens within seconds of the upload.** Immich announces every upload with its checksum, and library mode compares it with the originals its audit log knows. Nothing else is read.
 
 ## Phones
 
@@ -160,20 +150,6 @@ The official mobile app decides what to back up by checksum: a photo counts as b
 
 Nothing is lost, but such a photo saves no space: its original is in the trash most of the time.
 
-## Running it on a schedule
-
-`IO_LIBRARY_INTERVAL` keeps library mode running: one run, then another that long after it ends, such as `1h`. Use it with `restart: unless-stopped` instead of `restart: "no"`. Together with a workflow that tags new uploads, this converts new assets on its own.
-
-```yaml
-    environment:
-      - IO_MODE=library
-      - IO_LIBRARY_DRY_RUN=false
-      - IO_LIBRARY_INTERVAL=1h
-    restart: unless-stopped
-```
-
-Durations are written as hours (`h`), minutes (`m`) and seconds (`s`). A run that fails does not end the schedule: the next one starts after the interval and finishes whatever was left.
-
 ## Live photos, motion photos and edits
 
 - **Live photos (Apple) and motion photos (Android)** are a photo paired with a short video. In Immich the video is an asset of its own, hidden behind the photo. Library mode converts the photo and pairs the copy with that same video. The video itself is not converted.
@@ -184,7 +160,7 @@ Durations are written as hours (`h`), minutes (`m`) and seconds (`s`). A run tha
 - **A phone that still has the photos uploads them again** once the originals have left Immich's trash, unless it reaches Immich through the proxy. See [Phones](#phones).
 - **Android: turn off "Sync remote deletions" in the Immich app** (Settings → Advanced, marked experimental, off by default) before a real run. With it on, the app deletes a photo from the phone when the same photo is moved to the trash on the server, which is exactly what library mode does with each original.
 - **Space is freed when Immich empties its trash**, not at once. Until then the original also counts against a user's storage quota.
-- It waits for Immich to finish reading each new file, so a large library takes a long time. By default it works on one asset at a time; [`IO_LIBRARY_CONCURRENCY`](configuration.md#library-mode) raises that, at the cost of more load on Immich. A run can be stopped at any point and started again: it continues where it left off, and finishes or undoes whatever was in progress.
+- It waits for Immich to finish reading each new file, so a large library takes a long time. By default it works on one asset at a time; [`IO_LIBRARY_CONCURRENCY`](configuration.md#library-mode) raises that, at the cost of more load on Immich. It can be stopped at any point: when it starts again it finishes or undoes whatever was in progress, and carries on with what is still tagged.
 
 Every step is written to the [audit log](audit-log.md).
 

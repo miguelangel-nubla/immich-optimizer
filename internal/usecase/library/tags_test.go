@@ -62,11 +62,10 @@ func TestNothingTaggedConvertsNothing(t *testing.T) {
 	}
 }
 
-// The command tags exist from the first run on, even a dry run, so that they
-// can be found in Immich. The status tags only appear once they are needed.
+// The command tags exist from the first run on, so that they can be found
+// in Immich. The status tags only appear once they are needed.
 func TestCommandTagsAreCreated(t *testing.T) {
 	h := tagged(t)
-	h.cfg.DryRun = true
 	h.im.add("IMG_1.jpg", photo(1))
 	if _, err := h.run(); err != nil {
 		t.Fatal(err)
@@ -96,15 +95,7 @@ func TestDoneMarksWithoutConverting(t *testing.T) {
 	h.im.tag(b, TagDone)
 	h.im.tag(b, TagConvert) // done wins
 
-	// A dry run only says so.
-	h.cfg.DryRun = true
 	sum, err := h.run()
-	if err != nil || sum.WouldMarkDone != 2 || sum.MarkedDone != 0 || h.marker(a.ID) != nil || !h.im.hasTag(a, TagDone) {
-		t.Fatalf("dry run: %+v, %v", sum, err)
-	}
-	h.cfg.DryRun = false
-
-	sum, err = h.run()
 	if err != nil || sum.MarkedDone != 2 || sum.Replaced != 0 {
 		t.Fatalf("%+v, %v", sum, err)
 	}
@@ -121,7 +112,7 @@ func TestDoneMarksWithoutConverting(t *testing.T) {
 		t.Errorf("%d uploads: done converts nothing", n)
 	}
 	ev := strings.Join(h.events(), " ")
-	if !strings.Contains(ev, "would_mark_done") || !strings.Contains(ev, "marked_done") {
+	if !strings.Contains(ev, "marked_done") {
 		t.Errorf("events: %s", ev)
 	}
 
@@ -156,16 +147,8 @@ func TestRedoRemovesADoneMarkAndAllowsConverting(t *testing.T) {
 
 	h.im.tag(a, TagRedo)
 	h.im.tag(a, TagConvert)
-	// A dry run says it would remove the mark, and removes nothing.
-	h.cfg.DryRun = true
-	sum, err := h.run()
-	if err != nil || sum.WouldForget != 1 || h.marker(a.ID) == nil || !h.im.hasTag(a, TagRedo) {
-		t.Fatalf("dry run: %+v, %v", sum, err)
-	}
-	h.cfg.DryRun = false
-
 	// The mark goes, and the same run converts it.
-	sum, err = h.run()
+	sum, err := h.run()
 	if err != nil || sum.Forgotten != 1 || sum.Replaced != 1 || !a.IsTrashed {
 		t.Fatalf("%+v, %v", sum, err)
 	}
@@ -276,18 +259,6 @@ func TestTaggedTypeWithoutATaskLosesTheTag(t *testing.T) {
 	h.im.tag(a, TagConvert)
 	if sum, err := h.run(); err != nil || sum.Skipped != 1 || h.im.hasTag(a, TagConvert) {
 		t.Fatalf("%+v, %v, tags %v", sum, err, a.TagIDs)
-	}
-}
-
-// Tags are only settled at the end of a real run. A dry run leaves them.
-func TestDryRunLeavesTheTags(t *testing.T) {
-	h := tagged(t)
-	a := h.im.add("IMG_1.jpg", photo(1))
-	h.im.tag(a, TagConvert)
-	h.cfg.DryRun = true
-	sum, err := h.run()
-	if err != nil || sum.WouldReplace != 1 || !h.im.hasTag(a, TagConvert) {
-		t.Fatalf("%+v, %v", sum, err)
 	}
 }
 

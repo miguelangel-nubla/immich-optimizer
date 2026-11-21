@@ -279,12 +279,6 @@ func validateAppConfig(ac *entity.AppConfig) error {
 		if len(strings.TrimSpace(ac.ImmichAPIKey)) < 10 {
 			return fmt.Errorf("library mode needs an Immich API key (-immich_api_key)")
 		}
-		if ac.LibraryDryRunSample < 0 {
-			return fmt.Errorf("library_dry_run_sample must not be negative")
-		}
-		if ac.LibraryInterval < 0 {
-			return fmt.Errorf("library_interval must not be negative")
-		}
 		if ac.LibraryConcurrency < 1 {
 			return fmt.Errorf("library_concurrency must be 1 or more")
 		}
@@ -592,73 +586,52 @@ func run(args []string) error {
 		}
 	}
 
-	// Library mode makes one pass over the existing library, or one every
-	// library_interval. When it is the only mode, the process ends with it.
+	// Library mode runs until the process stops: it reacts to tags in
+	// Immich. It only ends by itself on an error it cannot go on after.
 	var libraryDone chan error
 	libraryCtx, cancelLibrary := context.WithCancel(context.Background())
 	defer cancelLibrary()
 	if hasMode(config.Mode, "library") {
-		reportFile := config.LibraryReportFile
-		if reportFile == "" {
-			reportFile = filepath.Join(config.UndoneDir, "library-report.html")
-		}
-		publicURL := config.ImmichPublicURL
-		if publicURL == "" {
-			publicURL = config.ImmichURL
-		}
 		svc := library.New(library.Config{
-			DryRun:        config.LibraryDryRun,
 			ReadyTimeout:  config.LibraryReadyTimeout,
 			Version:       version,
 			ConfigSHA256:  configSHA256,
 			Concurrency:   config.LibraryConcurrency,
-			Sample:        config.LibraryDryRunSample,
-			ReportFile:    reportFile,
-			PublicURL:     publicURL,
-			Preview:       mediacheck.New().Preview,
 			IsMotionPhoto: motionphoto.IsMotionJPEG,
 		}, immich.NewLibraryClient(config.ImmichURL, config.ImmichAPIKey, httpClient), engine, auditLog, logger)
-		if config.LibraryDryRun {
-			logger.Printf("Library mode: DRY RUN, nothing will be changed (set IO_LIBRARY_DRY_RUN=false to convert)")
-		} else {
-			logger.Printf("Library mode: converting existing assets; originals go to Immich's trash")
-		}
+		events := immich.NewEventClient(config.ImmichURL, config.ImmichAPIKey)
+		events.Errorf = logger.Warnf
+		logger.Printf("Library mode: converting what is tagged %s in Immich; originals go to Immich's trash", library.TagConvert)
 		libraryDone = make(chan error, 1)
-		go func() {
-			libraryDone <- repeatLibrary(libraryCtx, config.LibraryInterval, logger, func(ctx context.Context) error {
-				_, err := svc.Run(ctx)
-				return err
-			})
-		}()
+		go func() { libraryDone <- svc.Serve(libraryCtx, events) }()
 	}
 
-	// Wait for interrupt, or for the library pass when nothing else runs.
+	// Wait for interrupt, or for library mode to fail.
 	select {
 	case <-sigChan:
 	case err := <-libraryDone:
-		if !runWatcher && !runProxy {
-			if err != nil && !errors.Is(err, context.Canceled) {
+		libraryDone = nil
+		if err != nil {
+			if !runWatcher && !runProxy {
 				return fmt.Errorf("library mode: %w", err)
 			}
-			return nil
-		}
-		if err != nil {
 			logger.Errorf("Library mode stopped: %v", err)
 		}
-		<-sigChan
-		libraryDone = nil
+		if runWatcher || runProxy {
+			<-sigChan
+		}
 	}
 	cancelLibrary()
 	if libraryDone != nil {
 		// Let the asset in flight be rolled back cleanly. If this times out
-		// the next run finds the unfinished copy and resolves it.
+		// the next start finds the unfinished copy and resolves it.
 		select {
 		case err := <-libraryDone:
-			if err != nil && !errors.Is(err, context.Canceled) {
+			if err != nil {
 				logger.Errorf("Library mode stopped: %v", err)
 			}
 		case <-time.After(config.ShutdownTimeout):
-			logger.Warnf("Library mode did not stop in time; the next run will resolve the asset that was in progress")
+			logger.Warnf("Library mode did not stop in time; the next start will resolve the asset that was in progress")
 		}
 	}
 
@@ -694,28 +667,6 @@ func healthCheck(config *entity.AppConfig) error {
 		return fmt.Errorf("the proxy answered %d", resp.StatusCode)
 	}
 	return nil
-}
-
-// repeatLibrary runs one library pass, and with an interval another one that
-// long after each ends, until ctx is done. A pass that fails does not end the
-// schedule: it changed nothing it could not account for, and the next one
-// picks up whatever it left unfinished.
-func repeatLibrary(ctx context.Context, every time.Duration, logger *customlogger.Logger, run func(context.Context) error) error {
-	for {
-		err := run(ctx)
-		if every <= 0 || ctx.Err() != nil {
-			return err
-		}
-		if err != nil {
-			logger.Errorf("Library mode: the run failed: %v", err)
-		}
-		logger.Printf("Library mode: next run in %s", every)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(every):
-		}
-	}
 }
 
 // drainer is implemented by sources that can finish running work on shutdown.

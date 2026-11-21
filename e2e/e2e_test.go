@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -484,13 +485,14 @@ func (u *user) tags(t *testing.T, id string) []string {
 	return out
 }
 
-// runLibrary runs one library pass and returns the container's exit code,
-// its output and the parsed log file.
+// runLibrary starts library mode, waits until it has done what it does at
+// startup (settle what is unfinished, act on what is tagged), stops it, and
+// returns its exit code, its output and the parsed audit log.
 //
 // Library mode converts only what is tagged immich-optimizer/convert. Unless
-// env has "E2E_TAGS": "own", every asset the user has is tagged so before the
-// run, which is what the tests about converting itself want; the test of the
-// tags tags its assets itself.
+// env has "E2E_TAGS": "own", every asset the user has is tagged so before
+// starting, which is what the tests about converting itself want; the test of
+// the tags tags its assets itself.
 func runLibrary(t *testing.T, u *user, logDir string, env map[string]string, mounts ...string) (int, string, []map[string]any) {
 	t.Helper()
 	all := map[string]string{"IO_MODE": "library", "IO_IMMICH_API_KEY": u.keyS, "IO_LIBRARY_READY_TIMEOUT": "2m"}
@@ -507,17 +509,45 @@ func runLibrary(t *testing.T, u *user, logDir string, env map[string]string, mou
 		}
 	}
 	delete(all, "E2E_TAGS")
-	args := append([]string{"run", "--rm"}, dockerArgs(all, append(mounts, logDir+":/undone")...)...)
-	out, err := exec.Command("docker", append(args, image)...).CombinedOutput()
-	code := 0
-	if err != nil {
-		ee, ok := err.(*exec.ExitError)
-		if !ok {
-			t.Fatalf("docker run: %v\n%s", err, out)
-		}
-		code = ee.ExitCode()
+	name := "io-e2e-lib-" + randomName()
+	args := append([]string{"run", "-d", "--name", name}, dockerArgs(all, append(mounts, logDir+":/undone")...)...)
+	if out, err := exec.Command("docker", append(args, image)...).CombinedOutput(); err != nil {
+		t.Fatalf("docker run: %v\n%s", err, out)
 	}
+	defer func() { _ = exec.Command("docker", "rm", "-f", name).Run() }()
+	waitLibraryReady(t, name, 10*time.Minute)
+	_ = exec.Command("docker", "stop", "-t", "60", name).Run()
+	codeOut, err := exec.Command("docker", "inspect", "-f", "{{.State.ExitCode}}", name).Output()
+	if err != nil {
+		t.Fatalf("docker inspect: %v", err)
+	}
+	code, _ := strconv.Atoi(strings.TrimSpace(string(codeOut)))
+	out, _ := exec.Command("docker", "logs", name).CombinedOutput()
 	return code, string(out), readLog(t, filepath.Join(logDir, "audit.log"))
+}
+
+// libraryReady is what library mode logs once it has done its startup work
+// and waits for tags.
+const libraryReady = "Library: waiting for tags"
+
+// waitLibraryReady waits until the library container has done its startup
+// work, or has stopped.
+func waitLibraryReady(t *testing.T, name string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		out, _ := exec.Command("docker", "logs", name).CombinedOutput()
+		if strings.Contains(string(out), libraryReady) {
+			return
+		}
+		running, _ := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", name).Output()
+		if strings.TrimSpace(string(running)) != "true" {
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	out, _ := exec.Command("docker", "logs", "--tail", "40", name).CombinedOutput()
+	t.Fatalf("library mode did not finish starting in %s:\n%s", timeout, out)
 }
 
 func readLog(t *testing.T, path string) []map[string]any {

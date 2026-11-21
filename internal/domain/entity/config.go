@@ -51,13 +51,9 @@ type AppConfig struct {
 	UndoneUnmatched  bool
 	AuditLogFile     string
 	// Library mode.
-	LibraryDryRun         bool
-	LibraryDryRunSample   int
-	LibraryReportFile     string
 	ImmichPublicURL       string
 	LibraryConcurrency    int
 	LibraryReadyTimeout   time.Duration
-	LibraryInterval       time.Duration
 	ConfigFile            string
 	MaxConcurrentRequests int
 	ImmichTimeout         time.Duration

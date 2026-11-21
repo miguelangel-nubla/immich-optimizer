@@ -40,8 +40,6 @@ import (
 )
 
 type Config struct {
-	// DryRun reports what would be converted without changing anything.
-	DryRun bool
 	// ReadyTimeout is how long to wait for Immich to finish reading a newly
 	// uploaded asset before giving up on it.
 	ReadyTimeout time.Duration
@@ -53,17 +51,6 @@ type Config struct {
 	ConfigSHA256 string
 	// Concurrency is how many assets are worked on at the same time.
 	Concurrency int
-	// ReportFile, when set, is where the HTML report of the run is written.
-	ReportFile string
-	// PublicURL is Immich's address as opened in a browser, for the report's
-	// links.
-	PublicURL string
-	// Sample is how many candidates a dry run converts (without uploading
-	// anything) to estimate the saving; 0 disables it.
-	Sample int
-	// Preview renders a small JPEG of a photo or video for the report.
-	// Optional.
-	Preview func(ctx context.Context, path string) ([]byte, error)
 	// IsMotionPhoto reports whether a downloaded original is a photo with an
 	// embedded video. Optional.
 	IsMotionPhoto func(path string) bool
@@ -81,28 +68,22 @@ type tally struct {
 
 // Summary counts what a run did.
 type Summary struct {
-	Seen         int `json:"seen"`
-	Replaced     int `json:"replaced"`
-	WouldReplace int `json:"would_replace,omitempty"`
-	Kept         int `json:"kept"`
-	Skipped      int `json:"skipped"`
-	Failed       int `json:"failed"`
-	Finalized    int `json:"finalized,omitempty"`
-	RolledBack   int `json:"rolled_back,omitempty"`
+	Seen       int `json:"seen"`
+	Replaced   int `json:"replaced"`
+	Kept       int `json:"kept"`
+	Skipped    int `json:"skipped"`
+	Failed     int `json:"failed"`
+	Finalized  int `json:"finalized,omitempty"`
+	RolledBack int `json:"rolled_back,omitempty"`
 	// SecondCopies are originals that were uploaded again after their
-	// conversion and were moved to the trash; WouldTrash counts them in a
-	// dry run.
+	// conversion and were moved to the trash.
 	SecondCopies int `json:"second_copies,omitempty"`
-	WouldTrash   int `json:"would_trash,omitempty"`
 	// MarkedDone are assets tagged "done" that got their marker, and
-	// Forgotten those tagged "redo" whose marker was removed; the Would
-	// fields count them in a dry run.
-	MarkedDone    int   `json:"marked_done,omitempty"`
-	WouldMarkDone int   `json:"would_mark_done,omitempty"`
-	Forgotten     int   `json:"forgotten,omitempty"`
-	WouldForget   int   `json:"would_forget,omitempty"`
-	BytesBefore   int64 `json:"bytes_before"`
-	BytesAfter    int64 `json:"bytes_after"`
+	// Forgotten those tagged "redo" whose marker was removed.
+	MarkedDone  int   `json:"marked_done,omitempty"`
+	Forgotten   int   `json:"forgotten,omitempty"`
+	BytesBefore int64 `json:"bytes_before"`
+	BytesAfter  int64 `json:"bytes_after"`
 }
 
 type Service struct {
@@ -111,7 +92,9 @@ type Service struct {
 	api  port.LibraryAPI
 	base port.LibraryAPI
 	// own are the ids of the optimizer's tags, during a run.
-	own     map[string]bool
+	own map[string]bool
+	// idx is what the audit log knows, while Serve runs.
+	idx     *logIndex
 	conv    port.CheckingConverter
 	log     *logger.Logger
 	journal *audit.Log
@@ -146,18 +129,14 @@ func (s *Service) lockStack(id string) func() {
 func (sum *Summary) add(o Summary) {
 	sum.Seen += o.Seen
 	sum.Replaced += o.Replaced
-	sum.WouldReplace += o.WouldReplace
 	sum.Kept += o.Kept
 	sum.Skipped += o.Skipped
 	sum.Failed += o.Failed
 	sum.Finalized += o.Finalized
 	sum.RolledBack += o.RolledBack
 	sum.SecondCopies += o.SecondCopies
-	sum.WouldTrash += o.WouldTrash
 	sum.MarkedDone += o.MarkedDone
-	sum.WouldMarkDone += o.WouldMarkDone
 	sum.Forgotten += o.Forgotten
-	sum.WouldForget += o.WouldForget
 	sum.BytesBefore += o.BytesBefore
 	sum.BytesAfter += o.BytesAfter
 }
@@ -218,7 +197,6 @@ func (s *Service) infof(format string, args ...any) {
 
 // record writes a log entry; a log that cannot be written stops the run.
 func (s *Service) record(e Entry) error {
-	e.DryRun = s.cfg.DryRun
 	e.Source = string(entity.SourceLibrary)
 	if err := s.journal.Write(e); err != nil {
 		return &errFatal{err}
@@ -227,49 +205,60 @@ func (s *Service) record(e Entry) error {
 }
 
 // Run makes one pass over the library.
+//
+// It is a full read: every asset's metadata is read, which finds whatever
+// earlier runs left unfinished and every converted original. Library mode
+// does this when the audit log has nothing to go by; otherwise it only looks
+// at what the tags, the events and the log point at (see Serve).
 func (s *Service) Run(ctx context.Context) (Summary, error) {
-	var sum Summary
-	started := time.Now()
 	me, err := s.api.CurrentUserID(ctx)
 	if err != nil {
-		return sum, fmt.Errorf("identifying the API key's user: %w", err)
+		return Summary{}, fmt.Errorf("identifying the API key's user: %w", err)
 	}
-	if err := s.record(Entry{Event: "run_started", Detail: "user " + me}); err != nil {
-		return sum, err
-	}
-	// The tags say what to do. The optimizer's own tags are then hidden from
-	// every read of an asset for the rest of the run.
 	rt, err := s.loadTags(ctx)
 	if err != nil {
-		return sum, err
+		return Summary{}, err
 	}
-	s.api, s.own = withoutOwnTags{s.base, rt.own}, rt.own
-	defer func() { s.api, s.own = s.base, nil }()
-	if len(rt.convert) == 0 {
-		s.infof("Library: no asset is tagged %s: nothing will be converted. Tag assets in Immich to convert them", TagConvert)
-	}
-
 	// List everything first: replacing assets while paging through them
 	// would shift the pages.
 	var assets []entity.LibraryAsset
 	for page := 1; page != 0; {
-		items, next, err := s.api.ListAssets(ctx, page)
+		items, next, err := s.base.ListAssets(ctx, page)
 		if err != nil {
-			return sum, fmt.Errorf("listing assets: %w", err)
+			return Summary{}, fmt.Errorf("listing assets: %w", err)
 		}
 		assets = append(assets, items...)
 		page = next
 	}
-	s.infof("Library: %d asset(s) listed%s", len(assets), map[bool]string{true: " (dry run: nothing will be changed)"}[s.cfg.DryRun])
+	s.infof("Library: full read of the library: %d asset(s)", len(assets))
+	sum, err := s.pass(ctx, me, rt, assets)
+	if err == nil {
+		err = s.record(Entry{Event: eventFullRead})
+	}
+	return sum, err
+}
+
+// pass works on the given assets: it acts on their tags, settles unfinished
+// replacements, trashes second copies and converts what is tagged.
+func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []entity.LibraryAsset) (Summary, error) {
+	var sum Summary
+	if err := s.record(Entry{Event: "run_started", Detail: "user " + me}); err != nil {
+		return sum, err
+	}
+	// The optimizer's own tags are hidden from every read of an asset for
+	// the rest of the pass.
+	s.api, s.own = withoutOwnTags{s.base, rt.own}, rt.own
+	defer func() { s.api, s.own = s.base, nil }()
+	for i := range assets {
+		assets[i].TagIDs = withoutOwnTags{own: rt.own}.strip(assets[i].TagIDs)
+	}
+	var err error
 
 	// Memories ("on this day") list their assets by id, so a replaced
 	// asset has to be put into the memories of its original. Read once: a
 	// real run needs it for every replacement.
-	s.memories = nil
-	if !s.cfg.DryRun {
-		if s.memories, err = s.api.MemoryIDs(ctx); err != nil {
-			return sum, fmt.Errorf("listing memories: %w", err)
-		}
+	if s.memories, err = s.api.MemoryIDs(ctx); err != nil {
+		return sum, fmt.Errorf("listing memories: %w", err)
 	}
 
 	// outcome folds one asset's result into the summary. It returns a fatal
@@ -340,6 +329,8 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	var candidates []candidate
 	var pendings []pendingCopy
 	// convertedFrom maps the checksum of an original to the asset it was
+	// converted into, from the markers read in this pass (the audit log
+	// knows more, see below).
 	// converted into, from the markers read in this pass. Nothing is stored:
 	// it is built again on every run.
 	convertedFrom := map[string]string{}
@@ -359,11 +350,6 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 			}
 		case rt.redo[a.ID]:
 			err = s.redo(ctx, me, a, t)
-			if err == nil && t.item.Status == statusWouldForget {
-				// A dry run removed nothing: the asset stays as it is.
-				outcome(a, t, nil)
-				return
-			}
 			if err == nil {
 				meta, m, err = s.classify(ctx, me, a)
 			}
@@ -418,6 +404,10 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 			break
 		}
 		convertedID, second := convertedFrom[strings.ToLower(c.asset.Checksum)]
+		if !second && s.idx != nil {
+			convertedID, second = s.idx.convertedFrom(c.asset.Checksum)
+			second = second && convertedID != c.asset.ID
+		}
 		if second && c.asset.Checksum != "" {
 			t := &tally{}
 			outcome(c.asset, t, s.secondCopy(ctx, c.asset, convertedID, t))
@@ -440,28 +430,24 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 		t := &tally{}
 		outcome(c.asset, t, s.work(ctx, c.asset, c.items, t))
 	})
-	// 5. A dry run converts a sample, without uploading anything, to say
-	// what a real run would save.
-	var estimate *Estimate
-	if s.cfg.DryRun && s.cfg.Sample > 0 && !stopped() {
-		estimate = s.sample(ctx, items)
-	}
-	// 6. The tags of what was acted on are settled.
-	if !s.cfg.DryRun && fatalErr == nil && ctx.Err() == nil {
+	// 5. The tags of what was acted on are settled.
+	if fatalErr == nil && ctx.Err() == nil {
 		if err := s.settleTags(ctx, rt, items); err != nil && s.log != nil {
 			s.log.Warnf("Library: %v; the next run tries again", err)
 		}
 	}
-	s.writeReport(me, started, sum, items, estimate)
 	if fatalErr != nil {
 		return sum, fatalErr
 	}
 
+	if s.idx != nil {
+		s.idx.remember(convertedFrom)
+	}
 	if err := s.record(Entry{Event: "run_finished", Summary: &sum}); err != nil {
 		return sum, err
 	}
-	s.infof("Library: run finished: %d seen, %d replaced, %d would be replaced, %d kept, %d marked done, %d second copies trashed, %d skipped, %d failed (%d -> %d bytes)",
-		sum.Seen, sum.Replaced, sum.WouldReplace, sum.Kept, sum.MarkedDone+sum.WouldMarkDone, sum.SecondCopies, sum.Skipped, sum.Failed, sum.BytesBefore, sum.BytesAfter)
+	s.infof("Library: pass finished: %d seen, %d replaced, %d kept, %d marked done, %d second copies trashed, %d skipped, %d failed (%d -> %d bytes)",
+		sum.Seen, sum.Replaced, sum.Kept, sum.MarkedDone, sum.SecondCopies, sum.Skipped, sum.Failed, sum.BytesBefore, sum.BytesAfter)
 	return sum, ctx.Err()
 }
 
@@ -608,12 +594,6 @@ func (s *Service) secondCopy(ctx context.Context, listed entity.LibraryAsset, co
 
 	t.item.Size = old.Size
 	t.item.Reason = "a second copy of an original that is already converted"
-	if s.cfg.DryRun {
-		t.WouldTrash++
-		t.item.Status = statusWouldTrash
-		s.infof("Library (dry run): would move %s (%s) to the trash: its conversion %s is already there", old.OriginalFileName, old.ID, convertedID)
-		return s.record(Entry{Event: "would_trash_second_copy", Asset: old.ID, File: old.OriginalFileName, NewAsset: convertedID, OriginalBytes: old.Size, OriginalSHA1: old.Checksum})
-	}
 	if err := s.api.Trash(ctx, []string{old.ID}); err != nil {
 		return fmt.Errorf("moving it to the trash: %w", err)
 	}
@@ -653,13 +633,6 @@ func (s *Service) work(ctx context.Context, listed entity.LibraryAsset, items []
 		}
 	}
 
-	if s.cfg.DryRun {
-		t.WouldReplace++
-		t.BytesBefore += old.Size
-		t.item.Status, t.item.Size = statusWouldConvert, old.Size
-		s.infof("Library (dry run): would convert %s (%s)", old.OriginalFileName, old.ID)
-		return s.record(Entry{Event: "would_convert", Asset: old.ID, File: old.OriginalFileName, OriginalBytes: old.Size})
-	}
 	defer s.lockStack(old.StackID)()
 	return s.replace(ctx, old, items, albums, t)
 }
@@ -1278,9 +1251,6 @@ func fmtPos(a *entity.LibraryAsset) string {
 // been committed and only the mark is cleared; otherwise the half-made copy
 // is removed and the original is converted afresh when the run reaches it.
 func (s *Service) resumePending(ctx context.Context, pending entity.LibraryAsset, m *entity.Marker, t *tally) error {
-	if s.cfg.DryRun {
-		return skip("it is an unfinished replacement of %s (a real run will resolve it)", m.Replaces)
-	}
 	committed := m.Replaces == ""
 	if !committed {
 		old, err := s.api.GetAsset(ctx, m.Replaces)

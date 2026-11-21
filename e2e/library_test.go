@@ -3,7 +3,6 @@
 package e2e
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -63,23 +62,7 @@ func TestLibraryReplacesAssetAndCarriesEverythingOver(t *testing.T) {
 	r := richOriginal(t, u)
 	logDir := sharedDir(t)
 
-	// A dry run (the default) reports and changes nothing.
 	code, out, log := runLibrary(t, u, logDir, nil)
-	if code != 0 {
-		t.Fatalf("dry run exited %d:\n%s", code, out)
-	}
-	if !contains(events(log, r.a.ID), "would_convert") {
-		t.Errorf("dry run did not log would_convert: %v", events(log, ""))
-	}
-	if n := len(u.live(t)); n != 2 { // the photo and its stack partner
-		t.Fatalf("dry run changed the library: %d live assets", n)
-	}
-	if u.asset(t, r.a.ID).IsTrashed || u.marker(t, r.a.ID) != nil {
-		t.Fatal("dry run touched the original")
-	}
-
-	// The real run.
-	code, out, log = runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
 	}
@@ -151,7 +134,7 @@ func TestLibraryReplacesAssetAndCarriesEverythingOver(t *testing.T) {
 	}
 
 	// A second run finds nothing left to do.
-	code, out, log2 := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	code, out, log2 := runLibrary(t, u, logDir, nil)
 	if code != 0 {
 		t.Fatalf("second run exited %d:\n%s", code, out)
 	}
@@ -167,7 +150,7 @@ func TestLibraryReplacesAssetAndCarriesEverythingOver(t *testing.T) {
 		t.Errorf("restored original: %+v", back)
 	}
 	// ...and a run after that neither converts it again nor harms either copy.
-	code, out, _ = runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	code, out, _ = runLibrary(t, u, logDir, nil)
 	if code != 0 {
 		t.Fatalf("run after restore exited %d:\n%s", code, out)
 	}
@@ -193,7 +176,7 @@ func TestLibraryLeavesOtherAssetsAlone(t *testing.T) {
 
 	before := len(u.live(t))
 	logDir := sharedDir(t)
-	code, out, log := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	code, out, log := runLibrary(t, u, logDir, nil)
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
 	}
@@ -224,7 +207,7 @@ func TestLibraryRejectsInvalidOutputAndAcceptsLossy(t *testing.T) {
 	// Each variant gets its own file: rewriting one mounted file can show
 	// the container a stale copy.
 	n := 0
-	env := map[string]string{"IO_LIBRARY_DRY_RUN": "false"}
+	env := map[string]string{}
 	write := func(command string) {
 		n++
 		name := fmt.Sprintf("tasks-%d.yaml", n)
@@ -311,7 +294,7 @@ func TestLibraryFinishesAnInterruptedReplacement(t *testing.T) {
 		}
 		pending := u.waitReady(t, out["id"])
 
-		code, logs, log := runLibrary(t, u, sharedDir(t), map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+		code, logs, log := runLibrary(t, u, sharedDir(t), nil)
 		if code != 0 {
 			t.Fatalf("library run exited %d:\n%s", code, logs)
 		}
@@ -345,7 +328,7 @@ func TestLibraryFinishesAnInterruptedReplacement(t *testing.T) {
 		pending := u.waitReady(t, out["id"])
 		must(t, u.key, http.MethodDelete, "/assets", map[string]any{"ids": []string{a.ID}, "force": false}, nil)
 
-		code, logs, log := runLibrary(t, u, sharedDir(t), map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+		code, logs, log := runLibrary(t, u, sharedDir(t), nil)
 		if code != 0 {
 			t.Fatalf("library run exited %d:\n%s", code, logs)
 		}
@@ -421,7 +404,7 @@ func TestLibraryLivePhotosMotionPhotosAndEdits(t *testing.T) {
 	// upload when its turn comes: such an asset is left for the next run.
 	// Two runs settle everything; neither may report a failure.
 	logDir := sharedDir(t)
-	env := map[string]string{"IO_LIBRARY_DRY_RUN": "false", "IO_LIBRARY_CONCURRENCY": "4"}
+	env := map[string]string{"IO_LIBRARY_CONCURRENCY": "4"}
 	code, out, _ := runLibrary(t, u, logDir, env)
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
@@ -496,119 +479,16 @@ func TestLibraryLivePhotosMotionPhotosAndEdits(t *testing.T) {
 	}
 }
 
-// readReport reads the data embedded in a library report page.
-func readReport(t *testing.T, path string) (map[string]any, string) {
-	t.Helper()
-	page, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("no report: %v", err)
-	}
-	const open, end = "window.REPORT = ", ";</script>"
-	i := strings.Index(string(page), open)
-	if i < 0 {
-		t.Fatal("no data in the report page")
-	}
-	j := strings.Index(string(page[i:]), end)
-	var data map[string]any
-	if err := json.Unmarshal(page[i+len(open):i+j], &data); err != nil {
-		t.Fatalf("report data is not JSON: %v", err)
-	}
-	if copyTo := os.Getenv("E2E_REPORT_COPY"); copyTo != "" {
-		kind := "run"
-		if data["dry_run"] == true {
-			kind = "dry-run"
-		}
-		_ = os.WriteFile(filepath.Join(copyTo, filepath.Base(t.Name())+"-"+kind+".html"), page, 0o644)
-	}
-	return data, string(page)
-}
-
-func TestLibraryDryRunReport(t *testing.T) {
-	u := newUser(t)
-	samples := []string{"photo.jpg", "plain.jpg", "photo.png", "faces/face1.jpg", "faces/face2.jpg", "photo.heic", "clip.mp4"}
-	for _, s := range samples {
-		status, out := u.upload(t, immichURL, mediaDir+"/"+s, filepath.Base(s), nil)
-		if status != http.StatusCreated {
-			t.Fatalf("uploading %s: %d %s", s, status, out["_body"])
-		}
-		u.waitReady(t, out["id"])
-	}
-	logDir := sharedDir(t)
-	code, out, _ := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN_SAMPLE": "3", "IO_IMMICH_PUBLIC_URL": "https://photos.example.com"})
-	if code != 0 {
-		t.Fatalf("dry run exited %d:\n%s", code, out)
-	}
-	data, _ := readReport(t, filepath.Join(logDir, "library-report.html"))
-	if data["dry_run"] != true || data["public_url"] != "https://photos.example.com" {
-		t.Errorf("report header = %v %v", data["dry_run"], data["public_url"])
-	}
-	items := data["items"].([]any)
-	if len(items) != len(samples) {
-		t.Fatalf("%d items in the report, want %d", len(items), len(samples))
-	}
-	would, sampled := 0, 0
-	for _, raw := range items {
-		it := raw.(map[string]any)
-		if it["status"] == "would_convert" {
-			would++
-		}
-		if it["status"] == "skipped" && it["reason"] == nil {
-			t.Errorf("skipped %v has no reason", it["file"])
-		}
-		if sm, ok := it["sample"].(map[string]any); ok {
-			sampled++
-			before, _ := sm["before"].(string)
-			after, _ := sm["after"].(string)
-			if sm["result"] != "smaller" || !strings.HasPrefix(before, "data:image/jpeg;base64,") || !strings.HasPrefix(after, "data:image/jpeg;base64,") {
-				t.Errorf("sample of %v: result %v, previews %d/%d bytes", it["file"], sm["result"], len(before), len(after))
-			}
-		}
-	}
-	if would != 5 || sampled != 3 {
-		t.Errorf("would=%d sampled=%d, want 5 and 3", would, sampled)
-	}
-	est, _ := data["estimate"].(map[string]any)
-	if est == nil || est["sampled"].(float64) != 3 || est["estimated_after"].(float64) >= est["candidate_bytes"].(float64) {
-		t.Errorf("estimate = %v", est)
-	}
-	// A dry run with a sample still changes nothing.
-	if n := len(u.live(t)); n != len(samples) {
-		t.Errorf("%d live assets after the dry run, want %d", n, len(samples))
-	}
-	for _, a := range u.live(t) {
-		if u.marker(t, a.ID) != nil {
-			t.Errorf("%s got a marker in a dry run", a.OriginalFileName)
-		}
-	}
-
-	// A real run rewrites the report with what was done.
-	code, out, _ = runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
-	if code != 0 {
-		t.Fatalf("library run exited %d:\n%s", code, out)
-	}
-	data, _ = readReport(t, filepath.Join(logDir, "library-report.html"))
-	replaced := 0
-	for _, raw := range data["items"].([]any) {
-		it := raw.(map[string]any)
-		if it["status"] == "replaced" && it["new_id"] != nil {
-			replaced++
-		}
-	}
-	if data["dry_run"] == true || replaced != 5 {
-		t.Errorf("real run report: dry_run=%v replaced=%d", data["dry_run"], replaced)
-	}
-}
-
 // A phone uploads its photo again once the original has left Immich's trash.
 // Library mode must recognise that file as a second copy of something it has
-// already converted, and must keep doing so on a schedule.
-func TestLibrarySecondCopiesAndSchedule(t *testing.T) {
+// already converted, at startup and while it runs.
+func TestLibrarySecondCopies(t *testing.T) {
 	u := newUser(t)
 	first := u.add(t, "plain.jpg", map[string]string{"fileCreatedAt": "2015-01-01T10:00:00.000Z"})
 	second := u.add(t, "photo.jpg", nil)
 
 	logDir := sharedDir(t)
-	code, out, log := runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	code, out, log := runLibrary(t, u, logDir, nil)
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
 	}
@@ -631,18 +511,9 @@ func TestLibrarySecondCopiesAndSchedule(t *testing.T) {
 		t.Fatalf("the second upload is not a new asset with the same file: %+v", again)
 	}
 
-	// A dry run says what it would do and does nothing.
-	code, out, log = runLibrary(t, u, logDir, nil)
-	if code != 0 || u.asset(t, again.ID).IsTrashed {
-		t.Fatalf("dry run (exit %d) trashed something:\n%s", code, out)
-	}
-	if !contains(events(log, again.ID), "would_trash_second_copy") {
-		t.Errorf("the dry run did not report the second copy: %v", events(log, again.ID))
-	}
-
-	// A real run: the second copy goes to the trash, without being
+	// At the next start the second copy goes to the trash, without being
 	// converted again.
-	code, out, log = runLibrary(t, u, logDir, map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	code, out, log = runLibrary(t, u, logDir, nil)
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
 	}
@@ -672,18 +543,17 @@ func TestLibrarySecondCopiesAndSchedule(t *testing.T) {
 		t.Errorf("%d assets in the timeline, want the two conversions and the favorite", len(live))
 	}
 
-	// With an interval it does not exit: it runs again and again.
-	before := len(events(readLog(t, filepath.Join(logDir, "audit.log")), ""))
-	startOptimizer(t, map[string]string{"IO_MODE": "library", "IO_IMMICH_API_KEY": u.keyS, "IO_LIBRARY_INTERVAL": "2s",
-		"IO_LIBRARY_DRY_RUN_SAMPLE": "0"}, false, logDir+":/undone")
-	eventually(t, 2*time.Minute, "three scheduled runs", func() bool {
-		n := 0
-		for _, e := range events(readLog(t, filepath.Join(logDir, "audit.log")), "")[before:] {
-			if e == "run_finished" {
-				n++
-			}
-		}
-		return n >= 3
+	// While library mode runs, a second copy goes to the trash as soon as
+	// it is uploaded: Immich announces the upload with its checksum.
+	name, _ := startOptimizer(t, map[string]string{"IO_MODE": "library", "IO_IMMICH_API_KEY": u.keyS}, false, logDir+":/undone")
+	waitLibraryReady(t, name, 5*time.Minute)
+	must(t, u.key, http.MethodDelete, "/assets", map[string]any{"ids": []string{again.ID}, "force": true}, nil)
+	eventually(t, time.Minute, "Immich to delete the second copy", func() bool {
+		return call(t, u.key, http.MethodGet, "/assets/"+again.ID, nil, nil) >= 400
+	})
+	third := u.add(t, "plain.jpg", map[string]string{"fileCreatedAt": "2015-01-01T10:00:00.000Z"})
+	eventually(t, time.Minute, "the copy uploaded while library mode runs to go to the trash", func() bool {
+		return u.asset(t, third.ID).IsTrashed
 	})
 }
 
@@ -714,12 +584,9 @@ func TestLibraryTags(t *testing.T) {
 		t.Fatal(err)
 	}
 	logDir := sharedDir(t)
-	run := func(dry bool) (string, []map[string]any) {
+	run := func() (string, []map[string]any) {
 		t.Helper()
-		env := map[string]string{"E2E_TAGS": "own", "IO_TASKS_FILE": "/custom/tasks.yaml", "IO_LIBRARY_DRY_RUN_SAMPLE": "0"}
-		if !dry {
-			env["IO_LIBRARY_DRY_RUN"] = "false"
-		}
+		env := map[string]string{"E2E_TAGS": "own", "IO_TASKS_FILE": "/custom/tasks.yaml"}
 		code, out, log := runLibrary(t, u, logDir, env, cfg+":/custom:ro")
 		if code != 0 {
 			t.Fatalf("library run exited %d:\n%s", code, out)
@@ -728,15 +595,7 @@ func TestLibraryTags(t *testing.T) {
 	}
 	has := func(id, tag string) bool { return contains(u.tags(t, id), tag) }
 
-	// A dry run says what each tag would do, and changes no tag.
-	_, log := run(true)
-	if !contains(events(log, conv.ID), "would_convert") || !contains(events(log, done.ID), "would_mark_done") ||
-		contains(events(log, untouched.ID), "would_convert") {
-		t.Errorf("dry run: convert %v, done %v, untagged %v", events(log, conv.ID), events(log, done.ID), events(log, untouched.ID))
-	}
-	if !has(conv.ID, tagConvert) || !has(done.ID, tagDone) || u.marker(t, done.ID) != nil {
-		t.Fatal("the dry run changed tags or marked an asset")
-	}
+	out, log := run()
 	// The tags a person uses exist now, under one parent.
 	var all []struct {
 		Value string `json:"value"`
@@ -751,9 +610,6 @@ func TestLibraryTags(t *testing.T) {
 			t.Errorf("tag %s does not exist after a run: %v", want, values)
 		}
 	}
-
-	// The real run.
-	out, log := run(false)
 	newID := replacedBy(log, conv.ID)
 	if newID == "" {
 		t.Fatalf("the tagged photo was not converted:\n%s", out)
@@ -774,10 +630,20 @@ func TestLibraryTags(t *testing.T) {
 
 	// Redo frees the done photo, and convert converts it in the same run.
 	u.tagWith(t, []string{tagRedo, tagConvert}, done.ID)
-	out, log = run(false)
+	out, log = run()
 	if replacedBy(log, done.ID) == "" || !contains(events(log, done.ID), "marker_removed") {
 		t.Fatalf("redo and convert: %v\n%s", events(log, done.ID), out)
 	}
+
+	// While library mode runs, tagging a photo is enough: Immich tells it.
+	name, _ := startOptimizer(t, map[string]string{"IO_MODE": "library", "IO_IMMICH_API_KEY": u.keyS,
+		"IO_TASKS_FILE": "/custom/tasks.yaml"}, false, logDir+":/undone", cfg+":/custom:ro")
+	waitLibraryReady(t, name, 5*time.Minute)
+	live := u.add(t, "live.jpg", nil)
+	u.tag(t, tagConvert, live.ID)
+	eventually(t, time.Minute, "the photo tagged while library mode runs to be converted", func() bool {
+		return u.asset(t, live.ID).IsTrashed
+	})
 }
 
 // A memory ("on this day") lists its assets by id: the converted copy has to
@@ -794,7 +660,7 @@ func TestLibraryCarriesMemoriesOver(t *testing.T) {
 		"memoryAt": "2021-06-15T00:00:00.000Z", "assetIds": []string{a.ID},
 	}, &memory)
 
-	code, out, log := runLibrary(t, u, sharedDir(t), map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	code, out, log := runLibrary(t, u, sharedDir(t), nil)
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
 	}

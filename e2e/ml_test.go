@@ -103,7 +103,7 @@ func TestLibraryKeepsPeopleWithMachineLearning(t *testing.T) {
 	// Give the person a name, as a user would.
 	must(t, u.key, http.MethodPut, "/people/"+personOf[originals[0].ID], map[string]any{"name": "Mona"}, nil)
 
-	code, out, log := runLibrary(t, u, sharedDir(t), map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	code, out, log := runLibrary(t, u, sharedDir(t), nil)
 	if code != 0 {
 		t.Fatalf("library run exited %d:\n%s", code, out)
 	}
