@@ -237,30 +237,40 @@ func (f *fakeImmich) DeleteTag(_ context.Context, tagID string) error {
 	return nil
 }
 
-func (f *fakeImmich) TagAssets(_ context.Context, tagID string, assetIDs []string) error {
+func (f *fakeImmich) TagAssets(_ context.Context, tagID string, assetIDs []string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	var changed []string
 	for _, id := range assetIDs {
 		a, err := f.get(id)
 		if err != nil {
-			return err
+			return nil, err
+		}
+		has := false
+		for _, t := range a.TagIDs {
+			has = has || t == tagID
+		}
+		if has {
+			continue
 		}
 		a.TagIDs = append(a.TagIDs, tagID)
+		changed = append(changed, id)
 		f.tagCalls = append(f.tagCalls, "tag:"+tagID+":"+id)
 	}
-	return nil
+	return changed, nil
 }
 
-func (f *fakeImmich) UntagAssets(_ context.Context, tagID string, assetIDs []string) error {
+func (f *fakeImmich) UntagAssets(_ context.Context, tagID string, assetIDs []string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.fail("UntagAssets"); err != nil {
-		return err
+		return nil, err
 	}
+	var changed []string
 	for _, id := range assetIDs {
 		a, err := f.get(id)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		kept := a.TagIDs[:0]
 		for _, t := range a.TagIDs {
@@ -268,10 +278,13 @@ func (f *fakeImmich) UntagAssets(_ context.Context, tagID string, assetIDs []str
 				kept = append(kept, t)
 			}
 		}
+		if len(kept) < len(a.TagIDs) {
+			changed = append(changed, id)
+			f.tagCalls = append(f.tagCalls, "untag:"+tagID+":"+id)
+		}
 		a.TagIDs = kept
-		f.tagCalls = append(f.tagCalls, "untag:"+tagID+":"+id)
 	}
-	return nil
+	return changed, nil
 }
 
 func (f *fakeImmich) DeleteMetadata(_ context.Context, id, key string) error {

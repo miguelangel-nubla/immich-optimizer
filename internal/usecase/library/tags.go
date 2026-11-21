@@ -292,7 +292,7 @@ func (s *Service) dropOwnTags(ctx context.Context, id string) error {
 	}
 	for _, t := range a.TagIDs {
 		if s.own[t] {
-			if err := s.base.UntagAssets(ctx, t, []string{id}); err != nil {
+			if _, err := s.base.UntagAssets(ctx, t, []string{id}); err != nil {
 				return fmt.Errorf("removing the optimizer's tag from the new asset: %w", err)
 			}
 			if err := s.record(Entry{Event: "tag_removed", Asset: id, Detail: s.tagValue(t) + " (copied over by Immich)"}); err != nil {
@@ -374,18 +374,22 @@ func (s *Service) settleTags(ctx context.Context, rt *runTags, items []*Item) er
 				return
 			}
 		}
+		var changed []string
 		var err error
 		event := "tag_removed"
 		if add {
-			err, event = s.base.TagAssets(ctx, id, ids), "tag_added"
+			changed, err = s.base.TagAssets(ctx, id, ids)
+			event = "tag_added"
 		} else {
-			err = s.base.UntagAssets(ctx, id, ids)
+			changed, err = s.base.UntagAssets(ctx, id, ids)
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("updating the tag %s on %d asset(s): %w", tag, len(ids), err))
 			return
 		}
-		for _, a := range ids {
+		// Only what changed: Immich's search for a tag also finds the
+		// assets of its child tags, which do not have the tag itself.
+		for _, a := range changed {
 			if err := s.record(Entry{Event: event, Asset: a, Detail: tag}); err != nil {
 				errs = append(errs, err)
 				return

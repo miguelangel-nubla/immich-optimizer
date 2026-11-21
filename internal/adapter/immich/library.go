@@ -320,18 +320,35 @@ func (c *LibraryClient) DeleteTag(ctx context.Context, tagID string) error {
 	return c.call(ctx, http.MethodDelete, "/tags/"+url.PathEscape(tagID), nil, nil)
 }
 
-func (c *LibraryClient) TagAssets(ctx context.Context, tagID string, assetIDs []string) error {
-	if len(assetIDs) == 0 {
-		return nil
-	}
-	return c.call(ctx, http.MethodPut, "/tags/"+url.PathEscape(tagID)+"/assets", map[string]any{"ids": assetIDs}, nil)
+func (c *LibraryClient) TagAssets(ctx context.Context, tagID string, assetIDs []string) ([]string, error) {
+	return c.bulkTag(ctx, http.MethodPut, tagID, assetIDs)
 }
 
-func (c *LibraryClient) UntagAssets(ctx context.Context, tagID string, assetIDs []string) error {
+func (c *LibraryClient) UntagAssets(ctx context.Context, tagID string, assetIDs []string) ([]string, error) {
+	return c.bulkTag(ctx, http.MethodDelete, tagID, assetIDs)
+}
+
+// bulkTag adds or removes a tag and returns the assets Immich changed: it
+// answers, for each asset, whether it did ("success": false, with the
+// error "duplicate" or "not_found", when there was nothing to do).
+func (c *LibraryClient) bulkTag(ctx context.Context, method, tagID string, assetIDs []string) ([]string, error) {
 	if len(assetIDs) == 0 {
-		return nil
+		return nil, nil
 	}
-	return c.call(ctx, http.MethodDelete, "/tags/"+url.PathEscape(tagID)+"/assets", map[string]any{"ids": assetIDs}, nil)
+	var out []struct {
+		ID      string `json:"id"`
+		Success bool   `json:"success"`
+	}
+	if err := c.call(ctx, method, "/tags/"+url.PathEscape(tagID)+"/assets", map[string]any{"ids": assetIDs}, &out); err != nil {
+		return nil, err
+	}
+	var changed []string
+	for _, r := range out {
+		if r.Success {
+			changed = append(changed, r.ID)
+		}
+	}
+	return changed, nil
 }
 
 func (c *LibraryClient) GetAsset(ctx context.Context, id string) (*entity.LibraryAsset, error) {

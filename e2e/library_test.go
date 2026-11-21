@@ -875,4 +875,15 @@ func TestLibraryProfiles(t *testing.T) {
 			t.Errorf("%s: converted with %v, want %s", c.a.OriginalFileName, m["latest.task.name"], c.task)
 		}
 	}
+	// Only the tag the photo had is recorded as removed: Immich's search
+	// for plain convert also finds it, but it never had that tag.
+	var removed []string
+	for _, e := range log {
+		if e["event"] == "tag_removed" && e["asset"] == mine.ID {
+			removed = append(removed, fmt.Sprint(e["detail"]))
+		}
+	}
+	if len(removed) != 1 || removed[0] != tagConvert+"/smaller" {
+		t.Errorf("tag removals logged for %s: %v", mine.OriginalFileName, removed)
+	}
 }

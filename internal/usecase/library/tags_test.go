@@ -85,7 +85,7 @@ func TestFailedConversionIsTaggedFailed(t *testing.T) {
 		t.Errorf("while tagged failed: %+v, %v", sum, err)
 	}
 	// Removing failed is how to try again.
-	if err := h.im.UntagAssets(context.Background(), h.im.tags[TagFailed], []string{a.ID}); err != nil {
+	if _, err := h.im.UntagAssets(context.Background(), h.im.tags[TagFailed], []string{a.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if sum, err = h.run(); err != nil || sum.Replaced != 1 || !a.IsTrashed {
@@ -205,7 +205,7 @@ func TestKeepProtectsWhileTagged(t *testing.T) {
 		t.Errorf("tags = %v: keep stays, convert is settled", a.TagIDs)
 	}
 	// Keep removed, convert again: converted.
-	if err := h.im.UntagAssets(context.Background(), h.im.tags[TagKeep], []string{a.ID}); err != nil {
+	if _, err := h.im.UntagAssets(context.Background(), h.im.tags[TagKeep], []string{a.ID}); err != nil {
 		t.Fatal(err)
 	}
 	h.im.tag(a, TagConvert)
@@ -436,5 +436,29 @@ func TestTagChangesAreAudited(t *testing.T) {
 		if !seen {
 			t.Errorf("not in the audit log: %s", k)
 		}
+	}
+}
+
+// A profile-tagged asset is also found by the search for plain convert, but
+// does not have that tag: the audit log only records what really changed.
+func TestOnlyRealTagChangesAreAudited(t *testing.T) {
+	h := tagged(t)
+	h.cfg.Profiles = map[string]port.CheckingConverter{"small": &fakeConv{task: "small"}}
+	a := h.im.add("IMG_1.jpg", photo(1))
+	h.im.tag(a, TagConvert+"/small")
+	if _, err := h.im.UpsertTags(context.Background(), []string{TagConvert}); err != nil {
+		t.Fatal(err)
+	}
+	if sum, err := h.run(); err != nil || sum.Replaced != 1 {
+		t.Fatalf("%+v, %v", sum, err)
+	}
+	var removed []string
+	for _, e := range h.entries() {
+		if e.Event == "tag_removed" && e.Asset == a.ID {
+			removed = append(removed, e.Detail)
+		}
+	}
+	if len(removed) != 1 || removed[0] != TagConvert+"/small" {
+		t.Errorf("tag removals logged: %v, want only %s", removed, TagConvert+"/small")
 	}
 }

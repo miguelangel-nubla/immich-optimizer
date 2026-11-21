@@ -24,9 +24,11 @@ type LibraryAPI interface {
 	TaggedAssetIDs(ctx context.Context, tagID string) ([]string, error)
 	// DeleteTag deletes a tag (and takes it off every asset).
 	DeleteTag(ctx context.Context, tagID string) error
-	// TagAssets and UntagAssets add a tag to assets or remove it.
-	TagAssets(ctx context.Context, tagID string, assetIDs []string) error
-	UntagAssets(ctx context.Context, tagID string, assetIDs []string) error
+	// TagAssets and UntagAssets add a tag to assets or remove it. They
+	// return the assets that actually changed: one that already had the
+	// tag (or did not have it) is left out.
+	TagAssets(ctx context.Context, tagID string, assetIDs []string) ([]string, error)
+	UntagAssets(ctx context.Context, tagID string, assetIDs []string) ([]string, error)
 	GetAsset(ctx context.Context, id string) (*entity.LibraryAsset, error)
 	// GetMetadata returns all asset metadata items.
 	GetMetadata(ctx context.Context, id string) ([]entity.MetadataItem, error)
