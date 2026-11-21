@@ -236,6 +236,12 @@ func TestLibraryRejectsInvalidOutputAndAcceptsLossy(t *testing.T) {
 		t.Error("an invalid conversion changed the library")
 	}
 
+	// A failed asset is tried again once its failed tag is removed.
+	if !contains(u.tags(t, a.ID), tagFailed) {
+		t.Errorf("not tagged failed: %v", u.tags(t, a.ID))
+	}
+	u.untag(t, tagFailed, a.ID)
+
 	// A task that writes garbage is rejected too.
 	write(`head -c 2000 /dev/urandom > "{{.dst_folder}}/{{.name}}.jxl"`)
 	code, out, log2 := runLibrary(t, u, logDir, env, cfg+":/custom:ro")
@@ -248,6 +254,8 @@ func TestLibraryRejectsInvalidOutputAndAcceptsLossy(t *testing.T) {
 	if u.asset(t, a.ID).IsTrashed {
 		t.Error("garbage output replaced the original")
 	}
+
+	u.untag(t, tagFailed, a.ID)
 
 	// A lossy task that also shrinks the picture is a valid conversion.
 	write(`magick "{{.src_folder}}/{{.name}}.{{.extension}}" -resize 50% ppm:- | cjxl - "{{.dst_folder}}/{{.name}}.jxl" -q 75 && exiftool -q -m -overwrite_original -tagsfromfile "{{.src_folder}}/{{.name}}.{{.extension}}" -all:all "{{.dst_folder}}/{{.name}}.jxl"`)
@@ -568,7 +576,8 @@ func TestLibraryTags(t *testing.T) {
 	// One of the person's own tags, which has to travel to the copy.
 	u.tagWith(t, []string{"holiday", tagConvert}, conv.ID)
 	u.tag(t, tagConvert, broken.ID)
-	u.tag(t, tagKeep, kept.ID)
+	// Tagged keep and convert, as tagging in bulk does: keep protects it.
+	u.tagWith(t, []string{tagKeep, tagConvert}, kept.ID)
 
 	// JPEGs convert; the only PNG task fails, so that the failed tag is set.
 	cfg := sharedDir(t)
@@ -605,7 +614,7 @@ func TestLibraryTags(t *testing.T) {
 	for _, tg := range all {
 		values = append(values, tg.Value)
 	}
-	for _, want := range []string{tagConvert, tagKeep, tagRedo} {
+	for _, want := range []string{tagConvert, tagKeep, tagConvert + "/lossless", tagConvert + "/profile1"} {
 		if !contains(values, want) {
 			t.Errorf("tag %s does not exist after a run: %v", want, values)
 		}
@@ -617,22 +626,32 @@ func TestLibraryTags(t *testing.T) {
 	if got := u.tags(t, newID); !contains(got, "holiday") || contains(got, tagConvert) {
 		t.Errorf("tags of the converted copy = %v, want holiday and none of the optimizer's", got)
 	}
-	m := u.marker(t, kept.ID)
-	if m == nil || m["kept.note"] != "tagged keep in Immich" || u.asset(t, kept.ID).IsTrashed || has(kept.ID, tagKeep) {
-		t.Errorf("keep: marker %v, tags %v", m, u.tags(t, kept.ID))
+	if u.marker(t, kept.ID) != nil || u.asset(t, kept.ID).IsTrashed || !has(kept.ID, tagKeep) || has(kept.ID, tagConvert) {
+		t.Errorf("keep: marker %v, tags %v", u.marker(t, kept.ID), u.tags(t, kept.ID))
 	}
-	if !has(broken.ID, tagFailed) || has(broken.ID, tagConvert) || u.asset(t, broken.ID).IsTrashed {
+	if !has(broken.ID, tagFailed) || !has(broken.ID, tagConvert) || u.asset(t, broken.ID).IsTrashed {
 		t.Errorf("failed conversion: tags %v", u.tags(t, broken.ID))
 	}
 	if u.marker(t, untouched.ID) != nil || u.asset(t, untouched.ID).IsTrashed {
 		t.Error("an untagged asset was touched")
 	}
 
-	// Redo frees the kept photo, and convert converts it in the same run.
-	u.tagWith(t, []string{tagRedo, tagConvert}, kept.ID)
+	// Keep removed, the photo is converted when tagged again.
+	must(t, u.key, http.MethodDelete, "/tags/"+u.tagID(t, tagKeep)+"/assets", map[string]any{"ids": []string{kept.ID}}, nil)
+	// Immich can lose one of two quick tag changes to the same asset: one
+	// at a time, as a person makes them.
+	eventually(t, time.Minute, "keep to be gone", func() bool {
+		time.Sleep(2 * time.Second)
+		return !has(kept.ID, tagKeep)
+	})
+	u.tag(t, tagConvert, kept.ID)
+	eventually(t, time.Minute, "convert to be there", func() bool {
+		time.Sleep(2 * time.Second)
+		return has(kept.ID, tagConvert)
+	})
 	out, log = run()
-	if replacedBy(log, kept.ID) == "" || !contains(events(log, kept.ID), "marker_removed") {
-		t.Fatalf("redo and convert: %v\n%s", events(log, kept.ID), out)
+	if replacedBy(log, kept.ID) == "" {
+		t.Fatalf("after removing keep: %v\n%s", events(log, kept.ID), out)
 	}
 
 	// While library mode runs, tagging a photo is enough: Immich tells it.
@@ -759,7 +778,7 @@ func TestProxyPassesUploadsAndLibraryConvertsOnDemand(t *testing.T) {
 
 // Converting a conversion again: from the converted file, with every version
 // in the record, and the first original still the one phones have.
-func TestLibraryReconvert(t *testing.T) {
+func TestLibraryConvertAgain(t *testing.T) {
 	u := newUser(t)
 	a := u.add(t, "plain.jpg", nil)
 	cfg := sharedDir(t)
@@ -788,19 +807,13 @@ func TestLibraryReconvert(t *testing.T) {
 	}
 	convAsset := u.asset(t, conv)
 
-	// Tagged convert again, it is left alone: it is a conversion.
+	// Tagged convert again, it is converted again from the JPEG XL.
 	env["E2E_TAGS"] = "own"
 	u.tag(t, tagConvert, conv)
-	if _, out, log = runLibrary(t, u, logDir, env, cfg+":/custom:ro"); replacedBy(log, conv) != "" {
-		t.Fatalf("convert re-converted a conversion:\n%s", out)
-	}
-
-	// Tagged reconvert, it is converted again from the JPEG XL.
-	u.tag(t, tagReconvert, conv)
 	code, out, log = runLibrary(t, u, logDir, env, cfg+":/custom:ro")
 	again := replacedBy(log, conv)
 	if code != 0 || again == "" {
-		t.Fatalf("reconvert (exit %d):\n%s", code, out)
+		t.Fatalf("convert again (exit %d):\n%s", code, out)
 	}
 	if !u.asset(t, conv).IsTrashed {
 		t.Error("the earlier conversion is not in the trash")
@@ -811,7 +824,45 @@ func TestLibraryReconvert(t *testing.T) {
 		m["latest.task.name"] != "jxl-again" || m["latest.source"] != "library" {
 		t.Errorf("record of the version made again: %v", m)
 	}
-	if contains(u.tags(t, conv), tagReconvert) {
-		t.Error("the reconvert tag was not removed")
+	if contains(u.tags(t, conv), tagConvert) {
+		t.Error("the convert tag was not removed")
+	}
+}
+
+// convert/<profile> converts with that profile: one of your own, mounted in
+// the profiles folder, or a bundled one.
+func TestLibraryProfiles(t *testing.T) {
+	u := newUser(t)
+	mine := u.add(t, "plain.jpg", nil)
+	bundled := u.add(t, "photo.jpg", nil)
+	profiles := sharedDir(t)
+	if err := os.MkdirAll(filepath.Join(profiles, "smaller"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tasks := `tasks:
+- name: small-jxl
+  command: cjxl --lossless_jpeg=0 -q 50 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
+  extensions: [jpg, jpeg]
+`
+	if err := os.WriteFile(filepath.Join(profiles, "smaller", "tasks.yaml"), []byte(tasks), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	u.tag(t, tagConvert+"/smaller", mine.ID)
+	u.tag(t, tagConvert+"/lossless", bundled.ID)
+	code, out, log := runLibrary(t, u, sharedDir(t), map[string]string{"E2E_TAGS": "own"}, profiles+":/etc/immich-optimizer/profiles:ro")
+	if code != 0 || !strings.Contains(out, "lossless, passthrough-all, profile1, smaller") {
+		t.Fatalf("library mode (exit %d) did not list the profiles:\n%s", code, out)
+	}
+	for _, c := range []struct {
+		a    asset
+		task string
+	}{{mine, "small-jxl"}, {bundled, "jpeg-xl"}} {
+		id := replacedBy(log, c.a.ID)
+		if id == "" {
+			t.Fatalf("%s was not converted:\n%s", c.a.OriginalFileName, out)
+		}
+		if m := u.marker(t, id); m == nil || m["latest.task.name"] != c.task {
+			t.Errorf("%s: converted with %v, want %s", c.a.OriginalFileName, m["latest.task.name"], c.task)
+		}
 	}
 }

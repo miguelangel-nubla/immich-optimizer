@@ -40,6 +40,9 @@ import (
 )
 
 type Config struct {
+	// Profiles are the converters an asset can be tagged for by name
+	// (convert/<name>), besides the tasks file's.
+	Profiles map[string]port.CheckingConverter
 	// Label names the API key in the log until its user is known, when
 	// there are several ("key 2 of 3"). Once known, the log names the
 	// user by id instead, which does not change with the key.
@@ -68,6 +71,9 @@ type Entry = audit.Entry
 type tally struct {
 	Summary
 	item Item
+	// conv converts this asset: the tasks file, or the profile it is
+	// tagged for.
+	conv port.CheckingConverter
 }
 
 // Summary counts what a run did.
@@ -81,13 +87,9 @@ type Summary struct {
 	RolledBack int `json:"rolled_back,omitempty"`
 	// SecondCopies are originals that were uploaded again after their
 	// conversion and were moved to the trash.
-	SecondCopies int `json:"second_copies,omitempty"`
-	// MarkedKeep are assets tagged "done" that got their marker, and
-	// Forgotten those tagged "redo" whose marker was removed.
-	MarkedKeep  int   `json:"marked_keep,omitempty"`
-	Forgotten   int   `json:"forgotten,omitempty"`
-	BytesBefore int64 `json:"bytes_before"`
-	BytesAfter  int64 `json:"bytes_after"`
+	SecondCopies int   `json:"second_copies,omitempty"`
+	BytesBefore  int64 `json:"bytes_before"`
+	BytesAfter   int64 `json:"bytes_after"`
 }
 
 type Service struct {
@@ -143,8 +145,6 @@ func (sum *Summary) add(o Summary) {
 	sum.Finalized += o.Finalized
 	sum.RolledBack += o.RolledBack
 	sum.SecondCopies += o.SecondCopies
-	sum.MarkedKeep += o.MarkedKeep
-	sum.Forgotten += o.Forgotten
 	sum.BytesBefore += o.BytesBefore
 	sum.BytesAfter += o.BytesAfter
 }
@@ -352,50 +352,43 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 	// convertedFrom maps the checksum of an original to the asset it was
 	// converted into, from the markers read in this pass (the audit log
 	// knows more, see below).
-	// converted into, from the markers read in this pass. Nothing is stored:
-	// it is built again on every run.
 	convertedFrom := map[string]string{}
 	s.forEach(len(assets), stopped, func(i int) {
 		a := assets[i]
-		var meta []entity.MetadataItem
-		var m *entity.Marker
-		var err error
 		t := &tally{Summary: Summary{Seen: 1}}
-		switch {
-		case rt.keep[a.ID]:
-			// "Done" wins over every other tag.
-			err = s.markKeep(ctx, me, a, t)
-			if err == nil {
-				outcome(a, t, nil)
-				return
-			}
-		case rt.redo[a.ID]:
-			err = s.redo(ctx, me, a, t)
-			if err == nil {
-				meta, m, err = s.classify(ctx, me, a)
-			}
-		default:
-			meta, m, err = s.classify(ctx, me, a, rt.reconvert[a.ID])
-		}
-		if errors.Is(err, errPendingCopy) {
-			meta, m, err = s.classify(ctx, me, a)
-		}
+		profile, tagged := rt.convert[a.ID]
+		// A conversion tagged to be converted is converted again; keep
+		// protects whatever else it is tagged.
+		meta, m, err := s.classify(ctx, me, a, tagged && !rt.keep[a.ID], s.converter(profile))
 		var sk *errSkip
 		if errors.As(err, &sk) && sk.converted != nil && !sk.converted.Kept && sk.converted.SHA1 != "" {
 			mu.Lock()
 			convertedFrom[strings.ToLower(sk.converted.SHA1)] = a.ID
 			mu.Unlock()
 		}
-		if mk := markerOf(meta); err == nil && m == nil && mk != nil && mk.SHA1 != "" {
+		if mk := markerOf(meta); err == nil && m == nil && mk != nil && !mk.Kept && mk.SHA1 != "" {
 			// A conversion about to be converted again is still the
 			// conversion of its original.
 			mu.Lock()
 			convertedFrom[strings.ToLower(mk.SHA1)] = a.ID
 			mu.Unlock()
 		}
+		if err == nil && m == nil {
+			switch {
+			case rt.keep[a.ID]:
+				err = skip("it is tagged %s", TagKeep)
+			case rt.failed[a.ID]:
+				err = later("its conversion failed before: remove the tag %s to try again", TagFailed)
+			case rt.conflict[a.ID] != nil:
+				var names []string
+				for _, p := range rt.conflict[a.ID] {
+					names = append(names, ConvertTag(p))
+				}
+				err = fmt.Errorf("it is tagged %s: remove all but one", strings.Join(names, " and "))
+			}
+		}
 		if err == nil {
-			// Decided later, in step 2 or 3: only count it as seen here
-			// (and a "redo" that freed it).
+			// Decided later, in step 2 or 3: only count it as seen here.
 			mu.Lock()
 			sum.add(t.Summary)
 			if m != nil {
@@ -417,7 +410,8 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 		}
 		t := &tally{}
 		// A tag on the unfinished copy waits for a later run.
-		t.item.retry = rt.keep[p.asset.ID] || rt.redo[p.asset.ID] || rt.convert[p.asset.ID] || rt.reconvert[p.asset.ID]
+		_, tagged := rt.convert[p.asset.ID]
+		t.item.retry = tagged
 		outcome(p.asset, t, s.resumePending(ctx, p.asset, p.marker, t))
 	}
 
@@ -431,9 +425,11 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 		if stopped() {
 			break
 		}
+		pm := markerOf(c.items)
+		isConversion := pm != nil && !pm.Kept
 		convertedID, second := convertedFrom[strings.ToLower(c.asset.Checksum)]
-		second = second && markerOf(c.items) == nil
-		if !second && s.idx != nil && markerOf(c.items) == nil {
+		second = second && !isConversion
+		if !second && s.idx != nil && !isConversion {
 			convertedID, second = s.idx.convertedFrom(c.asset.Checksum)
 			second = second && convertedID != c.asset.ID
 		}
@@ -446,7 +442,7 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 			// The conversion it pointed at is not this user's: an
 			// ordinary candidate.
 		}
-		if !rt.convert[c.asset.ID] && !rt.reconvert[c.asset.ID] {
+		if _, tagged := rt.convert[c.asset.ID]; !tagged {
 			outcome(c.asset, &tally{}, skip("it is not tagged %s", TagConvert))
 			continue
 		}
@@ -460,7 +456,7 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 	})
 	s.forEach(len(candidates), stopped, func(i int) {
 		c := candidates[i]
-		t := &tally{}
+		t := &tally{conv: s.converter(rt.convert[c.asset.ID])}
 		outcome(c.asset, t, s.work(ctx, c.asset, c.items, t))
 	})
 	// 5. The tags of what was acted on are settled.
@@ -479,8 +475,8 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 	if err := s.record(Entry{Event: "run_finished", Summary: &sum}); err != nil {
 		return sum, err
 	}
-	s.infof("Library: pass finished: %d seen, %d replaced, %d kept, %d tagged keep, %d second copies trashed, %d skipped, %d failed (%d -> %d bytes)",
-		sum.Seen, sum.Replaced, sum.Kept, sum.MarkedKeep, sum.SecondCopies, sum.Skipped, sum.Failed, sum.BytesBefore, sum.BytesAfter)
+	s.infof("Library: pass finished: %d seen, %d replaced, %d kept, %d second copies trashed, %d skipped, %d failed (%d -> %d bytes)",
+		sum.Seen, sum.Replaced, sum.Kept, sum.SecondCopies, sum.Skipped, sum.Failed, sum.BytesBefore, sum.BytesAfter)
 	return sum, ctx.Err()
 }
 
@@ -533,9 +529,11 @@ func markerItem(m *entity.Marker) (entity.MetadataItem, error) {
 // asset is a candidate. It returns the marker instead when the asset is the
 // unfinished copy of an interrupted replacement.
 //
-// With again (the asset is tagged reconvert), a finished conversion is a
-// candidate too: it is converted again from the converted file.
-func (s *Service) classify(ctx context.Context, me string, listed entity.LibraryAsset, again ...bool) ([]entity.MetadataItem, *entity.Marker, error) {
+// With again (the asset is tagged to be converted), an asset the optimizer
+// already handled is a candidate too: a conversion is converted again from
+// its current file, and one left as it is is tried again. conv is what would
+// convert it.
+func (s *Service) classify(ctx context.Context, me string, listed entity.LibraryAsset, again bool, conv port.CheckingConverter) ([]entity.MetadataItem, *entity.Marker, error) {
 	if err := basicChecks(me, listed); err != nil {
 		return nil, nil, err
 	}
@@ -544,23 +542,23 @@ func (s *Service) classify(ctx context.Context, me string, listed entity.Library
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading asset metadata: %w", err)
 	}
-	if m := markerOf(items); m != nil {
-		if m.State == entity.MarkerStatePending {
-			return nil, m, nil
-		}
+	m := markerOf(items)
+	if m != nil {
 		switch {
-		case len(again) == 0 || !again[0]:
+		case m.State == entity.MarkerStatePending:
+			return nil, m, nil
+		case !again:
 			return nil, nil, &errSkip{reason: "it was already handled by the optimizer", converted: m}
-		case m.Kept:
-			return nil, nil, skip("tagged %s, but it was left as it is, not converted: tag it %s and %s to convert it", TagReconvert, TagRedo, TagConvert)
-		case m.SHA1 == "":
+		case !m.Kept && m.SHA1 == "":
 			// Without the original's checksum the new record could not
 			// say which file phones have.
-			return nil, nil, skip("tagged %s, but its record is from an earlier version and does not say what its original was", TagReconvert)
+			return nil, nil, &errSkip{reason: "its record is from an earlier version and does not say what its original was", converted: m}
 		}
 	}
-	if ok, reason := s.conv.Converts(listed.OriginalFileName); !ok {
-		return nil, nil, skip("%s", reason)
+	if ok, reason := conv.Converts(listed.OriginalFileName); !ok {
+		// A conversion skipped here is still the conversion of its
+		// original, which second copies are recognised by.
+		return nil, nil, &errSkip{reason: reason, converted: m}
 	}
 	return items, nil, nil
 }
@@ -718,7 +716,11 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 		SHA1:       sum1,
 		SkipUndone: true,
 	}
-	res, err := s.conv.Convert(ctx, in)
+	conv := t.conv
+	if conv == nil {
+		conv = s.conv
+	}
+	res, err := conv.Convert(ctx, in)
 	if err != nil {
 		return fmt.Errorf("converting: %w", err)
 	}
@@ -728,6 +730,9 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 	// and when the result is no better it stays exactly as it is. Writing
 	// "kept" over its record would lose its original.
 	prior := markerOf(oldItems)
+	if prior != nil && prior.Kept {
+		prior = nil // left as it is before: this is a first conversion
+	}
 	keep := func(note string) error {
 		if prior != nil {
 			return skip("converting it again: %s; it stays as it is", note)
@@ -750,7 +755,7 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 	case res.Marker.MotionPhotos == "" && s.cfg.IsMotionPhoto != nil && s.cfg.IsMotionPhoto(src):
 		return keep("motion photo converted as a whole (motion_photos: keep): the result would hide its video")
 	}
-	if err := s.conv.CheckOutput(ctx, in, res); err != nil {
+	if err := conv.CheckOutput(ctx, in, res); err != nil {
 		return fmt.Errorf("the converted file does not look valid: %w", err)
 	}
 	convertedSHA1, err := fileSHA1(res.DeliverPath)

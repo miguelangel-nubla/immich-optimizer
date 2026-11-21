@@ -5,56 +5,88 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/port"
 )
 
 // Library mode is driven by tags in Immich. The person (or one of Immich's
-// own workflows) tags assets; each run carries the command out and removes
-// the tag. The optimizer sets the status tags itself.
+// own workflows) tags assets; library mode converts what is tagged and
+// removes the tag. The optimizer sets the status tags itself.
 const (
 	// TagPrefix is the parent of every tag the optimizer uses.
 	TagPrefix = "immich-optimizer/"
-	// TagConvert asks for the asset to be converted.
+	// TagConvert asks for the asset to be converted with the tasks file;
+	// TagConvert + "/" + a profile's name, with that profile. An asset
+	// that is already converted is converted again, from its current file.
 	TagConvert = TagPrefix + "convert"
-	// TagKeep marks the asset as handled: it is never converted.
+	// TagKeep protects an asset: while it has this tag, it is not
+	// converted, whatever else it is tagged. Removing the tag ends it.
 	TagKeep = TagPrefix + "keep"
-	// TagRedo removes a "keep" mark (or the mark of an asset kept because
-	// converting it did not help), so that the asset can be
-	// converted again.
-	TagRedo = TagPrefix + "redo"
-	// TagReconvert asks for an asset that is already converted to be
-	// converted again, from the converted file, with the current tasks.
-	TagReconvert = TagPrefix + "reconvert"
-	// TagFailed is set on an asset whose conversion failed.
+	// TagFailed is set on an asset whose conversion failed. Its convert
+	// tag stays, and it is not tried again while it has this tag: removing
+	// it is how a person asks for another try. One change each way, since
+	// Immich can lose one of two quick tag changes to the same asset.
 	TagFailed = TagPrefix + "failed"
 	// TagReview is set on a second copy that was left alone because it has
 	// something of its own: the person merges the two.
 	TagReview = TagPrefix + "review"
 )
 
-// commandTags are created when library mode starts, so that they can be
-// found in Immich before they were ever used. The status tags appear when
-// they are first set.
-var commandTags = []string{TagConvert, TagKeep, TagRedo, TagReconvert}
+// ConvertTag returns the tag that asks for a conversion with profile ("" is
+// the tasks file).
+func ConvertTag(profile string) string {
+	if profile == "" {
+		return TagConvert
+	}
+	return TagConvert + "/" + profile
+}
 
-// errPendingCopy says a tagged asset is the unfinished copy of an
-// interrupted replacement. Settling that comes first, whatever the tag says;
-// the tag waits for a later run.
-var errPendingCopy = errors.New("the unfinished copy of an interrupted replacement")
-
-// KeepNote is the note of the marker written for TagKeep.
-const KeepNote = "tagged keep in Immich"
-
-// runTags is what one run knows about the optimizer's tags.
+// runTags is what one pass knows about the optimizer's tags.
 type runTags struct {
 	// ids maps every existing optimizer tag's value to its id.
 	ids map[string]string
 	// own is the set of those ids: they are never carried over or compared.
 	own map[string]bool
-	// convert, keep and redo are the assets that carry each command.
-	convert, keep, redo, reconvert map[string]bool
+	// convert maps each asset tagged to be converted to the profile it
+	// asks for ("" is the tasks file). conflict holds the assets tagged
+	// for more than one, with those profiles.
+	convert  map[string]string
+	conflict map[string][]string
+	// convertTagged maps each convert tag's value to the assets that have it.
+	convertTagged map[string]map[string]bool
+	// keep are the assets tagged keep, failed those tagged failed.
+	keep, failed map[string]bool
+}
+
+// commandTags are the tags a person sets: created when library mode starts,
+// so that they can be found in Immich before they were ever used. The
+// status tags appear when they are first set.
+func (s *Service) commandTags() []string {
+	tags := []string{TagConvert}
+	for _, p := range s.profileNames() {
+		tags = append(tags, ConvertTag(p))
+	}
+	return append(tags, TagKeep)
+}
+
+// profileNames returns the named profiles, sorted.
+func (s *Service) profileNames() []string {
+	names := make([]string, 0, len(s.cfg.Profiles))
+	for n := range s.cfg.Profiles {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// converter returns the converter of a profile ("" is the tasks file).
+func (s *Service) converter(profile string) port.CheckingConverter {
+	if c := s.cfg.Profiles[profile]; profile != "" && c != nil {
+		return c
+	}
+	return s.conv
 }
 
 // loadTags makes sure the command tags exist and reads which assets have
@@ -65,7 +97,7 @@ func (s *Service) loadTags(ctx context.Context) (*runTags, error) {
 		return nil, fmt.Errorf("listing tags: %w", err)
 	}
 	var missing []string
-	for _, v := range commandTags {
+	for _, v := range s.commandTags() {
 		if all[v] == "" {
 			missing = append(missing, v)
 		}
@@ -85,9 +117,10 @@ func (s *Service) loadTags(ctx context.Context) (*runTags, error) {
 		}
 		s.infof("Library: created the tags %v in Immich", missing)
 	}
-	rt := &runTags{ids: map[string]string{}, own: map[string]bool{}}
+	rt := &runTags{ids: map[string]string{}, own: map[string]bool{}, convert: map[string]string{},
+		conflict: map[string][]string{}, convertTagged: map[string]map[string]bool{}}
 	for v, id := range all {
-		if len(v) > len(TagPrefix) && v[:len(TagPrefix)] == TagPrefix {
+		if strings.HasPrefix(v, TagPrefix) && len(v) > len(TagPrefix) {
 			rt.ids[v], rt.own[id] = id, true
 		}
 	}
@@ -102,19 +135,61 @@ func (s *Service) loadTags(ctx context.Context) (*runTags, error) {
 		}
 		return set, nil
 	}
-	if rt.convert, err = tagged(TagConvert); err != nil {
+	counts := []string{}
+	// The profiles first: Immich's search for a tag also finds the assets
+	// of its child tags, so the plain convert tag finds every one of them
+	// too. A profile is more specific and wins; two profiles conflict.
+	for _, profile := range s.profileNames() {
+		v := ConvertTag(profile)
+		set, err := tagged(v)
+		if err != nil {
+			return nil, err
+		}
+		rt.convertTagged[v] = set
+		for id := range set {
+			if prev, ok := rt.convert[id]; ok {
+				if len(rt.conflict[id]) == 0 {
+					rt.conflict[id] = []string{prev}
+				}
+				rt.conflict[id] = append(rt.conflict[id], profile)
+				continue
+			}
+			rt.convert[id] = profile
+		}
+		if len(set) > 0 {
+			counts = append(counts, fmt.Sprintf("%s: %d", v, len(set)))
+		}
+	}
+	plain, err := tagged(TagConvert)
+	if err != nil {
 		return nil, err
+	}
+	rt.convertTagged[TagConvert] = plain
+	n := 0
+	for id := range plain {
+		if _, ok := rt.convert[id]; !ok {
+			rt.convert[id] = ""
+			n++
+		}
+	}
+	if n > 0 {
+		counts = append(counts, fmt.Sprintf("%s: %d", TagConvert, n))
 	}
 	if rt.keep, err = tagged(TagKeep); err != nil {
 		return nil, err
 	}
-	if rt.redo, err = tagged(TagRedo); err != nil {
-		return nil, err
+	if id := rt.ids[TagFailed]; id != "" {
+		if rt.failed, err = tagged(TagFailed); err != nil {
+			return nil, err
+		}
 	}
-	if rt.reconvert, err = tagged(TagReconvert); err != nil {
-		return nil, err
+	if len(rt.keep) > 0 {
+		counts = append(counts, fmt.Sprintf("%s: %d", TagKeep, len(rt.keep)))
 	}
-	s.infof("Library: tagged %s: %d, %s: %d, %s: %d, %s: %d", TagConvert, len(rt.convert), TagKeep, len(rt.keep), TagRedo, len(rt.redo), TagReconvert, len(rt.reconvert))
+	if len(counts) == 0 {
+		counts = append(counts, "nothing")
+	}
+	s.infof("Library: tagged %s", strings.Join(counts, ", "))
 	return rt, nil
 }
 
@@ -189,106 +264,22 @@ func basicChecks(me string, listed entity.LibraryAsset) error {
 	return nil
 }
 
-// markKeep writes the "keep" marker on an asset tagged TagKeep. The file is
-// not touched. An asset the optimizer already handled keeps its marker.
-func (s *Service) markKeep(ctx context.Context, me string, listed entity.LibraryAsset, t *tally) error {
-	if err := basicChecks(me, listed); err != nil {
-		return err
-	}
-	items, err := s.api.GetMetadata(ctx, listed.ID)
-	if err != nil {
-		return fmt.Errorf("reading asset metadata: %w", err)
-	}
-	if m := markerOf(items); m != nil {
-		if m.State == entity.MarkerStatePending {
-			return errPendingCopy
-		}
-		return &errSkip{reason: "it was already handled by the optimizer", converted: m}
-	}
-	t.item.Size = listed.Size
-	if err := s.writeKept(ctx, &listed, KeepNote); err != nil {
-		return err
-	}
-	t.MarkedKeep++
-	t.item.Status, t.item.Reason = statusMarkedKeep, "tagged "+TagKeep
-	s.infof("Library: keeping %s (%s) as it is, as tagged %s", listed.OriginalFileName, listed.ID, TagKeep)
-	return s.record(Entry{Event: "marked_keep", Asset: listed.ID, File: listed.OriginalFileName, OriginalBytes: listed.Size})
-}
-
-// redo removes the marker of an asset tagged TagRedo, when that marker only
-// says the asset was left as it is ("keep", or kept because converting it
-// did not help). The marker of a conversion stays: it is what tells phones
-// and later runs about the original.
-//
-// It returns nil when the asset may now be considered like any unmarked
-// asset, and an error (usually a skip) otherwise.
-func (s *Service) redo(ctx context.Context, me string, listed entity.LibraryAsset, t *tally) error {
-	if err := basicChecks(me, listed); err != nil {
-		return err
-	}
-	items, err := s.api.GetMetadata(ctx, listed.ID)
-	if err != nil {
-		return fmt.Errorf("reading asset metadata: %w", err)
-	}
-	m := markerOf(items)
-	switch {
-	case m == nil:
-		return nil
-	case m.State == entity.MarkerStatePending:
-		return errPendingCopy
-	case !m.Kept:
-		return &errSkip{reason: "tagged " + TagRedo + ", but it is a conversion: its marker stays", converted: m}
-	}
-	if err := s.api.DeleteMetadata(ctx, listed.ID, entity.MarkerKey); err != nil {
-		return fmt.Errorf("removing its marker: %w", err)
-	}
-	t.Forgotten++
-	s.infof("Library: removed the marker of %s (%s), as tagged %s", listed.OriginalFileName, listed.ID, TagRedo)
-	return s.record(Entry{Event: "marker_removed", Asset: listed.ID, File: listed.OriginalFileName, Detail: m.Note})
-}
-
-// settleTags removes the command tags from the assets the run acted on and
-// sets the status tags. It runs at the end of a real run that was not
-// interrupted; a run that stops earlier leaves the tags, and the next run
-// acts on them again, which is harmless: what was done is found done.
+// settleTags removes the convert tags from the assets a pass acted on and
+// sets the status tags. The keep tag is never removed: it is the person's.
+// It runs at the end of a pass that was not interrupted; a pass that stops
+// earlier leaves the tags, and the next one acts on them again.
 func (s *Service) settleTags(ctx context.Context, rt *runTags, items []*Item) error {
 	status := make(map[string]*Item, len(items))
 	for _, it := range items {
 		status[it.ID] = it
 	}
-	var untagConvert, untagKeep, untagRedo, untagReconvert, untagFailed, failed, review []string
-	for id := range rt.reconvert {
-		if it := status[id]; it != nil && !it.retry {
-			untagReconvert = append(untagReconvert, id)
-		}
-	}
-	for id := range rt.convert {
-		if it := status[id]; it != nil && !it.retry {
-			untagConvert = append(untagConvert, id)
-		}
-	}
-	for id := range rt.keep {
-		if it := status[id]; it != nil && !it.retry {
-			untagKeep = append(untagKeep, id)
-			// Keep wins over convert: both commands are settled.
-			if rt.convert[id] {
-				untagConvert = append(untagConvert, id)
-			}
-		}
-	}
-	for id := range rt.redo {
-		if it := status[id]; it != nil && !it.retry {
-			untagRedo = append(untagRedo, id)
-		}
-	}
+	var failed, review []string
 	for _, it := range items {
 		switch {
 		case it.Status == statusFailed:
 			failed = append(failed, it.ID)
 		case it.review:
 			review = append(review, it.ID)
-		case it.Status == statusKept || it.Status == statusMarkedKeep:
-			untagFailed = append(untagFailed, it.ID)
 		}
 	}
 
@@ -322,11 +313,21 @@ func (s *Service) settleTags(ctx context.Context, rt *runTags, items []*Item) er
 			errs = append(errs, fmt.Errorf("updating the tag %s on %d asset(s): %w", tag, len(ids), err))
 		}
 	}
-	change(false, TagConvert, untagConvert)
-	change(false, TagKeep, untagKeep)
-	change(false, TagRedo, untagRedo)
-	change(false, TagReconvert, untagReconvert)
-	change(false, TagFailed, untagFailed)
+	tags := make([]string, 0, len(rt.convertTagged))
+	for v := range rt.convertTagged {
+		tags = append(tags, v)
+	}
+	sort.Strings(tags)
+	for _, v := range tags {
+		var settled []string
+		for id := range rt.convertTagged[v] {
+			// A failed asset keeps its convert tag: see TagFailed.
+			if it := status[id]; it != nil && !it.retry && it.Status != statusFailed {
+				settled = append(settled, id)
+			}
+		}
+		change(false, v, settled)
+	}
 	change(true, TagFailed, failed)
 	change(true, TagReview, review)
 	return errors.Join(errs...)

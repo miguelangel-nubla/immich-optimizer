@@ -908,3 +908,40 @@ func TestModeIsRequired(t *testing.T) {
 		t.Error("an empty mode list was accepted")
 	}
 }
+
+// Profiles are folders with a tasks.yaml: the bundled ones, then the
+// person's own, which replace a bundled one of the same name.
+func TestLoadProfiles(t *testing.T) {
+	bundled, own := t.TempDir(), t.TempDir()
+	mk := func(dir, name string, withTasks bool) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if withTasks {
+			if err := os.WriteFile(filepath.Join(dir, name, "tasks.yaml"), []byte("tasks: []\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	mk(bundled, "lossless", true)
+	mk(bundled, "profile1", true)
+	mk(own, "profile1", true)
+	mk(own, "smaller", true)
+	mk(own, "empty-folder", false)
+	if err := os.WriteFile(filepath.Join(own, "notes.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadProfiles(bundled, own, filepath.Join(own, "does-not-exist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got["lossless"] != filepath.Join(bundled, "lossless", "tasks.yaml") ||
+		got["profile1"] != filepath.Join(own, "profile1", "tasks.yaml") || got["smaller"] == "" {
+		t.Errorf("profiles = %v", got)
+	}
+	mk(own, "has space", true)
+	if _, err := loadProfiles(own); err == nil || !strings.Contains(err.Error(), "has space") {
+		t.Errorf("a name that cannot be a tag: %v", err)
+	}
+}

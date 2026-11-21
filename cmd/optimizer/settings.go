@@ -105,6 +105,9 @@ var settings = []setting{
 		Help:   "Size in bytes of the buffer for file system events",
 		target: func(ac *entity.AppConfig) any { return &ac.InotifyBufferSize }},
 
+	{Name: "library_profiles_dir", Group: groupLibrary, Default: "/etc/immich-optimizer/profiles",
+		Help:   "Folder of your own profiles: each folder in it with a `tasks.yaml` is one, used for assets tagged `immich-optimizer/convert/<folder name>`. A folder named like a bundled profile replaces it",
+		target: func(ac *entity.AppConfig) any { return &ac.LibraryProfilesDir }},
 	{Name: "library_concurrency", Group: groupLibrary, Default: 1,
 		Help:   "How many assets are replaced at the same time. Each one makes Immich generate thumbnails and analyse a new file",
 		target: func(ac *entity.AppConfig) any { return &ac.LibraryConcurrency }},

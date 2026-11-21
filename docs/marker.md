@@ -24,7 +24,7 @@ For every file it converts, the optimizer stores a record in Immich's asset meta
 }
 ```
 
-**The first version is the original**, as it was before any conversion: its `sha1` is the checksum Immich would have stored for it, the one phones still have. **Each later version was made from the one before it.** A file converted once has two versions; one [converted again](library.md#choosing-what-to-convert) (`immich-optimizer/reconvert`) gets one more each time, and its first version stays the same.
+**The first version is the original**, as it was before any conversion: its `sha1` is the checksum Immich would have stored for it, the one phones still have. **Each later version was made from the one before it.** A file converted once has two versions; one [converted again](library.md#converting-again) gets one more each time, and its first version stays the same.
 
 | Field | Meaning |
 |---|---|
@@ -40,7 +40,7 @@ For every file it converts, the optimizer stores a record in Immich's asset meta
 | `versions[].config.sha256` | a fingerprint of the folder the tasks file is in: the file itself and the scripts and presets next to it. Two versions with the same value were made with the same configuration; a changed script changes it even when the command is the same |
 | `library.replaces` | the id of the asset this one replaced (library mode) |
 | `library.state` | `pending` while library mode is still replacing the earlier asset with this one; absent once it is done |
-| `kept` | on an asset library mode left as it is, instead of any conversion: `note` says why (it did not get smaller, or it was tagged [`immich-optimizer/keep`](library.md#choosing-what-to-convert): `"tagged keep in Immich"`), with `at` and `optimizer`. Its `versions` holds only the original |
+| `kept` | on an asset library mode left as it is, instead of any conversion: `note` says why (for example, converting it did not make it smaller), with `at` and `optimizer`. Its `versions` holds only the original |
 
 A part that does not apply is left out.
 

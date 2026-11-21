@@ -112,13 +112,12 @@ These assets are left exactly as they are. The reason for each is written to the
 
 You choose in Immich, with tags. Library mode creates them the first time it runs; they are under `immich-optimizer` in Immich's tag list.
 
-| Tag | Set by | What the next run does |
+| Tag | Set by | What happens |
 |---|---|---|
-| `immich-optimizer/convert` | you | converts the asset, then removes the tag |
-| `immich-optimizer/keep` | you | keeps the asset as it is: marks it, without touching the file, and removes the tag. It is never converted, also if it is tagged `convert` later |
-| `immich-optimizer/redo` | you | removes a `keep` mark (or the mark of an asset that was kept because converting it did not help), and removes the tag. Tag it `convert` too to have it converted in the same run |
-| `immich-optimizer/reconvert` | you | converts a photo that is **already converted** again, from the converted file, with your current tasks, then removes the tag. Its [record](marker.md) keeps every version, and the first one is still the original your phone has. The result is used only when it is smaller; otherwise the photo stays exactly as it is. With a lossy task, quality is lost a second time |
-| `immich-optimizer/failed` | the optimizer | the conversion failed: the reason is in the [audit log](audit-log.md) and the optimizer's own log. Tag it `convert` again to try once more |
+| `immich-optimizer/convert` | you | the asset is converted with your tasks file, and the tag is removed. If it is already converted, it is converted again from the file it has now (see [Converting again](#converting-again)) |
+| `immich-optimizer/convert/<profile>` | you | the same, with that [profile](#profiles) instead of your tasks file |
+| `immich-optimizer/keep` | you | protects the asset: while it has this tag, it is not converted, whatever else it is tagged. Remove the tag to end it. Nothing is written to the asset |
+| `immich-optimizer/failed` | the optimizer | the conversion failed: the reason is in the [audit log](audit-log.md) and the optimizer's own log. The asset keeps its `convert` tag and is not tried again while it has `failed`: **remove `failed` to try again** |
 | `immich-optimizer/review` | the optimizer | a [second copy](#second-copies-of-converted-originals) was left alone because it has something of its own: merge the two by hand |
 
 **Tagging by hand.** In Immich, select the photos and videos, then choose **Tag** in the selection menu. "Select all" works in an album, in search results and on a whole day or month of the timeline, so:
@@ -129,14 +128,42 @@ You choose in Immich, with tags. Library mode creates them the first time it run
 
 **Tagging automatically.** Immich's own workflows (Administration → Workflows) can tag new assets as they arrive: for example "when an asset is uploaded, if it is a video, add the tag `immich-optimizer/convert`". A workflow can test the file name, the type, the date taken, the camera and other EXIF fields, the location, existing tags and the text Immich reads in a photo. Workflows react to new uploads, to metadata and text being read, and to tagging. They do not go through what is already in your library, and Immich has no workflow trigger for "added to an album": for those, tag by hand as above.
 
-**Files converted by an earlier version.** Versions before 0.4 did not mark what they converted. Library mode cannot tell those files from originals, and would convert them a second time. Converting an already converted file almost never makes it smaller, and a result that is not smaller is never used, so nothing is lost, but it costs time. Tag such files `immich-optimizer/keep` to skip them. For example, if your earlier setup turned videos into `.mkv`, search Immich for `.mkv`, select all and tag them `keep`.
+**Protect what should not be converted (again).** `convert` converts whatever it is on, also a photo that is already converted, so tagging in bulk includes those. Tag what must stay as it is `immich-optimizer/keep` first. For example, versions before 0.4 did not mark what they converted: if your earlier setup turned videos into `.mkv`, search Immich for `.mkv`, select all and tag them `keep`.
 
-- **What a tag asks for happens once.** The tag is removed as soon as it is settled: converted, kept, marked, or skipped for good (no task handles its type, for example). It stays only when the reason may go away by itself, such as a file Immich has not finished reading: a later run tries again.
-- **`keep` wins over `convert`.** An asset with both is kept as it is.
-- **`convert` never converts a conversion again**, so tagging in bulk is safe. Only `reconvert` does, and it needs a task in your tasks file that takes the converted file's type (JPEG XL, for example). Without one, the tag is removed and nothing happens.
+- **A tag is acted on once.** `convert` is removed as soon as it is settled: converted, kept as it is because converting did not make it smaller, or skipped for good (no task handles its type, for example). It stays when the reason may go away by itself, such as a file Immich has not finished reading, and when the conversion failed (see `failed` above).
+- **Tagging again tries again.** A photo kept as it is because converting did not help is converted again when you tag it again, with your current tasks.
+- **`keep` wins** over every `convert` tag.
+- **A profile wins over plain `convert`.** A photo tagged `convert` and `convert/<profile>` is converted with the profile. Two different profiles on one photo is a mistake: it is marked `failed`, and the log names both.
 - **Tags are settled once a batch is finished.** A batch that is stopped (the container is restarted, for example) leaves them as they are, and they are acted on again after the restart.
+- **Change a photo's tags one at a time.** Immich can lose one of two changes made to the same photo within a second or two, such as removing one tag and adding another straight after. Add or remove several tags in one go (select them together in the tag picker), or wait a moment in between.
 - **The optimizer's tags are never carried over** to a converted copy, and are not counted as a difference when the copy is compared with its original. Your own tags are carried over as usual.
 - **Cleaning up does not depend on tags.** [Second copies](#second-copies-of-converted-originals) are moved to the trash and replacements an earlier run left unfinished are completed, all over the library.
+
+### Converting again
+
+Tagging a photo that is already converted `convert` (or `convert/<profile>`) converts it again, **from the converted file** it has now, for example with a task that makes it smaller still. For that, your tasks (or the profile) need a task for the converted file's type: JPEG XL, for example. Without one, the tag is removed and nothing happens; the bundled profiles pass JPEG XL through as it is.
+
+- The previous copy goes to the trash, like any original, and the new one takes its place with everything carried over.
+- Its [record](marker.md) keeps every version: the first is still the original your phone has, so the phone keeps counting the photo as backed up.
+- The result is used only when it is smaller. Otherwise the photo, and its record, stay exactly as they are.
+- With a lossy task, quality is lost a second time.
+
+### Profiles
+
+A profile is another set of tasks, for converting some photos differently: a folder with a `tasks.yaml` (and any scripts or presets its commands use), like the bundled ones. Tag a photo `immich-optimizer/convert/<profile>` to convert it with that profile.
+
+- **The bundled profiles** are available as they are: `convert/lossless`, `convert/profile1` and `convert/passthrough-all` (see [Bundled profiles](tasks.md#bundled-profiles)).
+- **Your own** go in the profiles folder: mount a folder at `/etc/immich-optimizer/profiles` (or set [`IO_LIBRARY_PROFILES_DIR`](configuration.md#library-mode)), with one folder per profile. A folder named like a bundled profile replaces it.
+
+  ```yaml
+      volumes:
+        - ./profiles:/etc/immich-optimizer/profiles:ro   # ./profiles/smaller/tasks.yaml
+  ```
+
+- Library mode creates one tag per profile when it starts, so they are in Immich's tag picker. Restart it after adding a profile.
+- A profile's name becomes part of a tag: letters, digits, `.`, `_` and `-` only.
+- Profiles are for library mode. Uploads through the proxy and the watcher use your tasks file.
+- All profiles share the limit on conversions running at the same time ([`IO_TASKS_CONCURRENCY`](configuration.md#tasks)).
 
 ## Second copies of converted originals
 

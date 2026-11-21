@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -185,6 +186,45 @@ func isWithin(parent, child string) bool {
 // readSecretFile reads a secret value from path (Docker secrets style),
 // stripping a single trailing newline. Errors name the setting and the path,
 // never the file contents.
+// bundledProfilesDir holds the profiles that come with the image.
+var bundledProfilesDir = "/etc/immich-optimizer/bundled-configs"
+
+// profileNameRe is what a profile's name may be: it becomes part of a tag.
+var profileNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// loadProfiles finds the profiles in dirs, by name: every folder with a
+// tasks.yaml. A later folder replaces an earlier one of the same name. A
+// folder that does not exist has none.
+func loadProfiles(dirs ...string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading the profiles in %s: %w", dir, err)
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			tasksFile := filepath.Join(dir, e.Name(), "tasks.yaml")
+			if _, err := os.Stat(tasksFile); err != nil {
+				continue
+			}
+			if !profileNameRe.MatchString(e.Name()) {
+				return nil, fmt.Errorf("profile folder %q: a profile's name may only have letters, digits, '.', '_' and '-'", e.Name())
+			}
+			out[e.Name()] = tasksFile
+		}
+	}
+	return out, nil
+}
+
 // splitKeys reads one or more API keys: separated by commas, or one per line
 // (blank lines and lines starting with # are ignored).
 func splitKeys(v string) []string {
@@ -542,7 +582,10 @@ func run(args []string) error {
 
 	processorAdapter := processor.NewLocalProcessor(logger, filepath.Dir(config.ConfigFile))
 	configSHA256 := configFingerprint(filepath.Dir(config.ConfigFile), logger)
+	// One limit on conversions running at the same time, for every engine.
+	slots := make(chan struct{}, max(config.MaxConcurrentRequests, 1))
 	engine := convert.New(convert.Config{
+		Slots:         slots,
 		ConfigSHA256:  configSHA256,
 		Tasks:         config.Tasks.Tasks,
 		MaxConcurrent: config.MaxConcurrentRequests,
@@ -621,8 +664,37 @@ func run(args []string) error {
 	libraryCtx, cancelLibrary := context.WithCancel(context.Background())
 	defer cancelLibrary()
 	if hasMode(config.Mode, "library") {
+		// The profiles an asset can be tagged for, each with its own
+		// engine, all within the same limit of conversions.
+		profiles, err := loadProfiles(bundledProfilesDir, config.LibraryProfilesDir)
+		if err != nil {
+			return err
+		}
+		converters := map[string]port.CheckingConverter{}
+		names := make([]string, 0, len(profiles))
+		for name, tasksFile := range profiles {
+			tasks, err := loadTasks(tasksFile)
+			if err != nil {
+				return fmt.Errorf("profile %s (%s): %w", name, tasksFile, err)
+			}
+			dir := filepath.Dir(tasksFile)
+			converters[name] = convert.New(convert.Config{
+				Slots:        slots,
+				ConfigSHA256: configFingerprint(dir, logger),
+				Tasks:        tasks.Tasks,
+				TaskTimeout:  config.TasksTimeout,
+				Version:      version,
+				Checker:      mediacheck.New(),
+			}, processor.NewLocalProcessor(logger, dir), undoneStore, logger)
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		if len(names) > 0 {
+			logger.Printf("Library mode: profiles %s (tag %s/<profile>)", strings.Join(names, ", "), library.TagConvert)
+		}
+
 		// One worker per key: Immich lets a key act on its own user's
-		// assets only. They share the conversion engine and the audit log.
+		// assets only. They share the conversion engines and the audit log.
 		keys := config.ImmichAPIKeys
 		libraryDone = make(chan error, len(keys))
 		for i, key := range keys {
@@ -632,6 +704,7 @@ func run(args []string) error {
 			}
 			svc := library.New(library.Config{
 				Label:         label,
+				Profiles:      converters,
 				ReadyTimeout:  config.LibraryReadyTimeout,
 				Version:       version,
 				ConfigSHA256:  configSHA256,

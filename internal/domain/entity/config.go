@@ -58,6 +58,7 @@ type AppConfig struct {
 	UndoneUnmatched  bool
 	AuditLogFile     string
 	// Library mode.
+	LibraryProfilesDir    string
 	LibraryConcurrency    int
 	LibraryReadyTimeout   time.Duration
 	ConfigFile            string

@@ -16,7 +16,6 @@ const (
 	statusFinalized  = "finalized"
 	statusRolledBack = "rolled_back"
 	statusSecondCopy = "second_copy"
-	statusMarkedKeep = "marked_keep"
 )
 
 // Item is what became of one asset in a pass.

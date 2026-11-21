@@ -29,6 +29,9 @@ type Config struct {
 	// MaxConcurrent is the global limit of concurrent conversions, shared by
 	// all sources.
 	MaxConcurrent int
+	// Slots, when set, is that limit shared with other engines (one per
+	// profile): it replaces MaxConcurrent.
+	Slots chan struct{}
 	// TaskTimeout bounds the processing of one file; 0 means no limit.
 	TaskTimeout time.Duration
 	// SaveUnmatched saves files with no matching task to undone.
@@ -59,12 +62,15 @@ func New(cfg Config, proc port.MediaProcessor, undone port.UndoneStore, log *log
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = 1
 	}
+	if cfg.Slots == nil {
+		cfg.Slots = make(chan struct{}, cfg.MaxConcurrent)
+	}
 	return &Engine{
 		cfg:    cfg,
 		proc:   proc,
 		undone: undone,
 		log:    log,
-		sem:    make(chan struct{}, cfg.MaxConcurrent),
+		sem:    cfg.Slots,
 		now:    time.Now,
 	}
 }

@@ -442,11 +442,9 @@ func dockerArgs(env map[string]string, mounts ...string) []string {
 
 // The optimizer's tags, as library mode names them.
 const (
-	tagConvert   = "immich-optimizer/convert"
-	tagKeep      = "immich-optimizer/keep"
-	tagRedo      = "immich-optimizer/redo"
-	tagReconvert = "immich-optimizer/reconvert"
-	tagFailed    = "immich-optimizer/failed"
+	tagConvert = "immich-optimizer/convert"
+	tagKeep    = "immich-optimizer/keep"
+	tagFailed  = "immich-optimizer/failed"
 )
 
 // tagID returns the id of the user's tag with this value, creating it.
@@ -483,6 +481,17 @@ func (u *user) tagWith(t *testing.T, values []string, ids ...string) {
 		tagIDs = append(tagIDs, u.tagID(t, v))
 	}
 	must(t, u.key, http.MethodPut, "/tags/assets", map[string]any{"tagIds": tagIDs, "assetIds": ids}, nil)
+}
+
+// untag removes a tag from an asset, as a person would, and waits until
+// Immich has applied it: Immich can lose one of two quick changes.
+func (u *user) untag(t *testing.T, value, id string) {
+	t.Helper()
+	must(t, u.key, http.MethodDelete, "/tags/"+u.tagID(t, value)+"/assets", map[string]any{"ids": []string{id}}, nil)
+	eventually(t, time.Minute, value+" to be removed", func() bool {
+		time.Sleep(2 * time.Second)
+		return !contains(u.tags(t, id), value)
+	})
 }
 
 // tags returns the values of an asset's tags.

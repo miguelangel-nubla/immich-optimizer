@@ -163,6 +163,16 @@ func (f *fakeImmich) UpsertTags(_ context.Context, values []string) (map[string]
 	return out, nil
 }
 
+// valueOf returns a tag's value from its id.
+func (f *fakeImmich) valueOf(id string) string {
+	for v, tid := range f.tags {
+		if tid == id {
+			return v
+		}
+	}
+	return ""
+}
+
 // tag gives an asset a tag by value, creating the tag as Immich would.
 func (f *fakeImmich) tag(a *fakeAsset, value string) {
 	if _, err := f.UpsertTags(context.Background(), []string{value}); err != nil {
@@ -196,7 +206,8 @@ func (f *fakeImmich) TaggedAssetIDs(_ context.Context, tagID string) ([]string, 
 		}
 		has := f.convertAll && tagID == f.tags[TagConvert]
 		for _, t := range a.TagIDs {
-			has = has || t == tagID
+			// Like Immich, a tag also finds the assets of its child tags.
+			has = has || t == tagID || strings.HasPrefix(f.valueOf(t), f.valueOf(tagID)+"/")
 		}
 		if has {
 			ids = append(ids, id)
@@ -590,7 +601,8 @@ func (f *fakeImmich) Delete(_ context.Context, ids []string) error {
 // fakeConv "converts" by keeping the first half of the file.
 type fakeConv struct {
 	noGain     bool
-	jxlToo     bool // a task also converts .jxl, as one that converts again does
+	jxlToo     bool   // a task also converts .jxl, as one that converts again does
+	task       string // the task's name in the marker; "jpeg-xl" when empty
 	convertErr error
 	verifyErr  error
 	motion     string
@@ -622,8 +634,15 @@ func (c *fakeConv) Convert(_ context.Context, in entity.ConvertInput) (*entity.C
 		Outcome: entity.OutcomeOptimized, DeliverPath: out,
 		DeliverName:  strings.TrimSuffix(in.Filename, filepath.Ext(in.Filename)) + ".jxl",
 		OriginalSize: int64(len(data)), OutputSize: st.Size(), Release: func() {},
-		Marker: &entity.Marker{V: 1, SHA1: in.SHA1, Size: int64(len(data)), Task: "jpeg-xl", Source: string(in.Source), MotionPhotos: c.motion},
+		Marker: &entity.Marker{V: 1, SHA1: in.SHA1, Size: int64(len(data)), Task: c.taskName(), Source: string(in.Source), MotionPhotos: c.motion},
 	}, nil
+}
+
+func (c *fakeConv) taskName() string {
+	if c.task == "" {
+		return "jpeg-xl"
+	}
+	return c.task
 }
 
 func (c *fakeConv) SaveUndone(entity.ConvertInput, entity.Failure) (*entity.UndoneRecord, error) {
@@ -926,7 +945,9 @@ func TestNoGainKeepsOriginalAndRemembers(t *testing.T) {
 	if old.IsTrashed || m == nil || !m.Kept || m.Note == "" {
 		t.Errorf("original trashed=%v marker=%+v", old.IsTrashed, m)
 	}
-	// Next run does not download it again.
+	// Not tagged again, it is not downloaded again. (Tagged again, it is
+	// tried again: see TestConvertRetriesWhatWasKept.)
+	h.im.convertAll = false
 	h.im.failCall["DownloadOriginal"] = errors.New("must not be called")
 	if sum, err := h.run(); err != nil || sum.Failed != 0 || sum.Skipped != 1 {
 		t.Errorf("second run: %+v %v", sum, err)
@@ -962,7 +983,9 @@ func TestSkips(t *testing.T) {
 		h.im.activity["shared-1/"+a.ID] = 2
 	})
 	mk("done.jpg", func(a *fakeAsset) {
+		// Already converted, and protected from being converted again.
 		a.metadata[entity.MarkerKey] = json.RawMessage(`{"v":1,"versions":[{"sha1":"aa","size":1},{"size":1,"task":{"name":"jpeg-xl"}}]}`)
+		h.im.tag(a, TagKeep)
 	})
 
 	sum, err := h.run()

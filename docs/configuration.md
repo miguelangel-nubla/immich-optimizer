@@ -64,6 +64,7 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 
 | Environment variable | Flag | Default | Description |
 |---|---|---|---|
+| `IO_LIBRARY_PROFILES_DIR` | `-library_profiles_dir` | `/etc/immich-optimizer/profiles` | Folder of your own profiles: each folder in it with a `tasks.yaml` is one, used for assets tagged `immich-optimizer/convert/<folder name>`. A folder named like a bundled profile replaces it |
 | `IO_LIBRARY_CONCURRENCY` | `-library_concurrency` | `1` | How many assets are replaced at the same time. Each one makes Immich generate thumbnails and analyse a new file |
 | `IO_LIBRARY_READY_TIMEOUT` | `-library_ready_timeout` | `10m` | How long to wait for Immich to finish reading a converted asset. A [duration](#durations) |
 
