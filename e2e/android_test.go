@@ -185,7 +185,8 @@ func (p phone) typeInto(i, n int, text string) {
 	typed := func(got string) bool {
 		return got == text || utf8.RuneCountInString(got) == utf8.RuneCountInString(text) && strings.Trim(got, "\u2022*") == ""
 	}
-	for try := 0; try < 6; try++ {
+	n0 := n
+	for try := 0; try < 8; try++ {
 		f := p.fields(n)[i]
 		if typed(f.Text) {
 			return
@@ -193,14 +194,17 @@ func (p phone) typeInto(i, n int, text string) {
 		x1, y1, x2, y2 := f.box()
 		p.tapAt((x1+x2)/2, (y1+y2)/2)
 		time.Sleep(2 * time.Second)
-		if f.Text != "" {
-			// Something partial is in it: select all of it and delete.
-			p.shell("input keycombination 113 29")
-			p.shell("input keyevent 67")
+		if n := utf8.RuneCountInString(f.Text); n > 0 {
+			// Something partial is in it: go to its end and delete it
+			// character by character, which works in every text field.
+			p.shell("input keyevent 123" + strings.Repeat(" 67", n+2))
 			time.Sleep(time.Second)
+			if left := p.fields(n0)[i].Text; left != "" {
+				continue // not empty yet: look again before typing more
+			}
 		}
 		p.shell("input text '" + text + "'")
-		time.Sleep(time.Second)
+		time.Sleep(2 * time.Second)
 	}
 	if got := p.fields(n)[i].Text; !typed(got) {
 		p.t.Fatalf("could not type into text field %d: it holds %q", i, got)

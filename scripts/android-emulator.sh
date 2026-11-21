@@ -21,6 +21,9 @@ API="${IO_ANDROID_API:-36}"
 APP_VERSION="${IMMICH_APP_VERSION:-v3.4.2}"
 DIR="${IO_ANDROID_DIR:-${TMPDIR:-/tmp}/io-android}"
 PORT="${IO_ANDROID_PORT:-5580}"
+# Processor cores the device gets (IO_ANDROID_CORES). Fewer keeps the machine
+# it runs on usable; the tests only get slower.
+CORES="${IO_ANDROID_CORES:-4}"
 SERIAL="emulator-$PORT"
 AVD="io-e2e"
 ADB="$ANDROID_HOME/platform-tools/adb"
@@ -61,7 +64,7 @@ abi.type=$ABI
 avd.ini.encoding=UTF-8
 disk.dataPartition.size=6G
 hw.cpu.arch=$([ "$ABI" = arm64-v8a ] && echo arm64 || echo x86_64)
-hw.cpu.ncore=4
+hw.cpu.ncore=$CORES
 hw.gpu.enabled=yes
 hw.gpu.mode=swiftshader_indirect
 hw.keyboard=yes
@@ -102,6 +105,9 @@ INI
     "$ADB" -s "$SERIAL" shell settings put global "$k" 0
   done
   "$ADB" -s "$SERIAL" shell settings put system screen_off_timeout 2147483647
+  # No on-screen keyboard (the device has a hardware one): it slides in while
+  # the first characters are typed, and the app then loses some of them.
+  "$ADB" -s "$SERIAL" shell settings put secure show_ime_with_hard_keyboard 0
 
   APK="${IO_ANDROID_APK_CACHE:-$HOME/.cache/immich-optimizer}/immich-$APP_VERSION-$ABI.apk"
   if [ ! -s "$APK" ]; then
