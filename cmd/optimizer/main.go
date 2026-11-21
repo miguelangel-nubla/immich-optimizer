@@ -595,11 +595,12 @@ func run(args []string) error {
 
 	if runProxy {
 		proxyServer = proxy.NewServer(proxy.Config{
-			UpstreamURL: parsedImmichURL,
-			BindAddr:    config.BindAddr,
-			PassUploads: !config.ProxyConvertUploads,
-			Downloads:   config.Tasks.Downloads,
-			Processor:   processorAdapter,
+			UpstreamURL:   parsedImmichURL,
+			BindAddr:      config.BindAddr,
+			PassUploads:   !config.ProxyConvertUploads,
+			PassDownloads: !config.ProxyConvertDownloads,
+			Downloads:     config.Tasks.Downloads,
+			Processor:     processorAdapter,
 			// The same limits as for uploads.
 			DownloadTimeout:     config.TasksTimeout,
 			DownloadConcurrency: config.MaxConcurrentRequests,

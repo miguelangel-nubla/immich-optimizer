@@ -40,7 +40,7 @@ With `IO_PROXY_CONVERT_UPLOADS=false` the proxy does not convert uploads: they r
 The proxy then still does the two things only it can do:
 
 - **The mobile app** keeps counting photos that library mode converted as backed up, and does not upload them again ([below](#the-mobile-app)).
-- **Downloads** of converted photos are converted back, for example JPEG XL to JPEG ([Tasks: downloads](tasks.md#downloads)).
+- **Downloads** of converted photos are converted back, for example JPEG XL to JPEG ([Tasks: downloads](tasks.md#downloads)). Its sister setting, `IO_PROXY_CONVERT_DOWNLOADS=false`, switches that off too: downloads then come as Immich stores them.
 
 To convert every new upload anyway, but in the background instead of during the upload, let one of Immich's workflows tag new uploads `immich-optimizer/convert` ([Library mode](library.md#choosing-what-to-convert)).
 

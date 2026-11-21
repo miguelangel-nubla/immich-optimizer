@@ -345,4 +345,12 @@ func TestProxyConvertsDownloads(t *testing.T) {
 			t.Errorf("download without credentials: status %d, want 401", r2.StatusCode)
 		}
 	}
+
+	// With download conversion switched off, the proxy sends what Immich
+	// stores, although the tasks file has a downloads list.
+	_, plain := startOptimizer(t, map[string]string{"IO_MODE": "proxy", "IO_PROXY_CONVERT_DOWNLOADS": "false"}, true, sharedDir(t)+":/undone")
+	off, offBody := get(plain, jxl.ID, nil)
+	if off.Header.Get("Content-Type") != "image/jxl" || sum(offBody) != sum(directBody) {
+		t.Errorf("with IO_PROXY_CONVERT_DOWNLOADS=false the download was changed: type %q", off.Header.Get("Content-Type"))
+	}
 }

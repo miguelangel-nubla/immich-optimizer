@@ -43,10 +43,12 @@ type AppConfig struct {
 	HealthCheck bool
 	Mode        string
 	BindAddr    string
-	// ProxyConvertUploads is false when the proxy passes uploads through.
-	ProxyConvertUploads bool
-	ImmichURL           string
-	ImmichAPIKey        string
+	// ProxyConvertUploads and ProxyConvertDownloads are false when the
+	// proxy passes uploads or downloads through.
+	ProxyConvertUploads   bool
+	ProxyConvertDownloads bool
+	ImmichURL             string
+	ImmichAPIKey          string
 	// ImmichAPIKeys are all the keys given; ImmichAPIKey is the first one.
 	// Library mode works for each key's user.
 	ImmichAPIKeys    []string

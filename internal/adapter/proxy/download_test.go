@@ -141,3 +141,28 @@ func TestDownloadsAreConvertedOnlyWhereATaskSaysSo(t *testing.T) {
 		t.Errorf("without tasks: %q", rec.Body.String())
 	}
 }
+
+// With downloads passed through, the stored file is sent as it is, although
+// a download task handles it.
+func TestDownloadsPassedThroughWhenAskedTo(t *testing.T) {
+	const jxl = "2f908a71-185e-4fb6-960c-278a8d87e66b"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/original") {
+			w.Header().Set("Content-Type", "image/jxl")
+			_, _ = io.WriteString(w, "stored")
+			return
+		}
+		_, _ = io.WriteString(w, `{"originalFileName":"IMG_1.jxl","isEdited":false}`)
+	}))
+	defer upstream.Close()
+	proc := &fakeProcessor{}
+	tasks := []entity.Task{{Name: "jxl-to-jpeg", Extensions: []string{"jxl"}, Command: "x"}}
+	server := newTestServer(t, upstream.URL, &fakeConverter{}, func(c *Config) {
+		c.Downloads, c.Processor, c.PassDownloads = tasks, proc, true
+	})
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/assets/"+jxl+"/original?edited=true", nil))
+	if rec.Body.String() != "stored" || rec.Header().Get("Content-Type") != "image/jxl" || proc.calls.Load() != 0 {
+		t.Fatalf("got %q (%s), %d conversions", rec.Body.String(), rec.Header().Get("Content-Type"), proc.calls.Load())
+	}
+}

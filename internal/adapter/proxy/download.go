@@ -149,7 +149,7 @@ func (s *Server) assetName(r *http.Request, id string) (cachedName, bool) {
 // when a download task handles the asset's type. It reports whether it
 // answered; when it did not, the request goes to Immich untouched.
 func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) bool {
-	if len(s.cfg.Downloads) == 0 || s.cfg.Processor == nil {
+	if len(s.cfg.Downloads) == 0 || s.cfg.Processor == nil || s.cfg.PassDownloads {
 		return false
 	}
 	id, wantsEdited, ok := originalID(r)

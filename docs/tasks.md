@@ -141,6 +141,7 @@ downloads:
 - **A JPEG comes back exactly as it was uploaded** when the JXL was made with `cjxl --lossless_jpeg=1`, as the bundled `lossless` profile does: `djxl` rebuilds the original file, byte for byte. A JXL made from a PNG, or with a lossy task, becomes a new JPEG.
 - **Only the download of a single original is converted** ("Download" in the web and mobile apps, `GET /api/assets/{id}/original`). Archives of several assets, and a photo edited in Immich itself (rotated or cropped there), are sent as Immich makes them.
 - **If the command fails, the stored file is sent**, and the log says so.
+- **To switch it off** without changing the tasks file, set `IO_PROXY_CONVERT_DOWNLOADS=false`: downloads then come as Immich stores them.
 - The file is downloaded from Immich in full and converted on every request, also when only a part of it is asked for. It takes one more request to Immich per download, to learn the file's type.
 - **The bundled profiles that store JPEG XL have this list**, so with them originals are downloaded as JPEG. This includes a JXL you uploaded as one. Remove the list from your tasks file to download files as they are stored; a tasks file without it converts nothing.
 - Only proxy mode reads it.

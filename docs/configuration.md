@@ -51,6 +51,7 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 |---|---|---|---|
 | `IO_PROXY_BIND_ADDR` | `-proxy_bind_addr` | `:2283` | Address and port the proxy listens on |
 | `IO_PROXY_CONVERT_UPLOADS` | `-proxy_convert_uploads` | `true` | Convert uploads on their way to Immich. `false` passes them through as they are: library mode then converts what is tagged, and the proxy still keeps phones from uploading converted photos again and converts downloads |
+| `IO_PROXY_CONVERT_DOWNLOADS` | `-proxy_convert_downloads` | `true` | Convert downloads of an original with the `downloads` list of the tasks file (JPEG XL to JPEG, for example). `false` passes downloads through as Immich sends them |
 
 ### Watcher mode
 

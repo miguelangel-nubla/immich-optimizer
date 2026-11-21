@@ -49,6 +49,9 @@ type Config struct {
 	// PassUploads sends uploads to Immich as they are, like any other
 	// request: library mode converts them later, when they are tagged.
 	PassUploads bool
+	// PassDownloads sends downloads as Immich makes them, whatever the
+	// Downloads tasks say.
+	PassDownloads bool
 	// Downloads are the tasks that convert an original on its way out, run
 	// by Processor. Without them downloads pass through untouched.
 	Downloads []entity.Task
