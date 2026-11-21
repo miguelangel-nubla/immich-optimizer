@@ -73,6 +73,8 @@ The image ships these under `/etc/immich-optimizer/bundled-configs/<profile>/`. 
 
 Every bundled profile accepts every file type Immich accepts.
 
+**`profile1` and video from current phones:** its HandBrake preset encodes to AV1 at a very high quality. Measured on clips straight from an iPhone and a Pixel, the result was two to three times larger than the phone's own file, so the original was kept and nothing was saved. It is useful for older or high-bitrate video; expect no gain on recent phone video until the preset is changed.
+
 ## Motion photos
 
 A motion photo is a photo with a short video embedded in the same file (Android/Pixel JPEGs, Samsung HEICs). The `motion_photos` key of your `tasks.yaml` controls **what each task command receives** for such a file:

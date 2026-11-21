@@ -12,8 +12,8 @@ Shrinks the photos and videos in your [Immich](https://immich.app/) library by c
 
 | Mode | What it does | Use it for |
 |---|---|---|
-| [Proxy](docs/proxy.md) | sits in front of Immich and converts uploads on the way in | the web interface, `immich-go`, the CLI |
-| [Watcher](docs/watcher.md) | watches a folder, converts and uploads what appears in it | phone backup through a sync tool, bulk imports |
+| [Proxy](docs/proxy.md) | sits in front of Immich and converts uploads on the way in | the web interface, the mobile app, `immich-go`, the CLI |
+| [Watcher](docs/watcher.md) | watches a folder, converts and uploads what appears in it | bulk imports, phone backup through a sync tool |
 | [Library](docs/library.md) | converts the assets already in Immich | shrinking an existing library |
 
 Modes can be combined: `IO_MODE=watcher,proxy`.
@@ -24,7 +24,7 @@ In every mode:
 - Every converted asset is tagged in Immich with a [marker](docs/marker.md) that records its original's checksum.
 - Every operation on an asset is written to a persistent [audit log](docs/audit-log.md).
 
-**Using the official Immich mobile app?** Read the [proxy mode limitations](docs/proxy.md#limitations) first.
+**Using the official Immich mobile app?** Read [The mobile app](docs/proxy.md#the-mobile-app) first: it needs one setting to work well with converted photos.
 
 ## Quick start
 
@@ -51,10 +51,10 @@ Then point your browser at the optimizer instead of Immich. The setup for each m
 | | |
 |---|---|
 | [Proxy mode](docs/proxy.md) · [Watcher mode](docs/watcher.md) · [Library mode](docs/library.md) | setting up and understanding each mode |
-| [Tasks](docs/tasks.md) | the tasks file, bundled profiles, motion photos |
+| [Tasks](docs/tasks.md) | the tasks file, bundled profiles, motion photos, converting downloads back |
 | [Configuration](docs/configuration.md) | every setting |
 | [Undone folder](docs/undone.md) · [Audit log](docs/audit-log.md) · [Marker](docs/marker.md) | what the optimizer keeps and records |
-| [Docker images](docs/docker.md) | tags, folders, GPU and custom images, dev builds |
+| [Docker images](docs/docker.md) | tags, folders, graphics cards and custom images, health check, dev builds |
 | [Migrating from immich-upload-optimizer](docs/migration.md) | |
 | [Development](docs/development.md) | code layout, tests, contributing |
 

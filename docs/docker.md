@@ -15,7 +15,7 @@ Images are built for amd64 and arm64.
 
 - The optimizer, and the tools the [bundled profiles](tasks.md#bundled-profiles) call: `cjxl`/`djxl`, `caesiumclt`, `vips`, ImageMagick, HandBrake, `ffmpeg` and ExifTool.
 - The bundled profiles in `/etc/immich-optimizer/bundled-configs`, with `lossless` copied to `/etc/immich-optimizer/config`.
-- No task uses a graphics card: see [Custom image](#custom-image).
+- `ffmpeg` has the hardware encoders for NVIDIA and for VAAPI, and the image has the VAAPI driver for AMD. No bundled task uses a graphics card: see [Custom image](#custom-image).
 
 ## Folders and ports
 

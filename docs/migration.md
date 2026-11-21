@@ -62,5 +62,7 @@ What changed:
 10. **Long conversions**: a conversion is no longer cut off when the client disconnects or a timeout passes. It finishes and the file is uploaded.
 11. **Error codes**: an unmatched file type answers `415` and a failed conversion answers `502` (both were `500`).
 12. **GPU**: no bundled task uses a graphics card. If you used one, start from the [custom image template](docker.md#custom-image).
+13. **Downloads**: with the bundled profiles, an original stored as JPEG XL is now downloaded as JPEG. Remove the `downloads` list from your tasks file to get the stored file. See [Downloads](tasks.md#downloads).
+14. **Health check**: the image's health check now asks the running proxy instead of only starting the program. See [Health check](docker.md#health-check).
 
-Read [Proxy mode limitations](proxy.md#limitations) if you use the official mobile app.
+If you use the official mobile app, read [The mobile app](proxy.md#the-mobile-app): one setting stops it from uploading converted photos again and again.

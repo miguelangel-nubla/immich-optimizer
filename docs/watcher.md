@@ -30,4 +30,4 @@ Watcher is the default mode, so `IO_MODE` is not needed. Uploads go to the API k
 
 ## Using it for phone backup
 
-Sync the phone's camera folder into the watch folder with a one-way sync tool (Syncthing "send only", FolderSync "to remote folder"), and deselect every album in the Immich app's backup settings. The app is then a viewer only. This avoids the re-upload problem described in [Proxy mode limitations](proxy.md#limitations).
+Sync the phone's camera folder into the watch folder with a one-way sync tool (Syncthing "send only", FolderSync "to remote folder"), and deselect every album in the Immich app's backup settings. The app is then a viewer only, and its checksum-based backup, described in [The mobile app](proxy.md#the-mobile-app), plays no part.

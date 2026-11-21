@@ -9,7 +9,7 @@ The code is split so that every way of receiving a file shares one conversion pa
 | `cmd/optimizer` | start-up, and the [settings table](../cmd/optimizer/settings.go) that defines every flag, environment variable and the settings reference |
 | `internal/usecase/convert` | the conversion engine: picks the tasks for a file, limits how many run at once, decides between output and original, and owns the undone folder |
 | `internal/usecase/pipeline` | watcher mode: folder events in, uploads out |
-| `internal/adapter/proxy` | proxy mode |
+| `internal/adapter/proxy` | proxy mode: uploads, the experimental app sync, converting downloads |
 | `internal/usecase/library` | library mode |
 | `internal/adapter/processor` | runs task commands |
 | `internal/adapter/immich` | the Immich API |
@@ -32,8 +32,8 @@ Three kinds of tests run in CI on every push:
 - **Unit tests** (`go test ./...`), including library mode against a fake Immich for every failure and resume path, and the watcher on real inotify (Linux only). CI also runs `golangci-lint`.
 - **Profile tests**, inside the Docker image with the real tools. `scripts/integration-test.sh [image]` runs every bundled profile's real commands on the sample files in `cmd/optimizer/testdata/media` inside the Docker image (default: the published `:dev` image) and checks the results: outputs decode, dates, GPS and Apple Live Photo identifiers survive, motion photos lose their video and their motion flag, a portrait video stays portrait, and the lossless profile is really lossless. It uses this checkout's `config/`, so a profile change can be tested without rebuilding the image. CI runs it on every push against an image built from the commit.
 
-The samples are synthetic, and the GPU video task only runs where `/dev/dri/renderD128` exists.
-- **End-to-end tests**, against a real Immich. `scripts/e2e-test.sh [image]` starts a throwaway Immich with Docker Compose and runs the optimizer against it in library, proxy and watcher mode: a full library replacement with everything carried over, the dry run, a conversion that produces a flat image, a lossy task, interrupted runs, the date filter, proxy uploads with the marker and the undone folder, and watcher uploads. It builds the optimizer from this checkout and mounts it over the image's binary. CI runs it on every push.
+The samples are synthetic.
+- **End-to-end tests**, against a real Immich. `scripts/e2e-test.sh [image]` starts a throwaway Immich with Docker Compose and runs the optimizer against it in library, proxy and watcher mode: a full library replacement with everything carried over, the dry run, a conversion that produces a flat image, a lossy task, interrupted runs, the library filter, second copies and scheduled runs, proxy uploads with the marker and the undone folder, uploads from `immich-cli`, `immich-go` and through a shared link, the experimental app sync as a phone would see it, downloads converted back, and watcher uploads. It builds the optimizer from this checkout and mounts it over the image's binary. CI runs it on every push.
 
 `E2E_ML=1 scripts/e2e-test.sh` also starts Immich's machine learning and runs the test that needs real face detection: three photos of the same face are recognised by Immich, the person is named, library mode converts them, and each copy must end up with that person exactly once after Immich has processed the new files. It downloads the machine-learning image and a model, so it takes a few minutes longer. CI runs it this way.
 

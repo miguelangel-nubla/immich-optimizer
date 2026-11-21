@@ -28,33 +28,35 @@ Point your clients at the optimizer instead of Immich. If Immich sits behind you
 ## How it behaves
 
 - **What is converted:** multipart uploads to Immich's upload endpoint (`/api/assets`). The file is handled as described in [Tasks](tasks.md#how-a-file-is-handled).
-- **Errors:** a file type no task handles answers `415`; a failed conversion answers `502`. Nothing is uploaded in either case and the original is kept in the [undone folder](undone.md). If Immich itself cannot be reached or refuses the upload, the client gets the error and nothing is kept: it still has the file and retries.
+- **Errors:** a file type no task handles answers `415`; a failed conversion answers `502`. Nothing is uploaded in either case and the original is kept in the [undone folder](undone.md). If Immich itself cannot be reached or refuses the upload, the client gets the error and nothing is kept: it still has the file and retries. `503` means "try again later": the proxy is shutting down, has no room in its temp folder, or cannot write its audit log.
 - **What the mobile app does with an error** (tested with the Android app v3.4.2 in an emulator): it tries each failed file once every time it looks for things to back up, does not retry in between, and carries on with the other files. Once the cause is gone, the file is backed up on the next round.
 - **Jobs survive client disconnects.** Once the upload has been received, converting it and sending it to Immich no longer depend on the client connection. If the phone disconnects or gives up waiting, the job continues and the asset still reaches Immich.
-- **No double uploads.** If the same user uploads the identical file again while it is being processed, or within 30 minutes afterwards, the retry gets the same result instead of a second conversion. Transient answers (`5xx`, `408`, `413`, `425`, `429`) are not replayed.
+- **No double uploads.** If the same user uploads the identical file again while it is being processed, or within 30 minutes afterwards, the retry gets the same result instead of a second conversion. Transient answers (`5xx`, `408`, `413`, `425`, `429`) are not replayed, and neither is an answer whose asset has since been deleted from Immich: that upload is stored again.
 - **Uploads wait when the temp folder is filling up.** Every upload that is waiting or being converted has files in the container's temp folder (`/tmp`), up to three times its size. Before reading a new upload, the proxy checks that there is room for it next to the ones in progress. If not, the client is held for up to 45 seconds and then answered `503` with `Retry-After`, so a phone that sends faster than your tasks convert slows down instead of making the conversions under way fail for lack of space. There is nothing to set: the limit is the free space itself.
 - **Browsers** are kept waiting with periodic redirects while a long conversion runs.
+- **The file's name** is taken from the upload's `filename` field when it has one, as Immich does; the mobile app's background upload sends the real name there.
 - **Downloads can be converted back.** With a [`downloads` list](tasks.md#downloads) in the tasks file, an original stored as JPEG XL is handed out as JPEG when someone downloads it.
 - Each converted asset gets a [provenance marker](marker.md), and each upload a line in the [audit log](audit-log.md).
 
-## Limitations
+## The mobile app
 
-Read this before putting the proxy in front of the official Immich mobile app.
+The official app decides that a photo is backed up by comparing the checksum of the file on the phone with the checksums Immich reports. A converted file has a different checksum. What follows from that depends on one setting.
 
-- **The mobile app re-uploads converted files.** The app decides that a photo is backed up by comparing the checksum of the file on the phone with the checksums on the server. A converted file has a different checksum, so the app never sees its photo as backed up and uploads it again on every backup run. Each upload is converted again and Immich answers "duplicate", so no second copy is stored when the conversion gives the same bytes every time, but the phone keeps sending the data and the app keeps showing the photo as not backed up.
+**With [`IO_PROXY_EXPERIMENTAL_APP_SYNC=true`](#experimental-making-the-mobile-app-see-converted-photos-as-backed-up)** the app sees converted photos as backed up and uploads each one once. This is tested with the real Android app in an emulator; it has not been tried on iOS. It is off by default because it depends on the format of Immich's sync, which can change with any release.
+
+**Without it** the app never sees a converted photo as backed up:
+
+- It uploads every converted photo again each time it looks for things to back up, and shows it as not backed up.
+- No second copy is stored. Within 30 minutes the proxy answers the retry from memory; after that it converts again and Immich answers "duplicate", as long as the conversion gives the same bytes every time.
 - **Lossy and video tasks can create real duplicates** if the encoder does not produce identical bytes for the same input.
-- **This cannot be fixed inside the proxy alone**: Immich offers no way to store a different checksum for an asset.
 
-What works well today:
+Everything else works either way: the web interface, `immich-go`, the Immich CLI and uploads through a shared link upload a file once.
 
-- **Proxy mode for the web interface, `immich-go` and the Immich CLI.** These upload a file once.
-- **Watcher mode for phones**: sync the phone's camera folder to the watch folder with a one-way sync tool (Syncthing send-only, FolderSync upload-only), and deselect every album in the app's backup settings. The app is then a viewer only.
-
-Every converted asset carries a [provenance marker](marker.md) with the checksum of its original, so a later fix can recognise assets that are already uploaded.
+If you would rather keep the app out of uploading altogether, use [watcher mode for phones](watcher.md#using-it-for-phone-backup): a sync tool brings the photos, and the app is a viewer only.
 
 ## Experimental: making the mobile app see converted photos as backed up
 
-`IO_PROXY_EXPERIMENTAL_APP_SYNC=true` is an attempt to remove the limitation above. It is off by default. It is tested with the real Android app in an emulator (Immich app v3.4.2): without it the app sends every converted photo again each time it looks for things to back up, with it the app counts them as backed up and uploads each one once. It has not been tried on iOS.
+`IO_PROXY_EXPERIMENTAL_APP_SYNC=true` makes the proxy tell the app the checksums of the originals. It is off by default. It is tested with the real Android app in an emulator (Immich app v3.4.2): without it the app sends every converted photo again each time it looks for things to back up, with it the app counts them as backed up and uploads each one once. It has not been tried on iOS.
 
 **How it works.** The app keeps its own list of what is on the server, filled from Immich's sync, and treats a photo as backed up when that list has an entry with the photo's checksum. Every converted asset carries a [marker](marker.md) with the checksum of its original, and the marker is part of the same sync. When a marker passes through the proxy, the proxy adds one hidden entry with the original's checksum to the answer. The app finds its match and stops uploading the photo.
 
