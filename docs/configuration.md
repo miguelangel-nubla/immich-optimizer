@@ -16,7 +16,7 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 
 | Environment variable | Flag | Default | Description |
 |---|---|---|---|
-| `IO_MODE` | `-mode` | `watcher` | What to run: `watcher`, `proxy`, `library`, or several separated by commas |
+| `IO_MODE` | `-mode` | none: it has to be set | What to run: `proxy`, `watcher`, `library`, or several separated by commas |
 | `IO_LOG_LEVEL` | `-log_level` | `info` | How much to log: `debug`, `info`, `warn` or `error` |
 | `IO_SHUTDOWN_TIMEOUT` | `-shutdown_timeout` | `8s` | On shutdown, how long running jobs get to finish before they are cancelled. A [duration](#durations) |
 

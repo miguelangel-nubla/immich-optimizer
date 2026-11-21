@@ -7,6 +7,7 @@ services:
   immich-optimizer:
     image: ghcr.io/miguelangel-nubla/immich-optimizer:latest
     environment:
+      - IO_MODE=watcher
       - IO_IMMICH_URL=http://immich-server:2283
       - IO_IMMICH_API_KEY=your-api-key
     volumes:
@@ -15,7 +16,7 @@ services:
     restart: unless-stopped
 ```
 
-Watcher is the default mode, so `IO_MODE` is not needed. Uploads go to the API key's user: run one container per user. Settings: [Watcher mode](configuration.md#watcher-mode).
+Uploads go to the API key's user: run one container per user. Settings: [Watcher mode](configuration.md#watcher-mode).
 
 ## How it behaves
 

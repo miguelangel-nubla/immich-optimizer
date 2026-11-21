@@ -223,7 +223,7 @@ func parseModes(modeStr string) (runWatcher bool, runProxy bool, err error) {
 	}
 
 	if recognizedCount == 0 {
-		return false, false, fmt.Errorf("no valid operating mode specified")
+		return false, false, fmt.Errorf("no mode is set: set IO_MODE (or -mode) to proxy, watcher or library, or to several separated by commas")
 	}
 
 	return runWatcher, runProxy, nil

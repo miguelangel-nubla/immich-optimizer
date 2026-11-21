@@ -40,7 +40,7 @@ services:
 What changed:
 
 1. **Image name**: `ghcr.io/miguelangel-nubla/immich-optimizer`.
-2. **Mode**: set `IO_MODE=proxy`. Without it the optimizer starts in watcher mode and asks for an API key. Proxy mode needs no API key: it forwards each client's own credentials.
+2. **Mode**: set `IO_MODE=proxy`. There is no default: without a mode the optimizer does not start. Proxy mode needs no API key: it forwards each client's own credentials.
 3. **Environment variables**: `IUO_UPSTREAM` becomes `IO_IMMICH_URL` and `IUO_LISTEN` becomes `IO_PROXY_BIND_ADDR`. The old names still work for now and print a warning at startup. See [the rename table](configuration.md#old-names). `IUO_FILTER_PATH` and `IUO_FILTER_FORM_KEY` are gone: the proxy always converts uploads to Immich's upload endpoint, and the old `-filter_path` and `-filter_form_key` flags are refused.
 4. **Port**: unchanged. The proxy listens on `:2283`, so a `2283:2283` mapping keeps working.
 5. **Config folder**: mount your tasks at `/etc/immich-optimizer/config` (was `/etc/immich-upload-optimizer/config`). A mount left at the old path is ignored without any error and the default lossless profile runs instead.

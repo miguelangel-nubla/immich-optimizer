@@ -51,8 +51,8 @@ const (
 var settingGroups = []string{groupGeneral, groupImmich, groupTasks, groupUndone, groupProxy, groupWatcher, groupLibrary}
 
 var settings = []setting{
-	{Name: "mode", Group: groupGeneral, Default: "watcher",
-		Help:      "What to run: `watcher`, `proxy`, `library`, or several separated by commas",
+	{Name: "mode", Group: groupGeneral, Default: "", DefaultDoc: "none: it has to be set",
+		Help:      "What to run: `proxy`, `watcher`, `library`, or several separated by commas",
 		LegacyEnv: []string{"IUO_MODE"},
 		target:    func(ac *entity.AppConfig) any { return &ac.Mode }},
 	{Name: "log_level", Group: groupGeneral, Default: "info",

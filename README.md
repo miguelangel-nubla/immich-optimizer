@@ -16,7 +16,7 @@ Shrinks the photos and videos in your [Immich](https://immich.app/) library by c
 | [Watcher](docs/watcher.md) | watches a folder, converts and uploads what appears in it | bulk imports, phone backup through a sync tool |
 | [Library](docs/library.md) | converts the assets already in Immich | shrinking an existing library |
 
-Modes can be combined: `IO_MODE=watcher,proxy`.
+The mode is set with `IO_MODE` and has no default. Modes can be combined: `IO_MODE=watcher,proxy`.
 
 In every mode:
 

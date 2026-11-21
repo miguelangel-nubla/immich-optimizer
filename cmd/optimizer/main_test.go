@@ -1197,3 +1197,15 @@ func TestConfigFingerprint(t *testing.T) {
 		t.Errorf("fingerprint of a missing folder = %q", got)
 	}
 }
+
+// There is no default mode: a container started without one must say so,
+// not start doing something that was not asked for.
+func TestModeIsRequired(t *testing.T) {
+	_, _, err := parseConfig(append(baseArgs(t), "-immich_url", "http://immich.example", "-immich_api_key", testAPIKeyEnv))
+	if err == nil || !strings.Contains(err.Error(), "IO_MODE") {
+		t.Fatalf("starting without a mode: %v", err)
+	}
+	if _, _, err := parseConfig(append(baseArgs(t), "-mode", " , ", "-immich_url", "http://immich.example")); err == nil {
+		t.Error("an empty mode list was accepted")
+	}
+}
