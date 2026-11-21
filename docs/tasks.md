@@ -54,6 +54,19 @@ The command also finds the same values, and a few more, in its **environment**. 
 
 `IO_ORIGINAL_NAME` is only available as a variable, never as a placeholder. A file name is whatever the uploader made it, and a placeholder becomes part of a shell command line. Read it quoted (`"$IO_ORIGINAL_NAME"`), and do not use it to build paths. The command also inherits the optimizer's own environment.
 
+A long command reads better over several lines. Write it as a block (`|`), one argument per line, each line but the last ending in `\`:
+
+```yaml
+  - name: jpeg-xl
+    command: |
+      cjxl --lossless_jpeg=1 -d 0 \
+        "{{.src_folder}}/{{.name}}.{{.extension}}" \
+        "{{.dst_folder}}/{{.name}}.jxl"
+    extensions: [jpg, jpeg, png]
+```
+
+The bundled profiles are written this way. Use `|`, not `>`: with `>` YAML joins the lines itself, and a `\` at the end of a line then ends up in the middle of the command.
+
 - Commands run through `sh -c`, in the folder of the tasks file, so scripts next to it can be called as `./script.sh`.
 - Quote the paths.
 - An unknown placeholder stops the optimizer at startup with an error.

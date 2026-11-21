@@ -10,13 +10,19 @@ motion_photos: drop_video
 # "Downloads".
 downloads:
 - name: jxl-to-jpeg
-  command: djxl "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jpg"
+  command: |
+    djxl \
+      "{{.src_folder}}/{{.name}}.{{.extension}}" \
+      "{{.dst_folder}}/{{.name}}.jpg"
   extensions:
   - jxl
 
 tasks:
 - name: jpeg-xl
-  command: cjxl --lossless_jpeg=1 -d 0 "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"
+  command: |
+    cjxl --lossless_jpeg=1 -d 0 \
+      "{{.src_folder}}/{{.name}}.{{.extension}}" \
+      "{{.dst_folder}}/{{.name}}.jxl"
   extensions:
   - jpeg
   - jpg
@@ -31,7 +37,10 @@ tasks:
   - exr
 
 - name: caesium
-  command: caesiumclt --keep-dates --exif --lossless --output="{{.dst_folder}}" "{{.src_folder}}/{{.name}}.{{.extension}}"
+  command: |
+    caesiumclt --keep-dates --exif --lossless \
+      --output="{{.dst_folder}}" \
+      "{{.src_folder}}/{{.name}}.{{.extension}}"
   extensions:
   - jpeg
   - jpg
