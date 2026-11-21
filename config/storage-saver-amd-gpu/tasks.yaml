@@ -4,6 +4,16 @@
 # its own "motion_photos:" to override it.
 motion_photos: drop_video
 
+# Proxy mode: hand an original out in another format when it is downloaded.
+# What is stored as JPEG XL is downloaded as JPEG, which everything opens.
+# Remove this list to download files as they are stored. See docs/tasks.md,
+# "Downloads".
+downloads:
+- name: jxl-to-jpeg
+  command: djxl "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jpg"
+  extensions:
+  - jxl
+
 tasks:
   # Images: Resize to max 16MP, encode to JXL, restore metadata
   - name: images-magick-jxl

@@ -5,13 +5,14 @@
 motion_photos: drop_video
 
 # Proxy mode: hand an original out in another format when it is downloaded.
-# With the jpeg-xl task below, a JPEG comes back exactly as it was uploaded.
-# Uncomment to turn it on. See docs/tasks.md, "Downloads".
-#downloads:
-#- name: jxl-to-jpeg
-#  command: djxl "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jpg"
-#  extensions:
-#  - jxl
+# What is stored as JPEG XL is downloaded as JPEG, which everything opens.
+# Remove this list to download files as they are stored. See docs/tasks.md,
+# "Downloads".
+downloads:
+- name: jxl-to-jpeg
+  command: djxl "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jpg"
+  extensions:
+  - jxl
 
 tasks:
 - name: jpeg-xl

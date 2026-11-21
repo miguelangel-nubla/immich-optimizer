@@ -112,6 +112,7 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 	if e.cfg.TaskTimeout > 0 {
 		pctx, cancel = context.WithTimeoutCause(ctx, e.cfg.TaskTimeout, entity.ErrTaskTimeout)
 	}
+	pctx = entity.WithTaskInfo(pctx, entity.TaskInfo{OriginalName: in.Filename, Source: string(in.Source)})
 	res, procErr := e.proc.Process(pctx, in.Path, e.cfg.Tasks)
 	timedOut := errors.Is(context.Cause(pctx), entity.ErrTaskTimeout)
 	cancel()

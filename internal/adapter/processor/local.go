@@ -77,6 +77,8 @@ type fileProcessor struct {
 	motionSplit string
 	// taskName is the task that succeeded.
 	taskName string
+	// env is what the current task's command gets in its environment.
+	env []string
 }
 
 func (fp *fileProcessor) logf(str string, args ...any) {
@@ -222,6 +224,7 @@ func (fp *fileProcessor) run(ctx context.Context, commandTemplate *template.Temp
 		return err
 	}
 	attempt.Command = command
+	fp.env = fp.commandEnv(ctx, tempFile, attempt.Task)
 
 	if strings.TrimSpace(command) == "" {
 		return fp.copyPassthroughResult(tempFile)
@@ -356,6 +359,37 @@ func (fp *fileProcessor) buildCommand(commandTemplate *template.Template, tempFi
 	return cmdLine.String(), nil
 }
 
+// commandEnv is what a task command finds in its environment, next to what
+// the optimizer itself was started with: everything the command's template
+// can use, under the same names, and what a template must not be given.
+//
+// The file's own name is only here. A name is whatever the uploader made it,
+// and a template value ends up in a shell command line; a variable is read
+// by the command as data ("$IO_ORIGINAL_NAME", quoted).
+func (fp *fileProcessor) commandEnv(ctx context.Context, tempFile *os.File, task string) []string {
+	basename := filepath.Base(tempFile.Name())
+	extension := filepath.Ext(basename)
+	info := entity.TaskInfoFrom(ctx)
+	if info.OriginalName == "" {
+		info.OriginalName = fp.originalFilename
+	}
+	env := []string{
+		"IO_SRC_FOLDER=" + fp.tempWorkDirSrc,
+		"IO_DST_FOLDER=" + fp.tempWorkDirDst,
+		"IO_NAME=" + strings.TrimSuffix(basename, extension),
+		"IO_EXTENSION=" + strings.TrimPrefix(extension, "."),
+		"IO_ORIGINAL_NAME=" + strings.NewReplacer("\x00", "", "\n", " ", "\r", " ").Replace(info.OriginalName),
+		"IO_SOURCE=" + info.Source,
+		"IO_TASK=" + task,
+	}
+	if fp.motionPhotos != "" {
+		// Lets scripts apply the task's motion photo setting to formats the
+		// optimizer does not split itself (HEIC).
+		env = append(env, "IO_MOTION_PHOTOS="+fp.motionPhotos)
+	}
+	return env
+}
+
 const (
 	// outputBufferSize bounds the memory kept for a task's combined output.
 	outputBufferSize = 64 << 10
@@ -367,11 +401,7 @@ func (fp *fileProcessor) executeCommand(ctx context.Context, command string, att
 	fp.logf("running: %s", command)
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	if fp.motionPhotos != "" {
-		// Lets scripts apply the task's motion photo setting to formats the
-		// optimizer does not split itself (HEIC).
-		cmd.Env = append(os.Environ(), "IO_MOTION_PHOTOS="+fp.motionPhotos)
-	}
+	cmd.Env = append(os.Environ(), fp.env...)
 	if fp.configDir != "" {
 		cmd.Dir = fp.configDir
 	}

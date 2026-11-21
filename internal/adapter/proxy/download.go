@@ -199,7 +199,7 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) bool {
 	}
 
 	outPath, outName := src, name
-	res, err := s.convertDownload(r.Context(), src)
+	res, err := s.convertDownload(entity.WithTaskInfo(r.Context(), entity.TaskInfo{OriginalName: name, Source: entity.SourceDownload}), src)
 	if res != nil && res.Cleanup != nil {
 		defer res.Cleanup()
 	}

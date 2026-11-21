@@ -1141,3 +1141,15 @@ func TestLoadTasksDownloads(t *testing.T) {
 		t.Error("a download task with an unknown placeholder was accepted")
 	}
 }
+
+// The variables given to task commands share the IO_ prefix with the
+// settings; none may ever be mistaken for one.
+func TestCommandVariablesAreNotSettings(t *testing.T) {
+	for _, name := range []string{"IO_SRC_FOLDER", "IO_DST_FOLDER", "IO_NAME", "IO_EXTENSION", "IO_ORIGINAL_NAME", "IO_SOURCE", "IO_TASK", "IO_MOTION_PHOTOS"} {
+		for _, s := range settings {
+			if s.Env() == name {
+				t.Errorf("%s is both a setting and a task command variable", name)
+			}
+		}
+	}
+}

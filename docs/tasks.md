@@ -36,6 +36,24 @@ tasks:
 | `{{.name}}` | the input's file name without extension (a temporary name, not the original one) |
 | `{{.extension}}` | the input's extension, without the dot |
 
+The command also finds the same values, and a few more, in its **environment**. A script can be written with these alone:
+
+| Variable | Meaning |
+|---|---|
+| `IO_SRC_FOLDER`, `IO_DST_FOLDER`, `IO_NAME`, `IO_EXTENSION` | the same as the placeholders above |
+| `IO_ORIGINAL_NAME` | the file's own name: as it was uploaded, or as it is stored in Immich |
+| `IO_SOURCE` | where the file comes from: `proxy`, `watcher`, `library` or `download` |
+| `IO_TASK` | the name of the task that is running |
+| `IO_MOTION_PHOTOS` | the task's [`motion_photos`](#motion-photos) setting |
+
+```yaml
+  - name: by-script
+    command: ./convert.sh          # reads "$IO_SRC_FOLDER/$IO_NAME.$IO_EXTENSION", writes into "$IO_DST_FOLDER"
+    extensions: [jpg]
+```
+
+`IO_ORIGINAL_NAME` is only available as a variable, never as a placeholder. A file name is whatever the uploader made it, and a placeholder becomes part of a shell command line. Read it quoted (`"$IO_ORIGINAL_NAME"`), and do not use it to build paths. The command also inherits the optimizer's own environment.
+
 - Commands run through `sh -c`, in the folder of the tasks file, so scripts next to it can be called as `./script.sh`.
 - Quote the paths.
 - An unknown placeholder stops the optimizer at startup with an error.
@@ -114,5 +132,5 @@ downloads:
 - **Only the download of a single original is converted** ("Download" in the web and mobile apps, `GET /api/assets/{id}/original`). Archives of several assets and the edited version of an asset are sent as Immich makes them.
 - **If the command fails, the stored file is sent**, and the log says so.
 - The file is downloaded from Immich in full and converted on every request, also when only a part of it is asked for. It takes one more request to Immich per download, to learn the file's type.
-- It is off unless your tasks file has the list. The bundled profiles carry it as a comment.
+- **The bundled profiles that store JPEG XL have this list**, so with them originals are downloaded as JPEG. This includes a JXL you uploaded as one. Remove the list from your tasks file to download files as they are stored; a tasks file without it converts nothing.
 - Only proxy mode reads it.
