@@ -253,26 +253,14 @@ func TestProxyUploadsAgainAfterTheAssetWasDeleted(t *testing.T) {
 	}
 }
 
-// "downloads" in the tasks file: what is stored as JPEG XL is handed out as
-// JPEG when its original is downloaded through the proxy.
+// "downloads" in the tasks file, as the bundled profiles have it: what is
+// stored as JPEG XL is handed out as JPEG when its original is downloaded
+// through the proxy.
 func TestProxyConvertsDownloads(t *testing.T) {
 	u := newUser(t)
 	undone := sharedDir(t)
-	base, err := os.ReadFile(filepath.Join(configDir, "lossless", "tasks.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := sharedDir(t)
-	downloads := `downloads:
-  - name: jxl-to-jpeg
-    command: djxl "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jpg"
-    extensions: [jxl]
-`
-	if err := os.WriteFile(filepath.Join(cfg, "tasks.yaml"), []byte(downloads+string(base)), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy", "IO_TASKS_FILE": "/custom/tasks.yaml"}, true,
-		undone+":/undone", cfg+":/custom:ro")
+	// The bundled lossless profile has the list.
+	_, proxy := startOptimizer(t, map[string]string{"IO_MODE": "proxy"}, true, undone+":/undone")
 
 	src := filepath.Join(mediaDir, "photo.jpg")
 	status, out := u.upload(t, proxy, src, "photo.jpg", nil)
