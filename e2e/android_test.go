@@ -582,6 +582,66 @@ func TestAndroidAppBackup(t *testing.T) {
 			t.Fatalf("Immich has %d assets, want the %d conversions", len(live), len(photos))
 		}
 	})
+
+	// What the app does with the proxy's error answers: 415 for a type no
+	// task handles, 502 for a conversion that failed, 503 when the proxy has
+	// no room. Nothing may be lost and the app must not hammer the proxy;
+	// once the cause is gone, everything is backed up.
+	errorCase := func(t *testing.T, env map[string]string, wantStored int, mounts ...string) {
+		u := newUser(t)
+		undone := sharedDir(t)
+		port := freePort(t)
+		samples := []string{"photo.jpg", "photo.png", "clip.mp4"}
+		env["IO_MODE"] = "proxy"
+		broken, proxy := startOptimizerOn(t, env, true, port, append(mounts, undone+":/undone")...)
+		p := setUpPhone(t, proxy, u, samples)
+
+		eventually(t, 3*time.Minute, "the app to try every file", func() bool { return received(t, broken) >= len(samples) })
+		// What works is stored although its neighbours failed.
+		eventually(t, 2*time.Minute, "the files that can be stored to be stored", func() bool { return len(u.live(t)) == wantStored })
+		// Left alone, and looking again twice, the app does not flood the proxy.
+		time.Sleep(30 * time.Second)
+		idle := received(t, broken)
+		for i := 0; i < 2; i++ {
+			p.restart()
+			time.Sleep(20 * time.Second)
+		}
+		after := received(t, broken)
+		logs, _ := exec.Command("docker", "logs", broken).CombinedOutput()
+		t.Logf("uploads received by the failing proxy: %d after the first round, %d after two more starts of the app", idle, after)
+		if after > 4*len(samples) {
+			t.Errorf("the app sent %d uploads for %d files: it keeps retrying without pause\n%s", after, len(samples), logs)
+		}
+		if n := len(u.live(t)); n != wantStored {
+			t.Errorf("Immich has %d assets while the proxy fails the rest, want %d", n, wantStored)
+		}
+
+		// The cause is fixed: the same address, a proxy that works.
+		if out, err := exec.Command("docker", "rm", "-f", broken).CombinedOutput(); err != nil {
+			t.Fatalf("docker rm: %v\n%s", err, out)
+		}
+		startOptimizerOn(t, map[string]string{"IO_MODE": "proxy", "IO_PROXY_EXPERIMENTAL_APP_SYNC": "true"}, true, port, sharedDir(t)+":/undone")
+		eventuallyRestarting(t, p, 5*time.Minute, "the app to back everything up once the proxy works", func() bool {
+			return len(u.live(t)) == len(samples) && p.queryInt(sqlNotBackedUp) == 0
+		})
+	}
+
+	t.Run("the app copes with refused and failed conversions", func(t *testing.T) {
+		cfg := sharedDir(t)
+		// JPEG is converted, PNG fails (502), and nothing handles video (415).
+		tasks := "tasks:\n" +
+			"  - name: jpeg-xl\n    command: cjxl --lossless_jpeg=1 -d 0 \"{{.src_folder}}/{{.name}}.{{.extension}}\" \"{{.dst_folder}}/{{.name}}.jxl\"\n    extensions: [jpg]\n" +
+			"  - name: broken\n    command: exit 3\n    extensions: [png]\n"
+		if err := os.WriteFile(filepath.Join(cfg, "tasks.yaml"), []byte(tasks), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		errorCase(t, map[string]string{"IO_TASKS_FILE": "/custom/tasks.yaml"}, 1, cfg+":/custom:ro")
+	})
+
+	t.Run("the app copes with a proxy that has no room", func(t *testing.T) {
+		// A temp folder too small for any upload: every one is answered 503.
+		errorCase(t, map[string]string{}, 0, "--tmpfs=/tmp:size=16k")
+	})
 }
 
 // eventuallyRestarting is eventually for things the app only does when it

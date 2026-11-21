@@ -89,8 +89,14 @@ INI
     echo "the emulator did not finish booting; see $DIR/emulator.log" >&2
     exit 1
   }
-  "$ADB" -s "$SERIAL" root >/dev/null
-  "$ADB" -s "$SERIAL" wait-for-device
+  # Right after boot adbd can drop the connection while it restarts as root.
+  for _ in $(seq 1 30); do
+    "$ADB" -s "$SERIAL" root >/dev/null 2>&1 || true
+    "$ADB" -s "$SERIAL" wait-for-device
+    [ "$("$ADB" -s "$SERIAL" shell id -u 2>/dev/null | tr -d '\r')" = 0 ] && break
+    sleep 2
+  done
+  [ "$("$ADB" -s "$SERIAL" shell id -u | tr -d '\r')" = 0 ] || { echo "could not get root on the emulator" >&2; exit 1; }
   # No animations: screens settle at once, which keeps scripted taps reliable.
   for k in window_animation_scale transition_animation_scale animator_duration_scale; do
     "$ADB" -s "$SERIAL" shell settings put global "$k" 0

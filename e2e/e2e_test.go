@@ -384,6 +384,11 @@ func dockerArgs(env map[string]string, mounts ...string) []string {
 		args = append(args, "-e", k+"="+v)
 	}
 	for _, m := range mounts {
+		// A mount, or any other docker option written out in full.
+		if strings.HasPrefix(m, "--") {
+			args = append(args, m)
+			continue
+		}
 		args = append(args, "-v", m)
 	}
 	return args
