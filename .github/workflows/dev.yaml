@@ -101,10 +101,18 @@ jobs:
             docker image inspect "$img" >/dev/null || { echo "::error::$img was not built"; exit 1; }
             docker push "$img"
           done
-          docker buildx imagetools create \
-            --tag "$repo:$version" \
-            --tag "$repo:dev" \
-            "${images[@]}"
+          # The registry does not always show an image the moment its push
+          # returns: try a few times before giving up.
+          for attempt in 1 2 3 4 5; do
+            if docker buildx imagetools create \
+              --tag "$repo:$version" \
+              --tag "$repo:dev" \
+              "${images[@]}"; then
+              break
+            fi
+            [ "$attempt" -lt 5 ] || { echo "::error::could not create the dev manifests"; exit 1; }
+            sleep $((attempt * 10))
+          done
           {
             echo "### Dev images"
             echo
