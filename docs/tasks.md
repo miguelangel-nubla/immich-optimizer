@@ -69,7 +69,6 @@ The image ships these under `/etc/immich-optimizer/bundled-configs/<profile>/`. 
 |---|---|---|
 | [`lossless`](../config/lossless/tasks.yaml) (default) | JPEG and PNG to JPEG XL without any loss; the rest unchanged | unchanged |
 | [`profile1`](../config/profile1/tasks.yaml) | lossy JPEG XL (quality 75), HEIC included | HandBrake |
-| [`storage-saver-amd-gpu`](../config/storage-saver-amd-gpu/tasks.yaml) | lossy JPEG XL, at most 4096 px | HEVC through VAAPI (needs a [custom image](docker.md#custom-image)) |
 | [`passthrough-all`](../config/passthrough-all/tasks.yaml) | unchanged | unchanged |
 
 Every bundled profile accepts every file type Immich accepts.
@@ -100,7 +99,7 @@ tasks:
     extensions: [jpg, jpeg]
 ```
 
-- The bundled `lossless`, `profile1` and `storage-saver-amd-gpu` profiles set `motion_photos: drop_video`: **keep the photo, drop the video**. A tasks file without the key keeps motion photos as they are.
+- The bundled `lossless` and `profile1` profiles set `motion_photos: drop_video`: **keep the photo, drop the video**. A tasks file without the key keeps motion photos as they are.
 - The setting only affects motion photos. Every other file reaches the task unchanged.
 - When several tasks match a file, each one gets its input prepared by its own setting.
 - With `drop_video` the motion flag is also switched off in the photo's metadata, so Immich does not look for a video that is gone.

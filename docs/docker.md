@@ -15,7 +15,7 @@ Images are built for amd64 and arm64.
 
 - The optimizer, and the tools the [bundled profiles](tasks.md#bundled-profiles) call: `cjxl`/`djxl`, `caesiumclt`, `vips`, ImageMagick, HandBrake, `ffmpeg` and ExifTool.
 - The bundled profiles in `/etc/immich-optimizer/bundled-configs`, with `lossless` copied to `/etc/immich-optimizer/config`.
-- No hardware video acceleration: see [Custom image](#custom-image).
+- No task uses a graphics card: see [Custom image](#custom-image).
 
 ## Folders and ports
 
@@ -36,13 +36,15 @@ The default of 8 seconds fits Docker's default 10 second stop timeout. If you co
 
 ## Custom image
 
-Hardware-accelerated video encoding (NVENC, VAAPI, Quick Sync) is not in the standard image: the drivers differ too much between systems, and the HandBrake base image that has them does not exist for arm64.
+For anything the standard image does not have, such as video encoding on a graphics card, another tool, or your tasks built in, there is a template repository: [immich-optimizer-custom](https://github.com/miguelangel-nubla/immich-optimizer-custom).
 
-[`Dockerfile.custom`](../Dockerfile.custom) is a starting point for your own image. It takes a base image of your choice, installs the tools, and downloads the latest released optimizer binary into it. Add whatever packages your hardware needs. It is also the way to go if you want a different `ffmpeg` build, or no container at all: the binary is a single static file from the [releases page](https://github.com/miguelangel-nubla/immich-optimizer/releases).
+- Press **Use this template** there (or fork it). You get your own repository with a `Dockerfile` and a tasks file.
+- Every optional part is in them, commented out and explained: graphics cards (AMD, Intel, NVIDIA), extra packages, example tasks.
+- GitHub builds the image on every change, and once a week, and publishes it to your repository as `ghcr.io/<you>/<your-repository>`. Nothing has to be built on your computer.
 
-```bash
-docker build -f Dockerfile.custom -t my-immich-optimizer .
-```
+The standard image's `ffmpeg` already has the hardware encoders for NVIDIA and for VAAPI, and the VAAPI driver for AMD. For those cards the image itself needs no change: the container has to be given the device, and a task has to use it. The template's README shows both.
+
+If you want no container at all, the optimizer is a single static file on the [releases page](https://github.com/miguelangel-nubla/immich-optimizer/releases).
 
 ## Dev builds
 

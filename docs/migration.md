@@ -61,6 +61,6 @@ What changed:
 9. **Motion photos**: the bundled profiles now keep the photo and drop the embedded video. See [Motion photos](tasks.md#motion-photos) to change that.
 10. **Long conversions**: a conversion is no longer cut off when the client disconnects or a timeout passes. It finishes and the file is uploaded.
 11. **Error codes**: an unmatched file type answers `415` and a failed conversion answers `502` (both were `500`).
-12. **GPU**: the standard image has no hardware acceleration. Build a [custom image](docker.md#custom-image) if you used it.
+12. **GPU**: no bundled task uses a graphics card. If you used one, start from the [custom image template](docker.md#custom-image).
 
 Read [Proxy mode limitations](proxy.md#limitations) if you use the official mobile app.

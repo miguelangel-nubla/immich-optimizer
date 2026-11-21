@@ -114,7 +114,7 @@ func ext(res *entity.ProcessResult) string {
 	return strings.ToLower(filepath.Ext(res.ProcessedFilePath))
 }
 
-var convertingProfiles = []string{"lossless", "profile1", "storage-saver-amd-gpu"}
+var convertingProfiles = []string{"lossless", "profile1"}
 
 func TestIntegrationProfilesJPEG(t *testing.T) {
 	src := filepath.Join(mediaDir(), "photo.jpg")
@@ -170,7 +170,7 @@ func TestIntegrationProfilesHEIC(t *testing.T) {
 			t.Error("lossless profile changed a HEIC file")
 		}
 	})
-	for _, p := range []string{"profile1", "storage-saver-amd-gpu"} {
+	for _, p := range []string{"profile1"} {
 		t.Run(p, func(t *testing.T) {
 			res := runProfile(t, p, "photo.heic", "")
 			if ext(res) != ".jxl" {
@@ -203,9 +203,6 @@ func TestIntegrationProfilesAppleLivePhoto(t *testing.T) {
 			})
 		}
 		t.Run(p+"/live.mov", func(t *testing.T) {
-			if p == "storage-saver-amd-gpu" && !hasVAAPI() {
-				t.Skip("no /dev/dri/renderD128: the GPU video task cannot run here")
-			}
 			res := runProfile(t, p, "live.mov", "")
 			if got := tag(t, res.ProcessedFilePath, "ContentIdentifier"); got != liveID {
 				t.Errorf("video ContentIdentifier = %q, want %q: Immich would not pair it with its photo", got, liveID)
@@ -263,24 +260,6 @@ func TestIntegrationProfile1MotionPhotoHEIC(t *testing.T) {
 	})
 }
 
-// The GPU profile converts HEIC with ImageMagick, which only reads the still:
-// the output must not claim to be a motion photo either.
-func TestIntegrationProfileGPUMotionPhotoHEIC(t *testing.T) {
-	res := runProfile(t, "storage-saver-amd-gpu", "motion.heic", "")
-	decodes(t, res.ProcessedFilePath)
-	if got := tag(t, res.ProcessedFilePath, "MotionPhoto"); got != "" && got != "0" {
-		t.Errorf("output still claims to be a motion photo (MotionPhoto=%s)", got)
-	}
-	if got := tag(t, res.ProcessedFilePath, "DateTimeOriginal"); got != sampleDate {
-		t.Errorf("DateTimeOriginal = %q, want %q", got, sampleDate)
-	}
-}
-
-func hasVAAPI() bool {
-	_, err := os.Stat("/dev/dri/renderD128")
-	return err == nil
-}
-
 // displaySize returns the size a player shows, after applying rotation.
 func displaySize(t *testing.T, file string) (w, h int) {
 	t.Helper()
@@ -319,11 +298,8 @@ func TestIntegrationProfilesVideo(t *testing.T) {
 			t.Error("lossless profile changed a video")
 		}
 	})
-	for _, p := range []string{"profile1", "storage-saver-amd-gpu"} {
+	for _, p := range []string{"profile1"} {
 		t.Run(p, func(t *testing.T) {
-			if p == "storage-saver-amd-gpu" && !hasVAAPI() {
-				t.Skip("no /dev/dri/renderD128: the GPU video task cannot run here")
-			}
 			res := runProfile(t, p, "clip.mp4", "")
 			if res.ProcessedSize >= res.OriginalSize {
 				t.Errorf("video output is not smaller: %d >= %d", res.ProcessedSize, res.OriginalSize)
