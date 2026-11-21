@@ -38,6 +38,10 @@ type LibraryAPI interface {
 	// SharedLinkIDs returns the individual shared links that contain the asset.
 	SharedLinkIDs(ctx context.Context, assetID string) ([]string, error)
 	AddToSharedLink(ctx context.Context, linkID, assetID string) error
+	// MemoryIDs returns, for every asset that is in a memory, the memories
+	// it is in.
+	MemoryIDs(ctx context.Context) (map[string][]string, error)
+	AddToMemory(ctx context.Context, memoryID, assetID string) error
 	SetStackPrimary(ctx context.Context, stackID, assetID string) error
 	// Edits returns the asset's non-destructive edits, in order.
 	Edits(ctx context.Context, assetID string) ([]entity.LibraryEdit, error)

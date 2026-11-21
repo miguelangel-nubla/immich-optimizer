@@ -554,6 +554,58 @@ func (c *LibraryClient) SharedLinkIDs(ctx context.Context, assetID string) ([]st
 	return ids, nil
 }
 
+// MemoryIDs lists the owner's memories and returns which assets are in which.
+func (c *LibraryClient) MemoryIDs(ctx context.Context) (map[string][]string, error) {
+	const size = 100
+	out := map[string][]string{}
+	seen := map[string]bool{}
+	for page := 1; ; page++ {
+		var list []struct {
+			ID     string `json:"id"`
+			Assets []struct {
+				ID string `json:"id"`
+			} `json:"assets"`
+		}
+		if err := c.call(ctx, http.MethodGet, fmt.Sprintf("/memories?size=%d&page=%d", size, page), nil, &list); err != nil {
+			return nil, err
+		}
+		fresh := 0
+		for _, m := range list {
+			if seen[m.ID] {
+				continue
+			}
+			seen[m.ID] = true
+			fresh++
+			for _, a := range m.Assets {
+				out[a.ID] = append(out[a.ID], m.ID)
+			}
+		}
+		// The last page, or a server that ignores the page number.
+		if len(list) < size || fresh == 0 {
+			return out, nil
+		}
+	}
+}
+
+// AddToMemory adds an asset to a memory. Immich answers 200 with a result per
+// asset; anything but success or "already there" is an error.
+func (c *LibraryClient) AddToMemory(ctx context.Context, memoryID, assetID string) error {
+	var results []struct {
+		ID      string `json:"id"`
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	if err := c.call(ctx, http.MethodPut, "/memories/"+url.PathEscape(memoryID)+"/assets", map[string]any{"ids": []string{assetID}}, &results); err != nil {
+		return err
+	}
+	for _, r := range results {
+		if !r.Success && r.Error != "duplicate" {
+			return fmt.Errorf("immich refused to add asset %s to memory %s: %s", assetID, memoryID, r.Error)
+		}
+	}
+	return nil
+}
+
 func (c *LibraryClient) AddToSharedLink(ctx context.Context, linkID, assetID string) error {
 	return c.call(ctx, http.MethodPut, "/shared-links/"+url.PathEscape(linkID)+"/assets", map[string]any{"assetIds": []string{assetID}}, nil)
 }

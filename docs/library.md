@@ -44,7 +44,7 @@ Immich has no "replace this file", so the optimizer does it in a fixed order tha
 1. Download the original and check it against Immich's checksum.
 2. Convert it with your tasks, then check that the result **looks like a valid photo or video**: the file is not empty, it decodes completely, and it is not a single flat colour (unless the original was). For a video: it has a picture track, a length, and a frame from the middle decodes.
 3. Upload the converted file as a new asset.
-4. Carry everything over: albums, shared links, stack position, favorite, archive state, description, rating, date and location edits, tags, people (named faces) and the mobile app's own metadata.
+4. Carry everything over: albums, shared links, memories, stack position, favorite, archive state, description, rating, date and location edits, tags, people (named faces) and the mobile app's own metadata.
 5. Compare the new asset with the original, field by field.
 6. **Only if everything matches**, move the original to Immich's **trash**.
 
@@ -68,19 +68,20 @@ The converted copy is a new asset in Immich. This is everything the original had
 | ✅ | Edits made in Immich (crop, rotate, mirror) | copied by the optimizer. Only possible when the conversion keeps the picture's size, see below |
 | ✅ | The video of a live photo or motion photo | the copy is paired with the same video, which is left as it is |
 | ✅ | Asset metadata written by apps (for example the mobile app's iCloud id) | copied by the optimizer |
+| ✅ | Membership in memories ("on this day") | added by the optimizer |
 | ✅ | Owner, type, file name (with the new extension) | by upload |
 | ⚠️ | Faces not assigned to anyone | not copied: Immich detects them again |
 | ⚠️ | A face you removed by hand, or hid | may come back when Immich detects faces again |
 | ⚠️ | Thumbnails, search index, face data | generated again by Immich for the new file |
 | ❌ | The asset's id | the copy has a new one: links and bookmarks to the old asset stop working |
-| ❌ | The upload date ("recently added") | becomes the day of the conversion |
-| ❌ | Membership in a memory | not carried over |
+| ❌ | The upload date ("recently added") | becomes the day of the conversion. Immich sets it itself and its API has no way to change it |
 | ❌ | Being an album's cover or a person's featured photo | Immich picks another one |
 
 Every ✅ row is checked in step 5: if the copy differs from the original in any of them, it is deleted and the original stays. A few allowances are made on purpose:
 
 - The file name is compared without its extension.
 - The copy may belong to more people than the original, never fewer.
+- Memories are not read back: adding the copy to a memory is confirmed by Immich's answer, and a refusal undoes the replacement like any other difference.
 - **Dimensions and orientation are not compared**, because a task may resize, crop or rotate. A video's length may differ by half a second or 2%.
 
 The validity check in step 2 does **not** compare the picture with the original either: a task is free to crop, resize, watermark or re-encode. It only rejects results that are broken. Library mode converts with whatever your tasks file says, and treats every task the same way.

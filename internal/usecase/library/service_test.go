@@ -46,6 +46,8 @@ type fakeImmich struct {
 	order  []string
 	nextID int
 	calls  []string
+	// memories maps a memory to its assets.
+	memories map[string][]string
 	// filters are the filters library mode asked Immich to apply.
 	filters []string
 
@@ -393,6 +395,35 @@ func (f *fakeImmich) SharedLinkIDs(_ context.Context, assetID string) ([]string,
 		return nil, err
 	}
 	return a.links, nil
+}
+
+func (f *fakeImmich) MemoryIDs(context.Context) (map[string][]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail("MemoryIDs"); err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for m, assets := range f.memories {
+		for _, a := range assets {
+			out[a] = append(out[a], m)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeImmich) AddToMemory(_ context.Context, memoryID, assetID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail("AddToMemory"); err != nil {
+		return err
+	}
+	if f.memories == nil {
+		f.memories = map[string][]string{}
+	}
+	f.memories[memoryID] = append(f.memories[memoryID], assetID)
+	f.calls = append(f.calls, "memory:"+assetID)
+	return nil
 }
 
 func (f *fakeImmich) AddToSharedLink(_ context.Context, linkID, assetID string) error {
@@ -1427,4 +1458,60 @@ func TestFilterDoesNotHoldBackSecondCopies(t *testing.T) {
 	if sum, err := h.run(); err != nil || sum.SecondCopies != 1 || !again.IsTrashed {
 		t.Fatalf("%+v, %v", sum, err)
 	}
+}
+
+func TestMemoriesAreCarriedOver(t *testing.T) {
+	h := newHarness(t)
+	old := h.im.add("IMG_1.jpg", photo(1))
+	other := h.im.add("IMG_2.jpg", photo(2))
+	h.im.memories = map[string][]string{"memory-a": {old.ID, "someone-else"}, "memory-b": {old.ID}}
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 2 {
+		t.Fatalf("%+v, %v", sum, err)
+	}
+	var conv string
+	for _, id := range h.im.order {
+		if m := h.marker(id); m != nil && m.SHA1 == old.Checksum {
+			conv = id
+		}
+	}
+	for _, m := range []string{"memory-a", "memory-b"} {
+		if index(h.im.memories[m], conv) < 0 {
+			t.Errorf("%s does not have the converted asset: %v", m, h.im.memories[m])
+		}
+	}
+	// An asset that was in no memory is put into none.
+	for m, assets := range h.im.memories {
+		for _, a := range assets {
+			if mk := h.marker2(a); mk != nil && mk.SHA1 == other.Checksum {
+				t.Errorf("the other photo's conversion ended up in %s", m)
+			}
+		}
+	}
+	// It is in before the original is trashed.
+	calls := strings.Join(h.im.calls, " ")
+	if strings.Index(calls, "memory:"+conv) > strings.Index(calls, "trash:"+old.ID) {
+		t.Errorf("order of changes: %v", h.im.calls)
+	}
+}
+
+// A memory that cannot be completed undoes the replacement, like everything
+// else that cannot be carried over.
+func TestMemoryThatCannotBeCarriedOverRollsBack(t *testing.T) {
+	h := newHarness(t)
+	old := h.im.add("IMG_1.jpg", photo(1))
+	h.im.memories = map[string][]string{"memory-a": {old.ID}}
+	h.im.failCall["AddToMemory"] = errors.New("no")
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 0 || sum.Failed != 1 || old.IsTrashed {
+		t.Fatalf("%+v, %v, original trashed %v", sum, err, old.IsTrashed)
+	}
+}
+
+// marker2 is marker for an id that may not be an asset of the fake.
+func (h *harness) marker2(id string) *entity.Marker {
+	if h.im.assets[id] == nil {
+		return nil
+	}
+	return h.marker(id)
 }

@@ -758,3 +758,43 @@ func TestLibraryFilter(t *testing.T) {
 		t.Fatalf("without a filter (exit %d) converted %q:\n%s", code, trashed(), out)
 	}
 }
+
+// A memory ("on this day") lists its assets by id: the converted copy has to
+// take its original's place in it.
+func TestLibraryCarriesMemoriesOver(t *testing.T) {
+	u := newUser(t)
+	a := u.add(t, "photo.jpg", nil)
+	b := u.add(t, "plain.jpg", nil)
+	var memory struct {
+		ID string `json:"id"`
+	}
+	must(t, u.key, http.MethodPost, "/memories", map[string]any{
+		"type": "on_this_day", "data": map[string]any{"year": 2021},
+		"memoryAt": "2021-06-15T00:00:00.000Z", "assetIds": []string{a.ID},
+	}, &memory)
+
+	code, out, log := runLibrary(t, u, sharedDir(t), map[string]string{"IO_LIBRARY_DRY_RUN": "false"})
+	if code != 0 {
+		t.Fatalf("library run exited %d:\n%s", code, out)
+	}
+	newA, newB := replacedBy(log, a.ID), replacedBy(log, b.ID)
+	if newA == "" || newB == "" {
+		t.Fatalf("the photos were not converted:\n%s", out)
+	}
+	var got struct {
+		Assets []struct {
+			ID string `json:"id"`
+		} `json:"assets"`
+	}
+	must(t, u.key, http.MethodGet, "/memories/"+memory.ID, nil, &got)
+	var ids []string
+	for _, x := range got.Assets {
+		ids = append(ids, x.ID)
+	}
+	if !contains(ids, newA) {
+		t.Errorf("the memory does not have the converted photo %s: %v", newA, ids)
+	}
+	if contains(ids, newB) {
+		t.Errorf("a photo that was in no memory was put into one: %v", ids)
+	}
+}

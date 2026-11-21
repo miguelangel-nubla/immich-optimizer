@@ -108,6 +108,9 @@ type Service struct {
 	log     *logger.Logger
 	journal *audit.Log
 
+	// memories says, for this run, which memories each asset is in.
+	memories map[string][]string
+
 	// stacks serialises replacements inside one stack: two members worked on
 	// at once would fight over the stack's cover.
 	stacksMu sync.Mutex
@@ -225,6 +228,16 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 		page = next
 	}
 	s.infof("Library: %d asset(s) listed%s", len(assets), map[bool]string{true: " (dry run: nothing will be changed)"}[s.cfg.DryRun])
+
+	// Memories ("on this day") list their assets by id, so a replaced
+	// asset has to be put into the memories of its original. Read once: a
+	// real run needs it for every replacement.
+	s.memories = nil
+	if !s.cfg.DryRun {
+		if s.memories, err = s.api.MemoryIDs(ctx); err != nil {
+			return sum, fmt.Errorf("listing memories: %w", err)
+		}
+	}
 
 	// The filter is Immich's own: Immich says which assets match. It only
 	// limits what is converted. Unfinished replacements and second copies
@@ -954,6 +967,12 @@ func (s *Service) apply(ctx context.Context, old, cur *entity.LibraryAsset, oldL
 	for _, id := range minus(oldLinks, newLinks) {
 		if err := s.api.AddToSharedLink(ctx, id, cur.ID); err != nil {
 			return fmt.Errorf("carrying over a shared link: %w", err)
+		}
+	}
+
+	for _, id := range s.memories[old.ID] {
+		if err := s.api.AddToMemory(ctx, id, cur.ID); err != nil {
+			return fmt.Errorf("carrying over a memory: %w", err)
 		}
 	}
 
