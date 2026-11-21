@@ -823,7 +823,9 @@ func TestSkips(t *testing.T) {
 		h.im.sharedAlbums["shared-1"] = true
 		h.im.activity["shared-1/"+a.ID] = 2
 	})
-	mk("done.jpg", func(a *fakeAsset) { a.metadata[entity.MarkerKey] = json.RawMessage(`{"v":1,"task":"jpeg-xl"}`) })
+	mk("done.jpg", func(a *fakeAsset) {
+		a.metadata[entity.MarkerKey] = json.RawMessage(`{"v":1,"original":{"sha1":"aa","size":1},"conversion":{"task":{"name":"jpeg-xl"}}}`)
+	})
 
 	sum, err := h.run()
 	if err != nil {

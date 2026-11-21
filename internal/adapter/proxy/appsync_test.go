@@ -58,7 +58,22 @@ func line(typ string, data any, ack string) string {
 	return string(b) + "\n"
 }
 
-func marker(assetID string, value map[string]any) string {
+// marker is the sync line of a marker. value says what it holds in a short
+// form (sha1, kept, state, task), which is laid out as the record really is.
+func marker(assetID string, short map[string]any) string {
+	value := map[string]any{"v": 1}
+	if s, ok := short["sha1"]; ok {
+		value["original"] = map[string]any{"sha1": s, "size": 3}
+	}
+	if task, ok := short["task"]; ok {
+		value["conversion"] = map[string]any{"task": map[string]any{"name": task}}
+	}
+	if state, ok := short["state"]; ok {
+		value["library"] = map[string]any{"state": state}
+	}
+	if short["kept"] == true {
+		value["kept"] = map[string]any{"note": "no gain"}
+	}
 	return line("AssetMetadataV1", map[string]any{"assetId": assetID, "key": "immich-optimizer", "value": value}, "AssetMetadataV1|u1")
 }
 

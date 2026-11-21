@@ -50,8 +50,10 @@ type Config struct {
 	ReadyTimeout time.Duration
 	// PollInterval is the delay between readiness checks.
 	PollInterval time.Duration
-	// Version is the optimizer version recorded in markers.
-	Version string
+	// Version is the optimizer version recorded in markers, and
+	// ConfigSHA256 the fingerprint of the tasks file's folder.
+	Version      string
+	ConfigSHA256 string
 	// Concurrency is how many assets are worked on at the same time.
 	Concurrency int
 	// ReportFile, when set, is where the HTML report of the run is written.
@@ -779,8 +781,9 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 // later runs do not download it again.
 func (s *Service) keep(ctx context.Context, old *entity.LibraryAsset, oldItems []entity.MetadataItem, t *tally, note string) error {
 	mi, err := markerItem(&entity.Marker{
-		V: 1, SHA1: old.Checksum, Size: old.Size, Source: string(entity.SourceLibrary),
-		Optimizer: s.cfg.Version, Kept: true, Note: note,
+		V: entity.MarkerVersion, SHA1: old.Checksum, Size: old.Size, OriginalName: old.OriginalFileName,
+		Source: string(entity.SourceLibrary), Optimizer: s.cfg.Version, ConfigSHA256: s.cfg.ConfigSHA256,
+		At: time.Now(), Kept: true, Note: note,
 	})
 	if err != nil {
 		return err

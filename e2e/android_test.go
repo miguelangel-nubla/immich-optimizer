@@ -360,7 +360,7 @@ func (u *user) assetOf(t *testing.T, sample string) string {
 	t.Helper()
 	sum := fileSHA1(t, filepath.Join(mediaDir, sample))
 	for _, a := range u.live(t) {
-		if m := u.marker(t, a.ID); m != nil && m["sha1"] == sum {
+		if m := u.marker(t, a.ID); m != nil && m["original.sha1"] == sum {
 			return a.ID
 		}
 	}

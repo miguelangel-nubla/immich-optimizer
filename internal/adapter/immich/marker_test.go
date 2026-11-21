@@ -43,12 +43,12 @@ func TestEnsureMarkerWritesOnlyWhenNeeded(t *testing.T) {
 	}
 
 	ensure(false)
-	if len(puts) != 1 || !strings.Contains(puts[0], `"task":"new"`) {
+	if len(puts) != 1 || !strings.Contains(puts[0], `"name":"new"`) {
 		t.Fatalf("an asset without a marker must get it: %q", puts)
 	}
 
 	// An existing marker is left alone...
-	stored = `{"v":1,"sha1":"bb","task":"old","replaces":"x"}`
+	stored = `{"v":1,"original":{"sha1":"bb","size":1},"conversion":{"task":{"name":"old"}},"library":{"replaces":"x"}}`
 	ensure(false)
 	if len(puts) != 1 {
 		t.Fatalf("an existing marker was overwritten: %q", puts)

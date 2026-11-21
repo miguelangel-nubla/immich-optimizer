@@ -75,8 +75,9 @@ type fileProcessor struct {
 	// motionSplit is that setting when the input really was split for the
 	// current task, "" otherwise.
 	motionSplit string
-	// taskName is the task that succeeded.
-	taskName string
+	// taskName is the task that succeeded, taskCommand its command template.
+	taskName    string
+	taskCommand string
 	// env is what the current task's command gets in its environment.
 	env []string
 }
@@ -139,7 +140,7 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 		}
 		attempt.ExitCode = 0
 		attempts = append(attempts, attempt)
-		fp.taskName = task.Name
+		fp.taskName, fp.taskCommand = task.Name, task.Command
 		succeeded = true
 		break
 	}
@@ -461,6 +462,7 @@ func (fp *fileProcessor) processResults() (*entity.ProcessResult, error) {
 		OriginalSize:      fp.originalSize,
 		ProcessedSize:     processedSize,
 		Task:              fp.taskName,
+		TaskCommand:       fp.taskCommand,
 		MotionPhotos:      fp.motionSplit,
 	}, nil
 }

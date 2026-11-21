@@ -1156,3 +1156,44 @@ func TestCommandVariablesAreNotSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigFingerprint(t *testing.T) {
+	logger := customlogger.NewWithLevel(nil, "error", "")
+	dir := t.TempDir()
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("tasks.yaml", "tasks: []\n")
+	write("convert.sh", "#!/bin/sh\ncjxl\n")
+	first := configFingerprint(dir, logger)
+	if len(first) != 64 || configFingerprint(dir, logger) != first {
+		t.Fatalf("fingerprint %q is not stable", first)
+	}
+	// A script the command calls is part of what was run.
+	write("convert.sh", "#!/bin/sh\ncjxl -q 80\n")
+	second := configFingerprint(dir, logger)
+	if second == first {
+		t.Error("changing a script did not change the fingerprint")
+	}
+	// So is a file's name, and a file in a subfolder.
+	write("presets/handbrake.json", "{}")
+	if configFingerprint(dir, logger) == second {
+		t.Error("a new file did not change the fingerprint")
+	}
+	// Bookkeeping folders of a mounted volume are not.
+	third := configFingerprint(dir, logger)
+	write(".git/HEAD", "ref")
+	if configFingerprint(dir, logger) != third {
+		t.Error("a hidden folder changed the fingerprint")
+	}
+	// A folder that cannot be read gives none, and does not stop anything.
+	if got := configFingerprint(filepath.Join(dir, "missing"), logger); got != "" {
+		t.Errorf("fingerprint of a missing folder = %q", got)
+	}
+}

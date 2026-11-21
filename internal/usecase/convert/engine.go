@@ -33,8 +33,10 @@ type Config struct {
 	TaskTimeout time.Duration
 	// SaveUnmatched saves files with no matching task to undone.
 	SaveUnmatched bool
-	// Version is the optimizer version recorded in provenance markers.
-	Version string
+	// Version is the optimizer version recorded in provenance markers, and
+	// ConfigSHA256 the fingerprint of the tasks file's folder.
+	Version      string
+	ConfigSHA256 string
 	// Audit, when set, records every input the engine refused or failed to
 	// convert (library mode records its own, richer entries).
 	Audit *audit.Log
@@ -184,13 +186,18 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 			return nil, e.fail(in, entity.Failure{Stage: entity.StageConvert, Err: fmt.Errorf("hashing the original: %w", err), At: e.now()}, true)
 		}
 		r.Marker = &entity.Marker{
-			V:            1,
+			V:            entity.MarkerVersion,
 			SHA1:         sum,
 			Size:         res.OriginalSize,
+			OriginalName: in.Filename,
 			Task:         res.Task,
-			Source:       string(in.Source),
+			TaskCommand:  res.TaskCommand,
+			ConfigSHA256: e.cfg.ConfigSHA256,
 			MotionPhotos: res.MotionPhotos,
+			Source:       string(in.Source),
 			Optimizer:    e.cfg.Version,
+			At:           e.now(),
+			OutputSize:   res.ProcessedSize,
 		}
 		note := ""
 		if res.MotionPhotos != "" {

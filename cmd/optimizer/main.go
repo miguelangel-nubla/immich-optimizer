@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -385,6 +388,63 @@ func loadTasks(configFile string) (*entity.Config, error) {
 	return c, nil
 }
 
+// configFingerprint identifies the content of the folder the tasks file is
+// in: the file itself and whatever its commands call from there (scripts,
+// presets). It goes into every marker, so that conversions made with one
+// configuration can be told from those made with another, also when a task
+// kept its name. It is "" when the folder cannot be read or is unreasonably
+// big; a marker then simply has none.
+func configFingerprint(dir string, logger *customlogger.Logger) string {
+	const maxFiles, maxBytes = 2000, 64 << 20
+	type entry struct {
+		rel string
+		sum [sha256.Size]byte
+	}
+	var entries []entry
+	var total int64
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			// Mounted volumes carry their own bookkeeping folders.
+			if path != dir && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		if len(entries) >= maxFiles || total > maxBytes {
+			return errors.New("too big to fingerprint")
+		}
+		data, err := os.ReadFile(path) // #nosec G304,G122 -- the operator's own configuration folder
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, path)
+		entries = append(entries, entry{filepath.ToSlash(rel), sha256.Sum256(data)})
+		return nil
+	})
+	if err != nil {
+		logger.Warnf("Markers will carry no configuration fingerprint: %s: %v", dir, err)
+		return ""
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
+	h := sha256.New()
+	for _, e := range entries {
+		fmt.Fprintf(h, "%d:%s", len(e.rel), e.rel)
+		h.Write(e.sum[:])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // readLibraryFilter returns the "library_filter" block of the tasks file as
 // JSON, or nil when there is none. It is read on its own, and not with the
 // rest of the file, because the names in it are Immich's and their case
@@ -512,7 +572,9 @@ func run(args []string) error {
 	logger.Printf("Asset operations are recorded in %s", auditFile)
 
 	processorAdapter := processor.NewLocalProcessor(logger, filepath.Dir(config.ConfigFile))
+	configSHA256 := configFingerprint(filepath.Dir(config.ConfigFile), logger)
 	engine := convert.New(convert.Config{
+		ConfigSHA256:  configSHA256,
 		Tasks:         config.Tasks.Tasks,
 		MaxConcurrent: config.MaxConcurrentRequests,
 		TaskTimeout:   config.TasksTimeout,
@@ -605,6 +667,7 @@ func run(args []string) error {
 			Filter:        config.Tasks.LibraryFilter,
 			ReadyTimeout:  config.LibraryReadyTimeout,
 			Version:       version,
+			ConfigSHA256:  configSHA256,
 			Concurrency:   config.LibraryConcurrency,
 			Sample:        config.LibraryDryRunSample,
 			ReportFile:    reportFile,

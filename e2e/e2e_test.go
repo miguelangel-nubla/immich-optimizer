@@ -281,6 +281,9 @@ func (u *user) live(t *testing.T) []asset {
 	return out.Assets.Items
 }
 
+// marker returns the asset's optimizer marker, or nil. The record is nested;
+// here its fields are addressed by their path, such as "original.sha1" or
+// "conversion.task.name".
 func (u *user) marker(t *testing.T, id string) map[string]any {
 	t.Helper()
 	var items []struct {
@@ -290,7 +293,19 @@ func (u *user) marker(t *testing.T, id string) map[string]any {
 	must(t, u.key, http.MethodGet, "/assets/"+id+"/metadata", nil, &items)
 	for _, it := range items {
 		if it.Key == "immich-optimizer" {
-			return it.Value
+			flat := map[string]any{}
+			var walk func(prefix string, v map[string]any)
+			walk = func(prefix string, v map[string]any) {
+				for k, x := range v {
+					if sub, ok := x.(map[string]any); ok {
+						walk(prefix+k+".", sub)
+						continue
+					}
+					flat[prefix+k] = x
+				}
+			}
+			walk("", it.Value)
+			return flat
 		}
 	}
 	return nil

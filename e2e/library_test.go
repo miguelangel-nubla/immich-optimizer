@@ -135,7 +135,7 @@ func TestLibraryReplacesAssetAndCarriesEverythingOver(t *testing.T) {
 
 	// The marker records where it came from and is no longer pending.
 	m := u.marker(t, newID)
-	if m == nil || m["replaces"] != r.a.ID || m["sha1"] != hexChecksum(t, r.a.Checksum) || m["source"] != "library" || m["state"] != nil {
+	if m == nil || m["library.replaces"] != r.a.ID || m["original.sha1"] != hexChecksum(t, r.a.Checksum) || m["conversion.source"] != "library" || m["library.state"] != nil {
 		t.Errorf("marker = %v", m)
 	}
 
@@ -305,7 +305,7 @@ func TestLibraryFinishesAnInterruptedReplacement(t *testing.T) {
 		a := u.add(t, "photo.jpg", nil)
 		// What a crashed run leaves behind: the converted copy, marked pending.
 		status, out := u.upload(t, immichURL, jxl, "photo.jxl", map[string]string{
-			"metadata": `[{"key":"immich-optimizer","value":{"v":1,"sha1":"` + hexChecksum(t, a.Checksum) + `","task":"jpeg-xl","source":"library","replaces":"` + a.ID + `","state":"pending"}}]`})
+			"metadata": `[{"key":"immich-optimizer","value":{"v":1,"original":{"sha1":"` + hexChecksum(t, a.Checksum) + `","size":1},"conversion":{"source":"library","task":{"name":"jpeg-xl"}},"library":{"replaces":"` + a.ID + `","state":"pending"}}}]`})
 		if status != http.StatusCreated {
 			t.Fatalf("seeding the pending copy: %d %s", status, out["_body"])
 		}
@@ -326,7 +326,7 @@ func TestLibraryFinishesAnInterruptedReplacement(t *testing.T) {
 		if len(live) != 1 {
 			t.Fatalf("%d live assets, want 1", len(live))
 		}
-		if m := u.marker(t, live[0].ID); m == nil || m["state"] != nil || m["replaces"] != a.ID {
+		if m := u.marker(t, live[0].ID); m == nil || m["library.state"] != nil || m["library.replaces"] != a.ID {
 			t.Errorf("marker = %v", m)
 		}
 		if live[0].OriginalFileName != "photo.jxl" {
@@ -338,7 +338,7 @@ func TestLibraryFinishesAnInterruptedReplacement(t *testing.T) {
 		u := newUser(t)
 		a := u.add(t, "photo.jpg", nil)
 		status, out := u.upload(t, immichURL, jxl, "photo.jxl", map[string]string{
-			"metadata": `[{"key":"immich-optimizer","value":{"v":1,"task":"jpeg-xl","source":"library","replaces":"` + a.ID + `","state":"pending"}}]`})
+			"metadata": `[{"key":"immich-optimizer","value":{"v":1,"conversion":{"source":"library","task":{"name":"jpeg-xl"}},"library":{"replaces":"` + a.ID + `","state":"pending"}}}]`})
 		if status != http.StatusCreated {
 			t.Fatalf("seeding the pending copy: %d %s", status, out["_body"])
 		}
@@ -352,7 +352,7 @@ func TestLibraryFinishesAnInterruptedReplacement(t *testing.T) {
 		if !contains(events(log, a.ID), "finalized") {
 			t.Errorf("events = %v", events(log, ""))
 		}
-		if m := u.marker(t, pending.ID); m == nil || m["state"] != nil {
+		if m := u.marker(t, pending.ID); m == nil || m["library.state"] != nil {
 			t.Errorf("marker = %v", m)
 		}
 		if u.asset(t, pending.ID).IsTrashed || !u.asset(t, a.ID).IsTrashed {
