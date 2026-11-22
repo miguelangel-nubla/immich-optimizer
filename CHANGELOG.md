@@ -2,7 +2,9 @@
 
 What changes for someone who runs the optimizer: behaviour, settings, files. The release notes on GitHub list every commit as well.
 
-## Unreleased
+## 0.4.0-beta.1 (2026-11-22)
+
+Changes since v0.4.0-dev.7. For what changed from 0.3.0-beta.5 to dev.7, see the release notes of the v0.4.0-dev releases.
 
 ### Fixed
 
@@ -56,7 +58,7 @@ What changes for someone who runs the optimizer: behaviour, settings, files. The
 
 ### Changed
 
-- **A task whose result is not smaller hands the file to the next matching task**, instead of ending there with the original. The first task that makes the file smaller is used; if none does, the original is uploaded as before. A task with an empty command is always the last one tried. With `profile1`, a PNG that lossy JPEG XL makes bigger is now tried with caesium.
+- **A task whose result is not smaller hands the file to the next matching task**, instead of ending there with the original. The first task that makes the file smaller is used; if none does, the original is uploaded as before. A task with an empty command is always the last one tried. With `profile1`, a PNG that lossy JPEG XL makes bigger is now tried with caesium. Download tasks are not affected: the first that works is used, whatever its size.
 - **New `gain_maps` setting in the tasks file** for HDR photos (a JPEG with a gain map, Ultra HDR), like `motion_photos`: `keep` (default: the task gets the file as it is), `drop` (only the ordinary photo, done with ExifTool) or `skip` (the task is not used for HDR photos, the next matching one is). The bundled profiles are unchanged. See "HDR photos" in docs/tasks.md.
 - **HEIC, HEIF and AVIF motion photos are split by the optimizer**, like JPEG ones: `motion_photos` (`drop_video`, `drop_photo`) now applies to them before the task runs. The video is taken out of the file's `mpvd` box as it is; removing it from the photo is done with ExifTool (in the Docker image), and the result is checked to be a HEIF file without the video. Samsung's own index of the video (a `sefd` box) is turned into an empty `free` box, so nothing in the photo points at a video that is gone. Library mode also recognises these motion photos, so one is never converted as a whole.
 - **`profile1` converts HEIC with two commands in `tasks.yaml`** (vips, then ExifTool for the EXIF) instead of the `heic2jxl.sh` script, which handled motion photos itself. With `motion_photos: keep` its HEIC task now converts the photo as it does for JPEG (the video does not survive the conversion, and the result does not claim one) instead of passing the file through; use `keep` on a passthrough task to keep a motion photo whole, as for JPEG. The profile's configuration fingerprint (`config.sha256` in the marker) changes.
