@@ -1,0 +1,58 @@
+name: Fuzz
+
+# The parsers that read what clients and Immich send (motion photos, upload
+# forms, the sync stream, websocket frames and events, the marker), fuzzed a
+# few minutes each, once a week and on demand. Their seed inputs run with the
+# unit tests on every push already. An input that fails is kept as an
+# artifact: add it under the package's testdata/fuzz/<Fuzz name>/ so the unit
+# tests keep it.
+on:
+  schedule:
+    - cron: '43 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: 'Time per target'
+        required: false
+        default: '3m'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { name: FuzzSplit, pkg: ./internal/adapter/motionphoto }
+          - { name: FuzzMarkerJSON, pkg: ./internal/domain/entity }
+          - { name: FuzzMergeIntoMetadata, pkg: ./internal/domain/entity }
+          - { name: FuzzSyncStream, pkg: ./internal/adapter/proxy }
+          - { name: FuzzSocketPump, pkg: ./internal/adapter/proxy }
+          - { name: FuzzExtractTargets, pkg: ./internal/adapter/proxy }
+          - { name: FuzzEventFrames, pkg: ./internal/adapter/immich }
+          - { name: FuzzDispatch, pkg: ./internal/adapter/immich }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Fuzz ${{ matrix.target.name }}
+        env:
+          FUZZTIME: ${{ inputs.fuzztime || '3m' }}
+        run: go test -run '^$' -fuzz '^${{ matrix.target.name }}$' -fuzztime "$FUZZTIME" ${{ matrix.target.pkg }}
+
+      - name: Keep the failing input
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-${{ matrix.target.name }}
+          path: '**/testdata/fuzz/${{ matrix.target.name }}/'

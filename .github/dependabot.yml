@@ -1,0 +1,30 @@
+# Weekly pull requests for what the optimizer is built from. They target dev,
+# where every change is integrated and tested first.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+    groups:
+      go-modules:
+        patterns: ['*']
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+
+  # The image's base images. The tools built into it (caesiumclt, exiftool)
+  # are pinned by ARG in the Dockerfile and are not covered: see
+  # docs/development.md.
+  - package-ecosystem: docker
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly

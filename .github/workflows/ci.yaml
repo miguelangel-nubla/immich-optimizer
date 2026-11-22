@@ -54,6 +54,12 @@ jobs:
         with:
           version: v2.15.0
 
+      # Known vulnerabilities in the Go version and the modules, in code the
+      # optimizer actually calls. Most fixes are a newer Go patch release in
+      # go.mod.
+      - name: Vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
   snapshot:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -110,6 +116,9 @@ jobs:
 
       - name: Integration tests
         run: scripts/integration-test.sh immich-optimizer:ci
+        env:
+          IO_TEST_CPUS: "4"
+          IO_TEST_MEMORY: "12g"
 
   # End-to-end: a real Immich (Docker Compose) with the optimizer image built
   # from this commit, in library, proxy and watcher mode.

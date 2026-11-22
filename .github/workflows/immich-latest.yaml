@@ -1,0 +1,84 @@
+name: Newest Immich
+
+# The other workflows test against the Immich version pinned in
+# e2e/docker-compose.yml and internal/adapter/immich/testdata/immich-api.json.
+# This one tests against Immich's newest release, once a week and on demand,
+# so a change in Immich is noticed before users upgrade into it:
+#   - the API contract: every request the optimizer sends, checked against the
+#     newest release's own description of its API (deprecated fields too);
+#   - the end-to-end tests, with that release running.
+# A failure here means "Immich changed", not "this commit broke something".
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      immich_version:
+        description: 'Immich release to test against (default: the newest)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Find the release
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANTED: ${{ inputs.immich_version }}
+        run: |
+          tag="${WANTED:-$(gh api repos/immich-app/immich/releases/latest --jq .tag_name)}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Immich $tag"
+
+  contract:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Download the release's API description
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: curl -fsSL -o "$RUNNER_TEMP/immich-openapi-specs.json" "https://raw.githubusercontent.com/immich-app/immich/$TAG/open-api/immich-openapi-specs.json"
+
+      - name: API contract
+        env:
+          IO_IMMICH_SPEC: ${{ runner.temp }}/immich-openapi-specs.json
+          IO_IMMICH_VERSION: ${{ needs.version.outputs.tag }}
+        run: go test ./internal/adapter/immich -run TestImmichAPIContract -v
+
+  e2e:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Build image
+        run: scripts/build-image.sh immich-optimizer:ci
+
+      - name: End-to-end tests
+        env:
+          IMMICH_VERSION: ${{ needs.version.outputs.tag }}
+        run: E2E_ML=1 scripts/e2e-test.sh immich-optimizer:ci -v
