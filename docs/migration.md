@@ -37,7 +37,7 @@ services:
     restart: always
 ```
 
-**Before the first start on Linux**, create the `undone` folder and give it to the user the optimizer runs as: `mkdir -p undone && sudo chown 1001 undone`. Docker would otherwise create it for root, and the optimizer refuses to start with a folder it cannot write to. More in [Folders and ports](docker.md#folders-and-ports).
+**On Linux, create the folder first:** `mkdir -p undone && sudo chown 1001 undone`. The optimizer does not start with a folder it cannot write to ([why](docker.md#folders-and-ports)).
 
 What changed:
 

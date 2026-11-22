@@ -16,25 +16,38 @@ services:
     restart: unless-stopped
 ```
 
-**Before the first start on Linux**, create the `undone` folder and give it, and the watch folder, to the user the optimizer runs as: `mkdir -p undone && sudo chown 1001 undone /path/to/watch`. The optimizer deletes what it has uploaded from the watch folder, so it must be able to write there too. More in [Folders and ports](docker.md#folders-and-ports).
+**On Linux, create the folders first:** `mkdir -p undone && sudo chown 1001 undone /path/to/watch`. The optimizer does not start with a folder it cannot write to ([why](docker.md#folders-and-ports)). Hand over the watch folder too: the optimizer deletes from it what it has uploaded, so it must be able to write there.
 
 Uploads go to the API key's user: run one container per user. Settings: [Watcher mode](configuration.md#watcher-mode).
 
 ## How it behaves
 
-- Files are handled as described in [Tasks](tasks.md#how-a-file-is-handled). Files already in the folder at startup are processed too, and subfolders are watched.
-- **A file is taken once it is complete**: when the program writing it closes it, or renames it into place. A file that is still open is never taken, however long its writer pauses. A file found already there (at startup, or in a folder copied or moved in), or one published with a hard link (which sends no close event under its own name), is taken once it has not been written to for 10 seconds. A file that is written to while it is being converted is not uploaded: it is kept and handled again.
+Files are handled as described in [Tasks](tasks.md#how-a-file-is-handled). Each converted asset gets a [provenance marker](marker.md), and each upload a line in the [audit log](audit-log.md).
+
+### Which files are taken
+
+- **Everything in the folder**, subfolders included. Files already there at startup are processed too.
+- **A file is taken once it is complete**: when the program writing it closes it, or renames it into place. A file that is still open is never taken, however long its writer pauses.
+- **Some files are taken once they have not been written to for 10 seconds** instead: a file found already there (at startup, or in a folder copied or moved in), and one published with a hard link, which sends no close event under its own name.
+- **A file that is written to while it is being converted** is not uploaded: it is kept and handled again.
+- **Ignored files** are left where they are, neither uploaded nor moved to undone:
+  - hidden files and folders (names starting with a dot). This covers the in-progress files of rsync and Syncthing, `.DS_Store` and macOS `._*` files;
+  - `Thumbs.db` and `desktop.ini`;
+  - common temporary extensions (`.tmp`, `.part`, `.crdownload`...).
+- If more files arrive at once than the system can report, the folder is scanned again, so nothing is missed.
+- **The watch folder must be on a local file system**: changes made on a network share by another machine are not noticed.
+
+### What happens to a file
+
 - **Dates**: the asset's file dates sent to Immich are those of the original file in the watch folder, not of the converted output. Photos without a date in their metadata land on the right day as long as the sync tool preserved the file's modification time.
-- **Ignored files**: hidden files and folders (names starting with a dot, which covers the in-progress files of rsync and Syncthing, `.DS_Store` and macOS `._*` files), `Thumbs.db`, `desktop.ini` and common temporary extensions (`.tmp`, `.part`, `.crdownload`...) are left where they are. They are neither uploaded nor moved to undone.
 - **After a successful upload the source file is deleted** from the watch folder. Use a one-way sync into it.
 - **A file that cannot be converted or uploaded** is moved to the [undone folder](undone.md). If that fails too (for example the disk is full), it stays in the watch folder.
-- If more files arrive at once than the system can report, the folder is scanned again, so nothing is missed.
-- The watch folder must be on a local file system: changes made on a network share by another machine are not noticed.
-- Each converted asset gets a [provenance marker](marker.md), and each upload a line in the [audit log](audit-log.md).
 
 ## Importing a folder of files
 
-Watcher mode is a good fit when you have photos and videos as plain files, in a folder structure of your own (an old archive, a camera card, a disk you are clearing), and want them **converted and uploaded in one step**. Copy them into the watch folder; each one is converted and uploaded, and the folder empties as it goes. Nothing else is needed: no [Immich CLI](https://docs.immich.app/features/bulk-upload) (`immich upload`) and no [immich-go](https://github.com/simulot/immich-go) (`immich-go upload from-folder`), the tools usually used to upload folders to Immich.
+Watcher mode is a good fit when you have photos and videos as plain files, in a folder structure of your own (an old archive, a camera card, a disk you are clearing), and want them **converted and uploaded in one step**.
+
+Copy them into the watch folder. Each one is converted and uploaded, and the folder empties as it goes. Nothing else is needed: no [Immich CLI](https://docs.immich.app/features/bulk-upload) (`immich upload`) and no [immich-go](https://github.com/simulot/immich-go) (`immich-go upload from-folder`), the tools usually used to upload folders to Immich.
 
 - **Copy, do not move, your only copy.** Each file is deleted from the watch folder once Immich has it. Keep the originals elsewhere until you have checked the result in Immich.
 - **Subfolders are fine**, at any depth. The folder structure is not turned into albums: every file simply lands in the timeline, on its own date.

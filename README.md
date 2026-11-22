@@ -46,7 +46,7 @@ services:
     restart: unless-stopped
 ```
 
-**Before the first start on Linux**, create the `undone` folder and give it to the user the optimizer runs as: `mkdir -p undone && sudo chown 1001 undone`. Docker would otherwise create it for root, and the optimizer refuses to start with a folder it cannot write to. More in [Folders and ports](docs/docker.md#folders-and-ports).
+**On Linux, create the folder first:** `mkdir -p undone && sudo chown 1001 undone`. The optimizer does not start with a folder it cannot write to ([why](docs/docker.md#folders-and-ports)).
 
 ## Documentation
 
@@ -55,6 +55,7 @@ services:
 | [Quick start](docs/quickstart.md) | the recommended setup, step by step |
 | [Proxy mode](docs/proxy.md) · [Watcher mode](docs/watcher.md) · [Library mode](docs/library.md) | setting up and understanding each mode |
 | [How app sync works](docs/app-sync.md) | what the proxy does for the mobile app, in detail |
+| [How library mode works](docs/library-details.md) | what library mode does to each asset, in detail |
 | [Tasks](docs/tasks.md) | the tasks file, bundled profiles, motion photos, converting downloads back |
 | [Configuration](docs/configuration.md) | every setting |
 | [Undone folder](docs/undone.md) · [Audit log](docs/audit-log.md) · [Marker](docs/marker.md) | what the optimizer keeps and records |

@@ -42,6 +42,8 @@ undone/
 
 ## Details
 
+### How files are stored
+
 **The folder name** is the SHA-1 checksum of the file (40 characters), the same checksum Immich keeps for every asset.
 
 - The same file failing again is not saved twice: `occurrences` goes up and the new failure is added to its `metadata.json`. This is what happens when a phone retries an upload.
@@ -49,7 +51,7 @@ undone/
 - The file is always called `original.file`, with no extension, so an unusual or very long name can never cause trouble. The real name is in `metadata.json`.
 - There are no subfolders per mode, and the watch folder's tree is not copied. Where a file came from is in `metadata.json`.
 
-**`metadata.json`** contains:
+### `metadata.json`
 
 | Field | Meaning |
 |---|---|
@@ -59,9 +61,22 @@ undone/
 | `original_filenames` | the names it arrived under (up to 100) |
 | `failures` | the 20 most recent failures |
 
-Each failure has `source` (`watcher` or `proxy`), `original_filename`, `original_dir` (the path below the watch folder, or the folder part of the name the proxy's client sent), `failed_at`, `stage` (`no_task`, `convert` or `upload`), `error`, and every task that was tried: command, exit code, duration, whether it timed out, and the last 4 KiB of its output. It holds no passwords, keys or request headers. The format is `"version": 3`.
+Each failure has:
 
-**Checking whether Immich already has a file.** Since the folder name is the checksum Immich uses, you can ask Immich for it. This only finds the file if these exact bytes reached Immich some other way, for example from a client that did not go through the proxy; a converted upload has another checksum.
+| Field | Meaning |
+|---|---|
+| `source` | `watcher` or `proxy` |
+| `original_filename`, `original_dir` | the name, and the path below the watch folder or the folder part of the name the proxy's client sent |
+| `failed_at` | when |
+| `stage` | `no_task`, `convert` or `upload` |
+| `error` | what went wrong |
+| the tasks that were tried | for each: command, exit code, duration, whether it timed out, and the last 4 KiB of its output |
+
+It holds no passwords, keys or request headers. The format is `"version": 3`.
+
+### Checking whether Immich already has a file
+
+Since the folder name is the checksum Immich uses, you can ask Immich for it. This only finds the file if these exact bytes reached Immich some other way, for example from a client that did not go through the proxy; a converted upload has another checksum.
 
 ```sh
 curl -s -X POST "$IMMICH_URL/api/assets/bulk-upload-check" \
@@ -69,6 +84,8 @@ curl -s -X POST "$IMMICH_URL/api/assets/bulk-upload-check" \
   -d '{"assets":[{"id":"x","checksum":"<folder name>"}]}'
 # {"results":[{"id":"x","action":"reject","reason":"duplicate","assetId":"…"}]} means Immich has it
 ```
+
+### Other things to know
 
 **Several containers can share one undone folder**, for example a watcher and a proxy. They take turns through a lock file, `.io-undone.lock`, at its top: leave it there.
 

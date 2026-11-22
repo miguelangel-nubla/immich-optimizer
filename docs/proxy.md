@@ -21,7 +21,7 @@ services:
     # ...your existing Immich service, without its "ports:" section
 ```
 
-**Before the first start on Linux**, create the `undone` folder and give it to the user the optimizer runs as: `mkdir -p undone && sudo chown 1001 undone`. Docker would otherwise create it for root, and the optimizer refuses to start with a folder it cannot write to. More in [Folders and ports](docker.md#folders-and-ports).
+**On Linux, create the folder first:** `mkdir -p undone && sudo chown 1001 undone`. The optimizer does not start with a folder it cannot write to ([why](docker.md#folders-and-ports)).
 
 Point your clients at the optimizer instead of Immich. If Immich sits behind your own reverse proxy (nginx, Traefik, Caddy), point that proxy at the optimizer.
 
@@ -49,16 +49,37 @@ To convert every new upload anyway, but in the background instead of during the 
 
 ## How it behaves
 
-- **What is converted:** multipart uploads to Immich's upload endpoint (`/api/assets`). The file is handled as described in [Tasks](tasks.md#how-a-file-is-handled).
-- **Errors:** a file type no task handles answers `415`; a failed conversion answers `502`. Nothing is uploaded in either case and the original is kept in the [undone folder](undone.md). If Immich itself cannot be reached or refuses the upload, the client gets the error and nothing is kept: it still has the file and retries. `503` means "try again later": the proxy is shutting down, has no room in its temp folder, or cannot write its audit log.
-- **What the mobile app does with an error** (tested with the Android app v3.4.2 in an emulator): it tries each failed file once every time it looks for things to back up, does not retry in between, and carries on with the other files. Once the cause is gone, the file is backed up on the next round.
-- **A dropped connection does not lose the upload.** Once the proxy has received a file, it finishes converting it and stores it in Immich, even if the phone goes offline or gives up waiting in the meantime.
-- **A repeated upload is not stored twice.** If the same person sends the identical file again while it is being converted, or within 30 minutes afterwards, they get the answer to the first upload instead of a second conversion. Two exceptions, where the file is handled afresh: the first upload failed for a temporary reason (`5xx`, `408`, `413`, `425`, `429`), or the photo it created has since been deleted from Immich.
-- **Uploads wait when the temp folder is filling up.** Every upload that is waiting or being converted has files in the container's temp folder (`/tmp`), up to three times its size. Before reading a new upload, the proxy checks that there is room for it next to the ones in progress. If not, the client is held for up to 45 seconds and then answered `503` with `Retry-After`, so a phone that sends faster than your tasks convert slows down instead of making the conversions under way fail for lack of space. There is nothing to set: the limit is the free space itself. An upload that does not say its size (chunked) cannot be counted while it arrives: it is taken on only when no other upload is arriving, and the others wait meanwhile.
+**What is converted:** multipart uploads to Immich's upload endpoint (`/api/assets`). The file is handled as described in [Tasks](tasks.md#how-a-file-is-handled). Each converted asset gets a [provenance marker](marker.md), and each upload a line in the [audit log](audit-log.md).
+
+### Uploads
+
 - **A long conversion does not time out in the browser.** The proxy keeps the upload alive until the file is stored, however long the conversion takes.
-- **The file's name** is taken from the upload's `filename` field when it has one, as Immich does; the mobile app's background upload sends the real name there.
-- **Downloads can be converted back.** With a [`downloads` list](tasks.md#downloads) in the tasks file, an original stored as JPEG XL is handed out as JPEG when someone downloads it.
-- Each converted asset gets a [provenance marker](marker.md), and each upload a line in the [audit log](audit-log.md).
+- **A dropped connection does not lose the upload.** Once the proxy has received a file, it finishes converting it and stores it in Immich, even if the phone goes offline or gives up waiting in the meantime.
+- **A repeated upload is not stored twice.** If the same person sends the identical file again while it is being converted, or within 30 minutes afterwards, they get the answer to the first upload instead of a second conversion. The file is handled afresh in two cases: the first upload failed for a temporary reason (`5xx`, `408`, `413`, `425`, `429`), or the photo it created has since been deleted from Immich.
+- **The file's name** is taken from the upload's `filename` field when it has one, as Immich does. The mobile app's background upload sends the real name there.
+
+### Errors
+
+| The client gets | When | What happens to the file |
+|---|---|---|
+| `415` | no task handles the file type | kept in the [undone folder](undone.md); nothing is uploaded |
+| `502` | the conversion failed | kept in the undone folder; nothing is uploaded |
+| Immich's own error | Immich cannot be reached, or refuses the upload | nothing is kept: the client still has the file and retries |
+| `503` | "try again later": the proxy is shutting down, has no room in its temp folder, or cannot write its audit log | the client retries |
+
+**What the mobile app does with an error** (tested with the Android app v3.4.2 in an emulator): it tries each failed file once every time it looks for things to back up, does not retry in between, and carries on with the other files. Once the cause is gone, the file is backed up on the next round.
+
+### When the temp folder fills up
+
+Every upload that is waiting or being converted has files in the container's temp folder (`/tmp`), up to three times its size. Before reading a new upload, the proxy checks that there is room for it next to the ones in progress.
+
+- **If there is no room**, the client is held for up to 45 seconds and then answered `503` with `Retry-After`. A phone that sends faster than your tasks convert slows down, instead of making the conversions under way fail for lack of space.
+- **There is nothing to set**: the limit is the free space itself.
+- **An upload that does not say its size** (chunked) cannot be counted while it arrives. It is taken on only when no other upload is arriving, and the others wait meanwhile.
+
+### Downloads
+
+With a [`downloads` list](tasks.md#downloads) in the tasks file, an original stored as JPEG XL is handed out as JPEG when someone downloads it.
 
 ## The mobile app
 

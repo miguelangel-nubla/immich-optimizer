@@ -15,7 +15,7 @@ Images are built for amd64 and arm64.
 
 - The optimizer, and the tools the [bundled profiles](tasks.md#bundled-profiles) call: `cjxl`/`djxl`, `caesiumclt`, `vips`, ImageMagick, HandBrake, `ffmpeg` and ExifTool.
 - The bundled profiles in `/etc/immich-optimizer/bundled-configs`, with `lossless` copied to `/etc/immich-optimizer/config`.
-- `ffmpeg` has the hardware encoders for NVIDIA and for VAAPI, and the image has the VAAPI driver for AMD. No bundled task uses a graphics card: see [Custom image](#custom-image).
+- Graphics cards: `ffmpeg` has the hardware encoders for NVIDIA and for VAAPI, and the image has the VAAPI driver for AMD. No bundled task uses a graphics card: see [Custom image](#custom-image).
 
 ## Folders and ports
 
@@ -26,22 +26,32 @@ Images are built for amd64 and arm64.
 | `/watch` | the [watched folder](watcher.md) |
 | `2283` | the [proxy](proxy.md) |
 
+### Permissions
+
 The container runs as user id `1001`, not root. Mounted folders must be writable by it, and mounted scripts readable and executable.
 
-On Linux, a host folder that does not exist yet is created by Docker for root, and the optimizer then refuses to start ("not writable by uid 1001"). Create the folders yourself and hand them over before the first start:
+**On Linux**, a host folder that does not exist yet is created by Docker for root, and the optimizer then refuses to start ("not writable by uid 1001"). Create the folders yourself and hand them over before the first start:
 
 ```bash
 mkdir -p undone && sudo chown 1001 undone
 ```
 
-The same goes for a watch folder. Docker Desktop (macOS, Windows) shares host folders with every user, so nothing is needed there. A named volume instead of a host folder needs no step either, but then the undone folder and the audit log are only reachable through Docker.
- For GPU devices such as `/dev/dri`, add the device's group with `group_add`.
+- The same goes for a watch folder.
+- **Docker Desktop** (macOS, Windows) shares host folders with every user, so nothing is needed there.
+- **A named volume** instead of a host folder needs no step either, but then the undone folder and the audit log are only reachable through Docker.
+- **GPU devices** such as `/dev/dri`: add the device's group with `group_add`.
 
 ## Stopping and restarting
 
-When the container is stopped (`docker stop`, `docker compose down`, a restart), the optimizer takes no new work and lets the conversions that are running finish, for as long as [`IO_SHUTDOWN_TIMEOUT`](configuration.md#general) says. What is still running after that is ended. Nothing is lost by it: in proxy mode the client is told to try again (`503`), in watcher mode the file stays in the watch folder for the next start, and library mode undoes the photo it was working on.
+When the container is stopped (`docker stop`, `docker compose down`, a restart), the optimizer takes no new work and lets the conversions that are running finish, for as long as [`IO_SHUTDOWN_TIMEOUT`](configuration.md#general) says. What is still running after that is ended. Nothing is lost by it:
 
-The default of 5 seconds fits Docker's default 10 second stop timeout: after it, cancelling what still runs and answering proxy clients takes up to 5 seconds more. Keep that margin when you raise it. If you convert videos, raise both, for example `stop_grace_period: 15m` with `IO_SHUTDOWN_TIMEOUT=14m40s`.
+- **Proxy mode:** the client is told to try again (`503`).
+- **Watcher mode:** the file stays in the watch folder for the next start.
+- **Library mode:** it undoes the photo it was working on.
+
+**The two timeouts go together.** The default of 5 seconds fits Docker's default 10 second stop timeout: after it, cancelling what still runs and answering proxy clients takes up to 5 seconds more. Keep that margin when you raise it.
+
+**If you convert videos, raise both**, for example `stop_grace_period: 15m` with `IO_SHUTDOWN_TIMEOUT=14m40s`.
 
 ## Custom image
 
@@ -51,7 +61,7 @@ For anything the standard image does not have, such as video encoding on a graph
 - Every optional part is in them, commented out and explained: graphics cards (AMD, Intel, NVIDIA), extra packages, example tasks.
 - GitHub builds the image on every change, and once a week, and publishes it to your repository as `ghcr.io/<you>/<your-repository>`. Nothing has to be built on your computer.
 
-The standard image's `ffmpeg` already has the hardware encoders for NVIDIA and for VAAPI, and the VAAPI driver for AMD. For those cards the image itself needs no change: the container has to be given the device, and a task has to use it. The template's README shows both.
+**NVIDIA and AMD cards need no custom image.** The standard image already has what they need (see [What is inside](#what-is-inside)): the container has to be given the device, and a task has to use it. The template's README shows both.
 
 If you want no container at all, the optimizer is a single static file on the [releases page](https://github.com/miguelangel-nubla/immich-optimizer/releases).
 
@@ -70,11 +80,19 @@ services:
     # ...
 ```
 
-`immich-optimizer -version` reports `dev-<shortsha>`. The binaries of each build are attached to its [Dev workflow run](https://github.com/miguelangel-nubla/immich-optimizer/actions/workflows/dev.yaml) as an artifact (GitHub sign-in required). Dev builds are **unstable**: they may contain unfinished features, break your configuration or change the undone folder format without notice. Do not run them on a library you have no backup of, and pin `:dev-<shortsha>` rather than `:dev` if you need to stay on a build that works. Dev builds never create a GitHub Release and never change `:latest` or the version tags.
+**Dev builds are unstable.** They may contain unfinished features, break your configuration or change the undone folder format without notice.
+
+- Do not run them on a library you have no backup of.
+- Pin `:dev-<shortsha>` rather than `:dev` if you need to stay on a build that works.
+- `immich-optimizer -version` reports `dev-<shortsha>`.
+- The binaries of each build are attached to its [Dev workflow run](https://github.com/miguelangel-nubla/immich-optimizer/actions/workflows/dev.yaml) as an artifact (GitHub sign-in required).
+- Dev builds never create a GitHub Release and never change `:latest` or the version tags.
 
 ## Health check
 
-The image has a Docker health check. It runs `immich-optimizer -healthcheck` inside the container, with the container's own settings. It only sees settings given as environment variables: if you pass them as command-line flags instead, the check does not know the mode or the port and reports the container as unhealthy.
+The image has a Docker health check. It runs `immich-optimizer -healthcheck` inside the container, with the container's own settings.
+
+**It only sees settings given as environment variables.** If you pass them as command-line flags instead, the check does not know the mode or the port and reports the container as unhealthy.
 
 - **Proxy mode:** it asks the proxy for `/_immich-optimizer/health`, which the proxy answers itself with `200` (and `503` while it is shutting down). It does not ask Immich: an Immich that is down is not a reason to restart the optimizer.
 - **Watcher and library mode** have nothing to ask, so the check only confirms that the container runs.
