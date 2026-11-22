@@ -92,7 +92,7 @@ The proxy takes care of this: it tells the app the checksums of the originals. T
 - **"Free up space" trusts it.** The app considers those photos safely backed up and offers to delete them from the phone, although the server holds the converted file, not the original. It does not offer photos whose converted copy is in Immich's trash.
 - **It follows what you do in Immich.** Trash a converted photo, restore it or delete it for good, and the app treats the photo on the phone as it would with any other photo.
 - **It covers [library mode](library.md#phones) too**: photos converted there are not uploaded again either.
-- **Lossy and video tasks** should give the same result for the same file every time. The app uploads a photo once, but if it ever does so again (after a reinstall, say) and the conversion comes out different, Immich stores a second copy.
+- **At worst a photo is stored twice, never lost.** The app uploads a photo once. If it ever does so again (after a reinstall, say), the proxy converts it again, and Immich only recognises the result as already stored when it is identical. A task that comes out slightly different each time, as video tasks can, leaves two versions in Immich. The new one carries the same marker, so the app counts the photo as backed up from then on and does not upload it again. You can delete either version.
 
 **What it is tested with.** The real Immich apps (v3.4.2), in the project's own tests: Android in an emulator, iOS in Xcode's simulator. [Details.](app-sync.md#what-it-is-tested-with)
 
