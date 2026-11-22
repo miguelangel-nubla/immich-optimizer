@@ -14,7 +14,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"regexp"
@@ -89,6 +88,10 @@ func analyze(f *os.File) (*layout, error) {
 		return nil, ErrNotMotionPhoto
 	}
 	cut := size - videoLen
+	// The video comes after the photo, never inside its metadata.
+	if cut < xmpOff+int64(len(xmp)) {
+		return nil, ErrNotMotionPhoto
+	}
 
 	// Only accept it when an MP4 really starts there ("ftyp" box).
 	box := make([]byte, 8)
@@ -266,8 +269,9 @@ func findXMP(f *os.File) (int64, []byte, error) {
 			return 0, nil, nil
 		}
 		segLen := int64(binary.BigEndian.Uint16(hdr[2:4]))
+		// A broken segment: not a file this package can split.
 		if segLen < 2 {
-			return 0, nil, fmt.Errorf("invalid JPEG segment length %d", segLen)
+			return 0, nil, nil
 		}
 		payloadLen := segLen - 2
 		payloadOff := pos + 4

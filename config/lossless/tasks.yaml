@@ -45,8 +45,6 @@ tasks:
   - jpeg
   - jpg
   - png
-  - tiff
-  - tif
   - webp
   - gif
 
@@ -62,6 +60,10 @@ tasks:
   - insp
   - jxl
   - psd
+  # caesiumclt 1.5 does not take TIFF ("Unable to compute the base path
+  # for the files"), and nothing else in the image keeps every page of one.
+  - tif
+  - tiff
   - raw
   - rw2
   - svg

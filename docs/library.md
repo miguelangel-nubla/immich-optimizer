@@ -21,6 +21,8 @@ services:
     restart: unless-stopped
 ```
 
+**Before the first start on Linux**, create the `undone` folder and give it to the user the optimizer runs as: `mkdir -p undone && sudo chown 1001 undone`. Docker would otherwise create it for root, and the optimizer refuses to start with a folder it cannot write to. More in [Folders and ports](docker.md#folders-and-ports).
+
 It keeps running and waits. **Nothing happens until you tag something** in Immich: tag a few photos `immich-optimizer/convert` and they are converted within seconds. Everything it replaces can be undone from Immich's trash.
 
 **The API keys.** Immich lets a key act on its owner's photos only, and has no key that works for every user. So each user whose photos should be converted creates a key once, in Immich under Account Settings → API Keys, with **all permissions**, and gives it to you.
@@ -96,6 +98,7 @@ Library mode only looks at what is tagged to be converted. A tagged asset is sti
 | Asset | Why |
 |---|---|
 | No task converts its type: the task for it uploads it as it is, or there is none | there is nothing to convert. For a photo already converted, this is the usual case: the bundled profiles have no task for JPEG XL |
+| Tagged `keep` as well | `keep` wins. Once you remove `keep`, tag it `convert` again |
 | It does not get smaller 📝 | the original is kept and marked as kept. Tagging it again tries again, with your tasks as they are then |
 | An asset that is already converted, and converting it again does not make it smaller | it stays exactly as it is, record included |
 | A motion photo whose video Immich did not extract 📝 | converting the photo would lose the video |
@@ -109,7 +112,6 @@ Library mode only looks at what is tagged to be converted. A tagged asset is sti
 
 | Asset | When it is tried again |
 |---|---|
-| Tagged `keep` | never, while it has `keep` |
 | Tagged `failed` (its conversion failed) | once you remove `failed` |
 | Immich has not finished reading it yet | at the next batch |
 | In the trash, or its file is offline | once it is back |
@@ -148,7 +150,7 @@ You choose in Immich, with tags. Library mode creates them the first time it run
 - **Tags are settled once a batch is finished.** A batch that is stopped (the container is restarted, for example) leaves them as they are, and they are acted on again after the restart.
 - **Change a photo's tags one at a time.** Immich can lose one of two changes made to the same photo within a second or two, such as removing one tag and adding another straight after. Add or remove several tags in one go (select them together in the tag picker), or wait a moment in between.
 - **The optimizer's tags are never carried over** to a converted copy, and are not counted as a difference when the copy is compared with its original. Your own tags are carried over as usual.
-- **Cleaning up does not depend on tags.** [Second copies](#second-copies-of-converted-originals) go to the trash as they are uploaded, and a replacement a restart interrupted is completed or undone when library mode starts, tagged or not.
+- **Cleaning up does not depend on tags.** [Second copies](#second-copies-of-converted-originals) go to the trash as they are uploaded (or, for uploads made while library mode was stopped, when it starts), and a replacement a restart interrupted is completed or undone when library mode starts, tagged or not.
 
 ### Converting again
 
@@ -186,6 +188,7 @@ Library mode recognises such a file without converting it again. Every converted
 - **The optimizer keeps no list of its own.** Its [audit log](audit-log.md) says which originals were converted into what, and before acting it checks the converted asset's marker in Immich. With no audit log, it reads the markers of the whole library once.
 - **It is left alone when it has something the converted asset lacks**: it is a favorite, has a description, a rating, tags or edits, or is in an album, stack or shared link the converted asset is not in. It is tagged `immich-optimizer/review`, and the audit log says what it has, so you can merge the two by hand.
 - **It happens within seconds of the upload.** Immich announces every upload with its checksum, and library mode compares it with the originals its audit log knows. Nothing else is read.
+- **Uploads made while library mode was not listening are found afterwards.** Immich announces an upload only to who is connected at that moment. When library mode starts, when its connection to Immich comes back, and every 15 minutes, it asks Immich for the assets that arrived since it last looked and compares their checksums the same way. That is one search, not a read of the library.
 
 ## Phones
 

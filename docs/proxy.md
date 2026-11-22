@@ -9,16 +9,19 @@ services:
     environment:
       - IO_MODE=proxy
       - IO_IMMICH_URL=http://immich-server:2283
+      - IO_SHUTDOWN_TIMEOUT=1m45s # with stop_grace_period: lets running conversions finish, see Docker notes
     ports:
       - "2283:2283"
     volumes:
       - ./undone:/undone
-    stop_grace_period: 2m       # lets running conversions finish, see Docker notes
+    stop_grace_period: 2m
     restart: unless-stopped
 
   immich-server:
     # ...your existing Immich service, without its "ports:" section
 ```
+
+**Before the first start on Linux**, create the `undone` folder and give it to the user the optimizer runs as: `mkdir -p undone && sudo chown 1001 undone`. Docker would otherwise create it for root, and the optimizer refuses to start with a folder it cannot write to. More in [Folders and ports](docker.md#folders-and-ports).
 
 Point your clients at the optimizer instead of Immich. If Immich sits behind your own reverse proxy (nginx, Traefik, Caddy), point that proxy at the optimizer.
 

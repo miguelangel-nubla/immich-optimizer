@@ -100,7 +100,7 @@ func CheckWritable(dir string) error {
 	}
 	f, err := os.CreateTemp(dir, ".io-probe-*")
 	if err != nil {
-		return fmt.Errorf("undone_dir %q is not writable by uid %d: %w", dir, os.Getuid(), err)
+		return fmt.Errorf("undone_dir %q is not writable by uid %d (in Docker: give the host folder mounted there to that user, \"sudo chown %d <folder>\"): %w", dir, os.Getuid(), os.Getuid(), err)
 	}
 	name := f.Name()
 	_ = f.Close()
@@ -257,6 +257,14 @@ func (s *LocalStore) Save(in entity.ConvertInput, f entity.Failure) (*entity.Und
 	rec := s.record(sum)
 	unlock := s.lock()
 	defer unlock()
+
+	// Only now, under the lock: until here the copy's fresh modification
+	// time is what tells another process's startup sweep that it is in use.
+	if !in.ModTime.IsZero() {
+		if err := os.Chtimes(tmpPath, in.ModTime, in.ModTime); err != nil {
+			s.warnf("Unable to preserve modification time on undone file: %v", err)
+		}
+	}
 
 	st, err := os.Lstat(rec.Dir)
 	switch {
@@ -415,11 +423,6 @@ func (s *LocalStore) copyToTemp(in entity.ConvertInput) (tmpPath string, size in
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return "", 0, "", wrapIOErr("copy to undone", tmpPath, err)
-	}
-	if !in.ModTime.IsZero() {
-		if err := os.Chtimes(tmpPath, in.ModTime, in.ModTime); err != nil {
-			s.warnf("Unable to preserve modification time on undone file: %v", err)
-		}
 	}
 	return tmpPath, size, hex.EncodeToString(h.Sum(nil)), nil
 }

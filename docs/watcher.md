@@ -16,11 +16,14 @@ services:
     restart: unless-stopped
 ```
 
+**Before the first start on Linux**, create the `undone` folder and give it, and the watch folder, to the user the optimizer runs as: `mkdir -p undone && sudo chown 1001 undone /path/to/watch`. The optimizer deletes what it has uploaded from the watch folder, so it must be able to write there too. More in [Folders and ports](docker.md#folders-and-ports).
+
 Uploads go to the API key's user: run one container per user. Settings: [Watcher mode](configuration.md#watcher-mode).
 
 ## How it behaves
 
 - Files are handled as described in [Tasks](tasks.md#how-a-file-is-handled). Files already in the folder at startup are processed too, and subfolders are watched.
+- **A file is taken once it is complete**: when the program writing it closes it, or renames it into place. A file found already there (at startup, or in a folder copied or moved in), or one published in a way that sends no close event (a hard link), is taken once it has not been written to for 10 seconds. A file that is overwritten while it is being converted is kept and handled again.
 - **Dates**: the asset's file dates sent to Immich are those of the original file in the watch folder, not of the converted output. Photos without a date in their metadata land on the right day as long as the sync tool preserved the file's modification time.
 - **Ignored files**: hidden files and folders (names starting with a dot, which covers the in-progress files of rsync and Syncthing, `.DS_Store` and macOS `._*` files), `Thumbs.db`, `desktop.ini` and common temporary extensions (`.tmp`, `.part`, `.crdownload`...) are left where they are. They are neither uploaded nor moved to undone.
 - **After a successful upload the source file is deleted** from the watch folder. Use a one-way sync into it.

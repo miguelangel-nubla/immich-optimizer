@@ -369,3 +369,39 @@ func TestServeTidiesTheOptimizersTags(t *testing.T) {
 		t.Error("the deletion is not in the audit log")
 	}
 }
+
+// Immich announces an upload only to a listener that is connected. What was
+// uploaded while library mode was stopped, or while its connection was down,
+// is looked for: from when the log says library mode last ran, not the whole
+// library.
+func TestServeFindsSecondCopiesUploadedWhileItWasAway(t *testing.T) {
+	h := newHarness(t)
+	data := photo(1)
+	old, conv := convertOne(t, h, data) // its log has the conversion
+	h.im.convertAll = false
+	old.deleted = true
+	began := time.Now()
+	stopped := h.im.add("IMG_1.jpg", data) // uploaded while nothing ran
+	before := len(h.im.sinceCalls)
+
+	ev := h.serve()
+	hs := ev.handlers(t)
+	h.waitFor("the copy uploaded while stopped to go to the trash", func() bool { return stopped.IsTrashed })
+	h.waitFor("the check to be logged", func() bool { return h.eventCount("uploads_checked") == 1 })
+	h.im.mu.Lock()
+	first := h.im.sinceCalls[before]
+	h.im.mu.Unlock()
+	if first.IsZero() || first.After(began) || began.Sub(first) > uploadCheckMargin+time.Minute {
+		t.Errorf("looked for uploads since %v, want shortly before %v", first, began)
+	}
+
+	// The connection was lost and is back: no event came for this one.
+	away := h.im.addLive("IMG_1.jpg", data)
+	hs.Connected()
+	h.waitFor("the copy uploaded while disconnected to go to the trash", func() bool { return away.IsTrashed })
+	h.im.mu.Lock()
+	defer h.im.mu.Unlock()
+	if conv.IsTrashed {
+		t.Error("the converted asset was trashed")
+	}
+}

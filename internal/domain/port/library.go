@@ -2,6 +2,7 @@ package port
 
 import (
 	"context"
+	"time"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 )
@@ -11,16 +12,18 @@ import (
 type LibraryAPI interface {
 	// CurrentUser returns the API key's owner.
 	CurrentUser(ctx context.Context) (entity.LibraryUser, error)
-	// ListAssets returns one page of the owner's assets (oldest first) and
-	// the next page number, 0 when there is none.
-	ListAssets(ctx context.Context, page int) ([]entity.LibraryAsset, int, error)
+	// AssetsCreatedSince returns the assets (in the timeline or the
+	// archive, not in the trash) that Immich received at or after since;
+	// all of them when since is zero. Assets of partners can be among them.
+	AssetsCreatedSince(ctx context.Context, since time.Time) ([]entity.LibraryAsset, error)
 	// Tags returns the owner's tags, by value ("parent/child") to id.
 	Tags(ctx context.Context) (map[string]string, error)
 	// UpsertTags creates the tags that do not exist yet and returns the ids
 	// of all of them, by value.
 	UpsertTags(ctx context.Context, values []string) (map[string]string, error)
-	// TaggedAssetIDs returns the owner's assets (in the timeline or the
-	// archive, not in the trash) that have the tag.
+	// TaggedAssetIDs returns the owner's assets in the timeline or the
+	// archive that have the tag. Assets in the trash are among them: Immich's
+	// search leaves those out only when asked to.
 	TaggedAssetIDs(ctx context.Context, tagID string) ([]string, error)
 	// DeleteTag deletes a tag (and takes it off every asset).
 	DeleteTag(ctx context.Context, tagID string) error

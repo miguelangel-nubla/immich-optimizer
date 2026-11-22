@@ -312,6 +312,8 @@ func TestAppSyncThroughTheProxy(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			acks = append(acks, body.Acks)
 			w.WriteHeader(http.StatusNoContent)
+		case "/api/assets/" + realAsset:
+			_, _ = io.WriteString(w, `{"id":"`+realAsset+`","isTrashed":false}`)
 		default:
 			_, _ = io.WriteString(w, "thumb")
 		}
@@ -508,5 +510,37 @@ func TestHiddenEntryGetsTheICloudRecord(t *testing.T) {
 	lines, _ = runWith(t, withMarker(false), cloud+other)
 	if got := records(lines); got != "" || len(lines) != 2 {
 		t.Errorf("no marker: %q (%d lines)", got, len(lines))
+	}
+}
+
+// A marker can pass by without its asset's line (the optimizer wrote it
+// again). It says nothing about the trash: Immich is asked, and when that
+// gives no answer the app is told nothing rather than "not in the trash".
+func TestMarkerAloneAsksWhetherTheAssetIsInTheTrash(t *testing.T) {
+	const when = "2026-01-02T03:04:05.000Z"
+	mark := marker(realAsset, map[string]any{"v": 1, "sha1": abcHex})
+	with := func(since string, known bool) *syncInjector {
+		return &syncInjector{assetType: "AssetV2", ownerID: func() (string, error) { return owner, nil },
+			state: func(string) (string, bool) { return since, known }}
+	}
+	lines, _ := runWith(t, with(when, true), mark)
+	if got := hiddenLines(t, lines); len(got) != 1 || got[0] != when {
+		t.Errorf("marker of a trashed asset: %v", got)
+	}
+	lines, _ = runWith(t, with("", true), mark)
+	if got := hiddenLines(t, lines); len(got) != 1 || got[0] != "" {
+		t.Errorf("marker of an asset that is not in the trash: %v", got)
+	}
+	if lines, _ = runWith(t, with("", false), mark); len(lines) != 1 {
+		t.Errorf("an asset Immich gave no answer about got a hidden entry: %d lines", len(lines))
+	}
+	// Its own line in the same stream is the answer: nothing is asked.
+	asked := 0
+	in := with("", true)
+	in.state = func(string) (string, bool) { asked++; return when, true }
+	alive := line("AssetV2", map[string]any{"id": realAsset, "deletedAt": nil}, "AssetV2|u6")
+	lines, _ = runWith(t, in, alive+mark)
+	if got := hiddenLines(t, lines); asked != 0 || len(got) != 1 || got[0] != "" {
+		t.Errorf("asked %d times, hidden entries %v", asked, got)
 	}
 }

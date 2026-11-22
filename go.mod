@@ -1,6 +1,6 @@
 module github.com/miguelangel-nubla/immich-optimizer
 
-go 1.26.5
+go 1.26.11
 
 require (
 	github.com/spf13/viper v1.21.0

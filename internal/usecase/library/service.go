@@ -106,10 +106,13 @@ type Service struct {
 	// me is the API key's user, once known.
 	me string
 	// idx is what the audit log knows, while Serve runs.
-	idx     *logIndex
-	conv    port.CheckingConverter
-	log     *logger.Logger
-	journal *audit.Log
+	idx *logIndex
+	// uploadsChecked is up to when new uploads have been looked at for
+	// second copies, while Serve runs.
+	uploadsChecked time.Time
+	conv           port.CheckingConverter
+	log            *logger.Logger
+	journal        *audit.Log
 
 	// memories says, for this run, which memories each asset is in.
 	memories map[string][]string
@@ -201,6 +204,18 @@ type errChanged struct{ what string }
 
 func (e *errChanged) Error() string { return e.what }
 
+// errUnsettled means a replacement ended without it being known whether the
+// original went to the trash. The copy is left as it is, marked pending, and
+// is settled like any interrupted replacement.
+type errUnsettled struct{ err error }
+
+func (e *errUnsettled) Error() string { return e.err.Error() }
+func (e *errUnsettled) Unwrap() error { return e.err }
+
+// pendingMarkLeft is the detail of a "replaced" log entry whose copy still
+// carries the pending mark, so that it is looked at again.
+const pendingMarkLeft = "the pending mark on the new asset could not be cleared yet"
+
 // errFatal stops the whole run: continuing could act without a record.
 type errFatal struct{ err error }
 
@@ -243,14 +258,9 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	}
 	// List everything first: replacing assets while paging through them
 	// would shift the pages.
-	var assets []entity.LibraryAsset
-	for page := 1; page != 0; {
-		items, next, err := s.base.ListAssets(ctx, page)
-		if err != nil {
-			return Summary{}, fmt.Errorf("listing assets: %w", err)
-		}
-		assets = append(assets, items...)
-		page = next
+	assets, err := s.base.AssetsCreatedSince(ctx, time.Time{})
+	if err != nil {
+		return Summary{}, fmt.Errorf("listing assets: %w", err)
 	}
 	s.infof("Library: full read of the library: %d asset(s)", len(assets))
 	sum, err := s.pass(ctx, me, rt, assets)
@@ -309,7 +319,7 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 		case err == nil:
 		case errors.As(err, &fatal):
 			if fatalErr == nil {
-				fatalErr = fatal.err
+				fatalErr = fatal
 			}
 		case ctx.Err() != nil:
 			// Interrupted: whatever was in flight has been rolled back or
@@ -329,9 +339,7 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 				s.log.Errorf("Library: %s (%s) failed: %v", a.OriginalFileName, a.ID, err)
 			}
 			if rerr := s.record(Entry{Event: "failed", Asset: a.ID, File: a.OriginalFileName, Detail: err.Error()}); rerr != nil && fatalErr == nil {
-				var f *errFatal
-				errors.As(rerr, &f)
-				fatalErr = f.err
+				fatalErr = rerr
 			}
 		}
 	}
@@ -358,10 +366,10 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 	s.forEach(len(assets), stopped, func(i int) {
 		a := assets[i]
 		t := &tally{Summary: Summary{Seen: 1}}
-		profile, tagged := rt.convert[a.ID]
+		_, tagged := rt.convert[a.ID]
 		// A conversion tagged to be converted is converted again; keep
 		// protects whatever else it is tagged.
-		meta, m, err := s.classify(ctx, me, a, tagged && !rt.keep[a.ID], s.converter(profile))
+		meta, m, err := s.classify(ctx, me, a, tagged && !rt.keep[a.ID])
 		var sk *errSkip
 		if errors.As(err, &sk) && sk.converted != nil && !sk.converted.Kept && sk.converted.SHA1 != "" {
 			mu.Lock()
@@ -444,8 +452,15 @@ func (s *Service) pass(ctx context.Context, me string, rt *runTags, assets []ent
 			// The conversion it pointed at is not this user's: an
 			// ordinary candidate.
 		}
-		if _, tagged := rt.convert[c.asset.ID]; !tagged {
+		profile, tagged := rt.convert[c.asset.ID]
+		if !tagged {
 			outcome(c.asset, &tally{}, skip("it is not tagged %s", TagConvert))
+			continue
+		}
+		// Only asked now: a second copy is one whatever the tasks say about
+		// its type.
+		if ok, reason := s.converter(profile).Converts(c.asset.OriginalFileName); !ok {
+			outcome(c.asset, &tally{}, &errSkip{reason: reason})
 			continue
 		}
 		rest = append(rest, c)
@@ -533,9 +548,8 @@ func markerItem(m *entity.Marker) (entity.MetadataItem, error) {
 //
 // With again (the asset is tagged to be converted), an asset the optimizer
 // already handled is a candidate too: a conversion is converted again from
-// its current file, and one left as it is is tried again. conv is what would
-// convert it.
-func (s *Service) classify(ctx context.Context, me string, listed entity.LibraryAsset, again bool, conv port.CheckingConverter) ([]entity.MetadataItem, *entity.Marker, error) {
+// its current file, and one left as it is is tried again.
+func (s *Service) classify(ctx context.Context, me string, listed entity.LibraryAsset, again bool) ([]entity.MetadataItem, *entity.Marker, error) {
 	if err := basicChecks(me, listed); err != nil {
 		return nil, nil, err
 	}
@@ -556,11 +570,6 @@ func (s *Service) classify(ctx context.Context, me string, listed entity.Library
 			// say which file phones have.
 			return nil, nil, &errSkip{reason: "its record is from an earlier version and does not say what its original was", converted: m}
 		}
-	}
-	if ok, reason := conv.Converts(listed.OriginalFileName); !ok {
-		// A conversion skipped here is still the conversion of its
-		// original, which second copies are recognised by.
-		return nil, nil, &errSkip{reason: reason, converted: m}
 	}
 	return items, nil, nil
 }
@@ -592,8 +601,14 @@ func (s *Service) secondCopy(ctx context.Context, listed entity.LibraryAsset, co
 		return fmt.Errorf("reading the metadata of the converted asset %s: %w", convertedID, err)
 	}
 	m := markerOf(convItems)
-	if conv.IsTrashed || m == nil || m.State == entity.MarkerStatePending || m.Kept ||
+	// What pointed here (an audit log entry, which is only a cache) is not
+	// confirmed by the asset itself, or the asset is someone else's that this
+	// user can merely see: not a second copy of it.
+	if conv.OwnerID != old.OwnerID || m == nil || m.Kept ||
 		old.Checksum == "" || !strings.EqualFold(m.SHA1, old.Checksum) {
+		return errNotSecondCopy
+	}
+	if conv.IsTrashed || m.State == entity.MarkerStatePending {
 		return later("it looked like a second copy of the converted asset %s, which has changed since; a later run decides", convertedID)
 	}
 	t.item.NewFile, t.item.NewSize = conv.OriginalFileName, conv.Size
@@ -847,14 +862,15 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 	// 4-6. Carry over, verify, trash. Any failure removes the new asset.
 	if err := s.finish(ctx, old, oldAlbums, newID, convertedSHA1, entry); err != nil {
 		var fatal *errFatal
-		if errors.As(err, &fatal) {
+		var unsettled *errUnsettled
+		if errors.As(err, &fatal) || errors.As(err, &unsettled) {
 			return err
 		}
 		rb := entry
 		rb.Event, rb.NewAsset, rb.Detail = "rolled_back", newID, err.Error()
 		if derr := s.api.Delete(context.WithoutCancel(ctx), []string{newID}); derr != nil {
 			rb.Event = "rollback_failed"
-			rb.Detail = fmt.Sprintf("%v; and deleting the new asset failed: %v. The next run will remove it.", err, derr)
+			rb.Detail = fmt.Sprintf("%v; and deleting the new asset failed: %v. A later check will remove it.", err, derr)
 		} else {
 			t.RolledBack++
 		}
@@ -875,11 +891,13 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 	if err != nil {
 		return err
 	}
+	markLeft := ""
 	if err := s.api.PutMetadata(context.WithoutCancel(ctx), newID, []entity.MetadataItem{final}); err != nil {
-		// Harmless: the next run sees "pending" with a trashed original and
-		// finishes this.
+		// Harmless: the copy stays listed as unfinished, and the next look
+		// at those sees "pending" with a trashed original and finishes this.
+		markLeft = pendingMarkLeft
 		if s.log != nil {
-			s.log.Warnf("Library: could not clear the pending mark on %s, the next run will: %v", newID, err)
+			s.log.Warnf("Library: could not clear the pending mark on %s, a later check will: %v", newID, err)
 		}
 	}
 	t.Replaced++
@@ -892,6 +910,9 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 		old.OriginalFileName, old.ID, res.DeliverName, newID, res.OriginalSize, res.OutputSize)
 	e = entry
 	e.Event, e.NewAsset = "replaced", newID
+	if markLeft != "" {
+		e.Detail = strings.TrimPrefix(e.Detail+"; "+markLeft, "; ")
+	}
 	return s.record(e)
 }
 
@@ -979,6 +1000,12 @@ func (s *Service) finish(ctx context.Context, old *entity.LibraryAsset, oldAlbum
 		return fmt.Errorf("the new asset does not match the original: %s", strings.Join(diffs, "; "))
 	}
 
+	// Immich may have read the copied sidecar only during the wait above,
+	// and with it the original's tags.
+	if err := s.dropOwnTags(ctx, newID); err != nil {
+		return err
+	}
+
 	// The original must not have changed while this was going on.
 	now, err := s.api.GetAsset(ctx, old.ID)
 	if err != nil {
@@ -998,7 +1025,18 @@ func (s *Service) finish(ctx context.Context, old *entity.LibraryAsset, oldAlbum
 	}
 	// From here the swap is committed even if the process is interrupted.
 	if err := s.api.Trash(context.WithoutCancel(ctx), []string{old.ID}); err != nil {
-		return fmt.Errorf("moving the original to the trash: %w", err)
+		// A failed call does not say the original is still in place: the
+		// answer may have been lost after Immich did it. Removing the copy
+		// then would leave the photo in the trash only.
+		now, rerr := s.api.GetAsset(context.WithoutCancel(ctx), old.ID)
+		switch {
+		case rerr == nil && now.IsTrashed:
+			return nil
+		case rerr == nil:
+			return fmt.Errorf("moving the original to the trash: %w", err)
+		default:
+			return &errUnsettled{fmt.Errorf("moving the original to the trash: %w; and it could not be read to see whether it is there (%v). The copy %s is left unfinished and is settled at a later check", err, rerr, newID)}
+		}
 	}
 	return nil
 }

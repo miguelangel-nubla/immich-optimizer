@@ -49,6 +49,13 @@ func ParseLevel(s string) Level {
 	return l
 }
 
+// ValidLevel reports whether s names a level. ParseLevel takes anything else
+// as info.
+func ValidLevel(s string) bool {
+	var l Level
+	return l.UnmarshalText([]byte(strings.ToLower(strings.TrimSpace(s)))) == nil
+}
+
 func (cl *Logger) SetLevel(levelStr string) {
 	if cl != nil && cl.level != nil {
 		cl.level.Set(ParseLevel(levelStr))

@@ -151,3 +151,39 @@ func TestTailBufferBoundsMemory(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// A command that exits 0 without a usable output has failed: the next task
+// is tried.
+func TestLocalProcessorBadOutputFallsThrough(t *testing.T) {
+	tmpDir := t.TempDir()
+	in := filepath.Join(tmpDir, "sample.txt")
+	if err := os.WriteFile(in, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := NewLocalProcessor(customlogger.NewWithLevel(nil, "error", ""), tmpDir)
+	tasks := []entity.Task{
+		{Name: "nothing", Extensions: []string{"txt"}, Command: "true"},
+		{Name: "two", Extensions: []string{"txt"}, Command: "echo a > {{.dst_folder}}/a.txt; echo b > {{.dst_folder}}/b.txt"},
+		{Name: "empty", Extensions: []string{"txt"}, Command: ": > {{.dst_folder}}/a.txt"},
+		{Name: "passthrough", Extensions: []string{"txt"}, Command: ""},
+	}
+	res, err := p.Process(context.Background(), in, tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Cleanup()
+	if res.Task != "passthrough" || res.ProcessedSize != 7 {
+		t.Fatalf("task %q, size %d: the fallback did not run", res.Task, res.ProcessedSize)
+	}
+
+	_, err = p.Process(context.Background(), in, tasks[:3])
+	var pe *entity.ProcessError
+	if !errors.As(err, &pe) || len(pe.Attempts) != 3 {
+		t.Fatalf("want 3 failed attempts, got %v", err)
+	}
+	for _, a := range pe.Attempts {
+		if a.ExitCode != 0 || a.Err == "" {
+			t.Errorf("attempt %s: exit %d, error %q", a.Task, a.ExitCode, a.Err)
+		}
+	}
+}

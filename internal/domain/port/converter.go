@@ -23,6 +23,10 @@ type Converter interface {
 // video (see adapter/mediacheck).
 type OutputChecker interface {
 	Check(ctx context.Context, originalPath, outputPath string) error
+	// CheckSize reports an error when the output is tiny next to the
+	// original (the preview inside a RAW file instead of the photo). It is
+	// cheap, and asked of every conversion in every mode.
+	CheckSize(ctx context.Context, originalPath, outputPath string) error
 }
 
 // CheckingConverter is a Converter that can also check its results. Library

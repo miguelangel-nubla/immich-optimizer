@@ -36,6 +36,7 @@ type fakeAsset struct {
 	faces    []entity.LibraryFace
 	edits    []entity.LibraryEdit
 	deleted  bool // permanently
+	created  time.Time
 }
 
 // fakeImmich is an in-memory Immich that behaves like the real one where
@@ -54,8 +55,10 @@ type fakeImmich struct {
 	convertAll bool
 	// tagCalls records tag changes, apart from calls.
 	tagCalls []string
-	// lists counts full listings of the library.
-	lists int
+	// lists counts full listings of the library (since zero); sinceCalls
+	// records every search for uploads.
+	lists      int
+	sinceCalls []time.Time
 
 	// knobs
 	copyDropsTags bool                // copy does not bring tags over, as when no sidecar exists
@@ -65,7 +68,7 @@ type fakeImmich struct {
 	activity      map[string]int      // albumID/assetID -> count
 	sharedAlbums  map[string]bool
 	neverReady    bool
-	afterList     func() // runs once the last page of the listing is read
+	afterList     func() // runs once the full listing is read
 }
 
 func newFake() *fakeImmich {
@@ -76,7 +79,7 @@ func newFake() *fakeImmich {
 func (f *fakeImmich) add(name string, data []byte) *fakeAsset {
 	f.nextID++
 	id := fmt.Sprintf("asset-%d", f.nextID)
-	a := &fakeAsset{data: data, metadata: map[string]json.RawMessage{}}
+	a := &fakeAsset{data: data, metadata: map[string]json.RawMessage{}, created: time.Now()}
 	a.ID, a.OwnerID, a.Type, a.OriginalFileName = id, me, "IMAGE", name
 	a.Checksum, a.Size = sha(data), int64(len(data))
 	a.Visibility, a.Ready = "timeline", true
@@ -104,36 +107,28 @@ func (f *fakeImmich) CurrentUser(context.Context) (entity.LibraryUser, error) {
 	return entity.LibraryUser{ID: me, Name: "Test", Email: "test@example.com"}, f.fail("CurrentUser")
 }
 
-func (f *fakeImmich) ListAssets(_ context.Context, page int) ([]entity.LibraryAsset, int, error) {
+func (f *fakeImmich) AssetsCreatedSince(_ context.Context, since time.Time) ([]entity.LibraryAsset, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.fail("ListAssets"); err != nil {
-		return nil, 0, err
+	if err := f.fail("AssetsCreatedSince"); err != nil {
+		return nil, err
 	}
-	if page == 1 {
-		f.lists++
-	}
-	const size = 2
-	var live []entity.LibraryAsset
+	f.sinceCalls = append(f.sinceCalls, since)
+	var out []entity.LibraryAsset
 	for _, id := range f.order {
-		if a := f.assets[id]; !a.deleted && !a.IsTrashed {
+		if a := f.assets[id]; !a.deleted && !a.IsTrashed && !a.created.Before(since) {
 			l := a.LibraryAsset
 			l.TagIDs, l.PersonIDs, l.StackID = nil, nil, "" // the listing has no tags or stack
-			live = append(live, l)
+			out = append(out, l)
 		}
 	}
-	start := (page - 1) * size
-	if start >= len(live) {
-		return nil, 0, nil
-	}
-	end, next := start+size, page+1
-	if end >= len(live) {
-		end, next = len(live), 0
+	if since.IsZero() {
+		f.lists++
 		if f.afterList != nil {
 			f.afterList()
 		}
 	}
-	return live[start:end], next, nil
+	return out, nil
 }
 
 func (f *fakeImmich) Tags(context.Context) (map[string]string, error) {
@@ -1176,7 +1171,7 @@ func TestUnwritableLogStopsTheRunBeforeAnyChange(t *testing.T) {
 func TestListingErrorStopsTheRun(t *testing.T) {
 	h := newHarness(t)
 	richAsset(h)
-	h.im.failCall["ListAssets"] = errors.New("immich down")
+	h.im.failCall["AssetsCreatedSince"] = errors.New("immich down")
 	if _, err := h.run(); err == nil {
 		t.Fatal("expected an error")
 	}
@@ -1499,4 +1494,49 @@ func (h *harness) marker2(id string) *entity.Marker {
 		return nil
 	}
 	return h.marker(id)
+}
+
+// Immich can have moved the original to the trash although the call failed
+// (the answer was lost). The copy must then stay: it is the only one left
+// outside the trash.
+func TestTrashAnswerLostKeepsTheCopy(t *testing.T) {
+	h := newHarness(t)
+	old := h.im.add("IMG_1.jpg", photo(1))
+	h.im.beforeTrash = func(f *fakeImmich) {
+		f.assets[old.ID].IsTrashed = true
+		f.failCall["Trash"] = errors.New("connection reset")
+	}
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 1 || sum.Failed != 0 {
+		t.Fatalf("summary = %+v, %v", sum, err)
+	}
+	conv := h.convertedFrom(old)
+	if conv == nil || conv.deleted || conv.IsTrashed {
+		t.Fatalf("the copy is gone: %+v", conv)
+	}
+	if m := h.marker(conv.ID); m == nil || m.State != "" {
+		t.Errorf("marker = %+v", m)
+	}
+}
+
+// What the audit log says is a second copy's conversion can be an asset of
+// someone else that this user merely sees (a partner's, a shared album's).
+func TestSecondCopyOfAnotherUsersConversionIsLeftAlone(t *testing.T) {
+	h := newHarness(t)
+	data := photo(1)
+	old, conv := convertOne(t, h, data)
+	old.deleted = true
+	conv.OwnerID = "someone-else"
+	again := h.im.add("IMG_1.jpg", data)
+
+	j, err := audit.Open(h.logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	svc := New(h.cfg, h.im, h.conv, j, nil)
+	err = svc.secondCopy(context.Background(), again.LibraryAsset, conv.ID, &tally{})
+	if !errors.Is(err, errNotSecondCopy) || again.IsTrashed {
+		t.Fatalf("err = %v, trashed = %v", err, again.IsTrashed)
+	}
 }

@@ -80,3 +80,21 @@ func TestEnsureMarkerWritesOnlyWhenNeeded(t *testing.T) {
 		t.Fatalf("GetMarker without a marker = %+v, %v", got, err)
 	}
 }
+
+// An answer that says nothing about the marker (Immich in trouble) must not
+// be taken for "no marker": writing a new one would lose the existing one.
+func TestEnsureMarkerDoesNotWriteWhenTheReadFails(t *testing.T) {
+	puts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			puts++
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	err := EnsureMarker(context.Background(), srv.Client(), srv.URL, http.Header{}, "id", &entity.Marker{V: 1, SHA1: "aa"}, true)
+	if err == nil || puts != 0 {
+		t.Fatalf("err = %v, %d write(s)", err, puts)
+	}
+}

@@ -29,7 +29,7 @@ type LibraryClient struct {
 	baseURL string
 	apiKey  string
 	hc      *http.Client
-	// PageSize is the number of assets per ListAssets page.
+	// PageSize is the number of assets per page of a search.
 	PageSize int
 }
 
@@ -226,30 +226,45 @@ func (c *LibraryClient) CurrentUser(ctx context.Context) (entity.LibraryUser, er
 	return entity.LibraryUser{ID: me.ID, Name: me.Name, Email: me.Email}, nil
 }
 
-func (c *LibraryClient) ListAssets(ctx context.Context, page int) ([]entity.LibraryAsset, int, error) {
-	var out struct {
-		Assets struct {
-			Items    []assetDTO `json:"items"`
-			NextPage *string    `json:"nextPage"`
-		} `json:"assets"`
+// AssetsCreatedSince pages through Immich's asset search for what was
+// uploaded at or after since.
+func (c *LibraryClient) AssetsCreatedSince(ctx context.Context, since time.Time) ([]entity.LibraryAsset, error) {
+	filter := map[string]any{
+		"visibility": map[string]any{"in": []string{"timeline", "archive"}},
+		"trashedAt":  map[string]any{"eq": nil},
 	}
-	body := map[string]any{"page": page, "size": c.PageSize, "withExif": true, "order": "asc"}
-	if err := c.call(ctx, http.MethodPost, "/search/metadata", body, &out); err != nil {
-		return nil, 0, err
+	if !since.IsZero() {
+		filter["createdAt"] = map[string]any{"gte": since.UTC().Format("2006-01-02T15:04:05.000Z")}
 	}
-	assets := make([]entity.LibraryAsset, 0, len(out.Assets.Items))
-	for i := range out.Assets.Items {
-		a, err := out.Assets.Items[i].toEntity()
-		if err != nil {
-			return nil, 0, err
+	var assets []entity.LibraryAsset
+	cursor := ""
+	for {
+		var out struct {
+			Assets struct {
+				Items      []assetDTO `json:"items"`
+				NextCursor *string    `json:"nextCursor"`
+			} `json:"assets"`
 		}
-		assets = append(assets, a)
+		body := map[string]any{"filter": filter, "size": c.PageSize, "withExif": true,
+			"orderBy": map[string]string{"field": "fileCreatedAt", "direction": "asc"}}
+		if cursor != "" {
+			body["cursor"] = cursor
+		}
+		if err := c.call(ctx, http.MethodPost, "/search/metadata", body, &out); err != nil {
+			return nil, err
+		}
+		for i := range out.Assets.Items {
+			a, err := out.Assets.Items[i].toEntity()
+			if err != nil {
+				return nil, err
+			}
+			assets = append(assets, a)
+		}
+		if out.Assets.NextCursor == nil || *out.Assets.NextCursor == "" || len(out.Assets.Items) == 0 {
+			return assets, nil
+		}
+		cursor = *out.Assets.NextCursor
 	}
-	next := 0
-	if out.Assets.NextPage != nil {
-		next, _ = strconv.Atoi(*out.Assets.NextPage)
-	}
-	return assets, next, nil
 }
 
 type tagDTO struct {

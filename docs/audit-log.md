@@ -19,6 +19,7 @@ It records what happened to your files, and only that:
 | `library` | `run_started`, `run_finished` | one batch of work (what was tagged, or an upload to check), with a summary of counts and bytes |
 | `library` | `tag_added`, `tag_removed` | a tag (`detail`) was added to or removed from an asset: `convert` removed once it was acted on, `failed` or `review` added |
 | `library` | `tag_created`, `tag_deleted` | one of the optimizer's tags (`detail`) was created, or deleted because the optimizer no longer uses it |
+| `library` | `uploads_checked` | at startup: what was uploaded while library mode was not running has been looked at for second copies of converted originals |
 | `library` | `full_read` | the whole library was read, because the audit log had no earlier record to go by |
 
 Requests that are only passed through to Immich, malformed uploads and other client mistakes are not recorded.

@@ -30,7 +30,11 @@ if [ -e /dev/dri/renderD128 ]; then
   DEVICES=(--device /dev/dri)
 fi
 
+# Video encodes take every core they are given: the container gets
+# IO_TEST_CPUS of them (default 3) and IO_TEST_MEMORY (default 4g), so the
+# machine stays usable. CI sets them higher.
 docker run --rm ${DEVICES[@]+"${DEVICES[@]}"} \
+  --cpus "${IO_TEST_CPUS:-3}" --memory "${IO_TEST_MEMORY:-4g}" \
   -v "$OUT/profiles.test:/profiles.test:ro" \
   -v "$PWD/config:/repo/config:ro" \
   -v "$PWD/cmd/optimizer/testdata/media:/repo/media:ro" \

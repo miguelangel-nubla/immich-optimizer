@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/audit"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
@@ -123,21 +124,57 @@ func (s *Service) consumeEvents() {
 	}
 }
 
+// inFlight is the state of a path that is being handled.
+type inFlight struct {
+	// again is set when another event for the path arrived meanwhile.
+	again atomic.Bool
+}
+
 func (s *Service) handleEvent(ctx context.Context, event entity.FileEvent) {
 	path := event.Path
-	// Deduplicate parallel events: abort if this file is already running
-	if _, loaded := s.processing.LoadOrStore(path, true); loaded {
+	// Only one handler per path. A second event is not lost: it is noted, and
+	// matters when the file turns out to have changed while it was handled.
+	st := &inFlight{}
+	if cur, loaded := s.processing.LoadOrStore(path, st); loaded {
+		cur.(*inFlight).again.Store(true)
 		return
 	}
-	defer s.processing.Delete(path)
+	defer s.processing.CompareAndDelete(path, st)
 
+	for {
+		st.again.Store(false)
+		if !s.processFile(ctx, path) {
+			return
+		}
+		// The file was written to while it was handled, so it was kept. If
+		// an event arrived meanwhile it may have been the one that announced
+		// the new content: handle the file again. Otherwise the write is
+		// still going on and its own event will come.
+		if st.again.Load() {
+			continue
+		}
+		s.processing.CompareAndDelete(path, st)
+		if !st.again.Load() {
+			return
+		}
+		// An event slipped in just before the path was released.
+		if _, loaded := s.processing.LoadOrStore(path, st); loaded {
+			return
+		}
+	}
+}
+
+// processFile converts and uploads one file and removes it from the watch
+// directory. It reports true when the file was kept because it changed while
+// it was handled.
+func (s *Service) processFile(ctx context.Context, path string) (changed bool) {
 	if utils.IsTempFile(path) || utils.IsUndoneArtifact(path) || utils.IsIgnoredFile(path) {
-		return
+		return false
 	}
 	// Also skip everything inside hidden folders (.stfolder, .thumbnails...).
 	for _, dir := range strings.Split(filepath.ToSlash(s.relDir(path)), "/") {
 		if strings.HasPrefix(dir, ".") {
-			return
+			return false
 		}
 	}
 
@@ -147,23 +184,29 @@ func (s *Service) handleEvent(ctx context.Context, event entity.FileEvent) {
 	case s.semaphore <- struct{}{}:
 		defer func() { <-s.semaphore }()
 	case <-ctx.Done():
-		return
+		return false
 	case <-s.stopChan:
-		return
+		return false
 	}
 	select {
 	case <-s.stopChan:
-		return
+		return false
 	default:
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
-		s.logger.Printf("Error getting file info for %s: %v", path, err)
-		return
+		// A second announcement of a file that is already done and removed
+		// is normal.
+		if errors.Is(err, os.ErrNotExist) {
+			s.logger.Debugf("Nothing to do for %s: it is gone", path)
+		} else {
+			s.logger.Printf("Error getting file info for %s: %v", path, err)
+		}
+		return false
 	}
 	if info.IsDir() {
-		return
+		return false
 	}
 
 	s.logger.Printf("Processing file: %s", path)
@@ -183,12 +226,12 @@ func (s *Service) handleEvent(ctx context.Context, event entity.FileEvent) {
 		case errors.Is(err, entity.ErrCanceled) || ctx.Err() != nil:
 			s.logger.Printf("Processing of %s canceled; it stays in the watch directory: %v", path, err)
 		case errors.As(err, &ce) && ce.Undone != nil:
-			s.removeSource(path, "after saving it to undone")
+			return s.removeSource(path, info, "after saving it to undone")
 		default:
 			// Not saved anywhere: never delete the only copy.
 			s.logger.Errorf("Keeping %s in the watch directory: %v", path, err)
 		}
-		return
+		return false
 	}
 	defer res.Release()
 
@@ -204,7 +247,7 @@ func (s *Service) handleEvent(ctx context.Context, event entity.FileEvent) {
 	if err != nil {
 		if ctx.Err() != nil {
 			s.logger.Printf("Upload of %s canceled; it stays in the watch directory: %v", path, err)
-			return
+			return false
 		}
 		f := entity.Failure{Stage: entity.StageUpload, Err: err}
 		rec, saveErr := s.conv.SaveUndone(in, f)
@@ -215,10 +258,9 @@ func (s *Service) handleEvent(ctx context.Context, event entity.FileEvent) {
 		s.record(entry)
 		if saveErr != nil {
 			s.logger.Errorf("Keeping %s in the watch directory: %v", path, saveErr)
-			return
+			return false
 		}
-		s.removeSource(path, "after saving it to undone")
-		return
+		return s.removeSource(path, info, "after saving it to undone")
 	}
 
 	s.record(audit.Delivered(entity.SourceWatcher, in.Filename, res, up))
@@ -229,7 +271,7 @@ func (s *Service) handleEvent(ctx context.Context, event entity.FileEvent) {
 	} else {
 		s.logger.Printf("Original file uploaded (no optimization achieved)")
 	}
-	s.removeSource(path, "after upload")
+	return s.removeSource(path, info, "after upload")
 }
 
 // record writes an audit entry; the watcher keeps working if it cannot.
@@ -250,8 +292,21 @@ func (s *Service) relDir(path string) string {
 	return rel
 }
 
-func (s *Service) removeSource(path, why string) {
+// removeSource removes a handled file from the watch directory, unless it is
+// no longer the file that was handled: one that was written to or replaced
+// meanwhile has content that was never converted or uploaded, so it is kept
+// and true is returned.
+func (s *Service) removeSource(path string, handled os.FileInfo, why string) (changed bool) {
+	now, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	if err == nil && (!os.SameFile(handled, now) || now.Size() != handled.Size() || !now.ModTime().Equal(handled.ModTime())) {
+		s.logger.Warnf("Keeping %s in the watch directory: it was written to while it was being processed", path)
+		return true
+	}
 	if err := s.fs.RemoveFile(path); err != nil {
 		s.logger.Printf("Error removing file %s %s: %v", path, why, err)
 	}
+	return false
 }

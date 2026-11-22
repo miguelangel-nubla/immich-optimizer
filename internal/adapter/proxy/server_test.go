@@ -1039,3 +1039,47 @@ func TestProxyUndoneSaveFailureNotCached(t *testing.T) {
 		t.Fatalf("failure saved to undone should stay cacheable")
 	}
 }
+
+// A request line can carry a full address. Whatever it says, the upload goes
+// to Immich, and without the headers that are about the unconverted file or
+// about the client's own connection.
+func TestProxyUploadGoesOnlyToImmich(t *testing.T) {
+	var got http.Header
+	var path string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, path = r.Header.Clone(), r.URL.RequestURI()
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":"asset-1"}`)
+	}))
+	defer up.Close()
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("the upload was sent to the address in the request line")
+	}))
+	defer elsewhere.Close()
+
+	s := newTestServer(t, up.URL, optimizedTo(t, "small"))
+	req := uploadReq(t, "a.jpg", "original content")
+	other, _ := url.Parse(elsewhere.URL)
+	req.URL.Scheme, req.URL.Host, req.URL.RawQuery = "http", other.Host, "key=1"
+	req.Header.Set("X-Immich-Checksum", "0000000000000000000000000000000000000000")
+	req.Header.Set("Accept-Encoding", "br")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("X-Api-Key", "k")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated || path != "/api/assets?key=1" {
+		t.Fatalf("status %d, Immich got %q", rec.Code, path)
+	}
+	if got.Get("X-Api-Key") != "k" {
+		t.Errorf("the credentials were not forwarded")
+	}
+	for _, h := range []string{"X-Immich-Checksum", "Connection"} {
+		if got.Get(h) != "" {
+			t.Errorf("%s was forwarded: %q", h, got.Get(h))
+		}
+	}
+	if got.Get("Accept-Encoding") == "br" {
+		t.Errorf("the client's Accept-Encoding was forwarded")
+	}
+}

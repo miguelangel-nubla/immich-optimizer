@@ -25,6 +25,7 @@ The hidden entry:
 
 - **Right after an upload.** Immich tells the app about a finished upload over a live connection (a websocket), not through the sync. The proxy adds the hidden entry there too, so the app counts the photo as backed up at once.
 - **Trash and restore.** These change the asset, not its marker, so no marker passes by. For each asset the app is told about, the proxy therefore asks Immich whether it has a marker, and sends the hidden entry along in the same state: in the trash when the asset is, out of it when the asset is restored.
+- **A marker that passes by alone.** The optimizer sometimes writes a marker again without the asset changing (the same original was uploaded once more, a replacement was completed). The marker says nothing about the trash, so the proxy asks Immich whether the asset is there before it sends the hidden entry. If Immich gives no answer, it sends none: an entry saying "not in the trash" for an asset that is there would make the app count a photo as safely backed up.
 - **Deleting for good**, or removing the marker, deletes the hidden entry from the phone as well.
 - **A phone that synced without the proxy**, or with an earlier version of it, has no hidden entries, and Immich has no reason to send those markers again. Such a phone uploads a photo once more. The proxy finds the conversion already in Immich, stores nothing new, and writes the marker again unchanged, which makes Immich send it out. The hidden entry arrives with the next sync.
 - **Assets converted by library mode** carry the same marker, so all of this applies to them.
@@ -42,7 +43,7 @@ In the address of a request, a hidden id is replaced by the real one in the same
 
 ## What it costs
 
-- **One more request to Immich per asset the app is told about**, to read its marker. In a sync with thousands of changes the proxy does this for the first 200 assets that are not in the trash; the others get their hidden entry from their marker, as usual.
+- **One more request to Immich per asset the app is told about**, to read its marker. In a sync with thousands of changes the proxy does this for the first 200 assets that are not in the trash; the others get their hidden entry from their marker, as usual. A marker whose asset was not in the same sync costs one request too, to learn whether the asset is in the trash.
 - **The live connection is not compressed.** The proxy has to read the messages on it, so it asks Immich to send them as they are.
 - **The app's acknowledgements are edited.** The app confirms every entry it received to Immich. The proxy removes the ones for hidden entries on the way, because Immich has never heard of them.
 

@@ -387,3 +387,61 @@ func TestPipelineDrainDoesNotStartQueuedFiles(t *testing.T) {
 		t.Fatalf("only a should be removed, got %v", fs.removed)
 	}
 }
+
+// A file that is written to while it is converted has content that was never
+// converted or uploaded: it must stay in the watch directory.
+func TestPipelineKeepsAFileThatChangedMeanwhile(t *testing.T) {
+	dir := t.TempDir()
+	f := touch(t, dir, "a.jpg")
+	base := &fakeConverter{}
+	conv := &fakeConverter{}
+	conv.convert = func(ctx context.Context, in entity.ConvertInput) (*entity.ConvertResult, error) {
+		if err := os.WriteFile(in.Path, []byte("another, longer file"), 0o600); err != nil {
+			t.Error(err)
+		}
+		return base.Convert(ctx, in)
+	}
+	up, fs := &mockUploader{}, &mockFileSystem{}
+	svc, events := newSvc(conv, up, fs, dir, 1)
+	runEvents(t, svc, events, f)
+
+	if fs.count() != 0 {
+		t.Fatalf("a file that changed while it was processed was removed")
+	}
+	if len(conv.inputs) != 1 {
+		t.Fatalf("converted %d times without a new event", len(conv.inputs))
+	}
+}
+
+// When the event for the new content arrives while the old content is still
+// being handled, the file is handled again afterwards and only then removed.
+func TestPipelineHandlesAReplacedFileAgain(t *testing.T) {
+	dir := t.TempDir()
+	f := touch(t, dir, "a.jpg")
+	base := &fakeConverter{}
+	conv := &fakeConverter{}
+	var events chan entity.FileEvent
+	var svc *Service
+	first := true
+	conv.convert = func(ctx context.Context, in entity.ConvertInput) (*entity.ConvertResult, error) {
+		if first {
+			first = false
+			if err := os.WriteFile(in.Path, []byte("another, longer file"), 0o600); err != nil {
+				t.Error(err)
+			}
+			// The event for it is dropped as a duplicate, but noted.
+			svc.handleEvent(ctx, entity.FileEvent{Path: in.Path})
+		}
+		return base.Convert(ctx, in)
+	}
+	up, fs := &mockUploader{}, &mockFileSystem{}
+	svc, events = newSvc(conv, up, fs, dir, 1)
+	runEvents(t, svc, events, f)
+
+	if len(conv.inputs) != 2 || up.calls != 2 {
+		t.Fatalf("converted %d times, uploaded %d times, want 2 and 2", len(conv.inputs), up.calls)
+	}
+	if fs.count() != 1 {
+		t.Fatalf("removed %d times, want once, after the second pass", fs.count())
+	}
+}

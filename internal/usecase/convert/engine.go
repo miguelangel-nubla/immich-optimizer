@@ -43,7 +43,8 @@ type Config struct {
 	// Audit, when set, records every input the engine refused or failed to
 	// convert (library mode records its own, richer entries).
 	Audit *audit.Log
-	// Checker validates converted files for library mode.
+	// Checker refuses a result that is tiny next to its original, in every
+	// mode, and validates converted files for library mode.
 	Checker port.OutputChecker
 }
 
@@ -170,6 +171,14 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 	}
 
 	inExt := filepath.Ext(in.Filename)
+	if res.ProcessedSize < res.OriginalSize && e.cfg.Checker != nil {
+		// A valid, much smaller file is exactly what a wrong conversion
+		// looks like too: the thumbnail of a photo instead of the photo.
+		if err := e.cfg.Checker.CheckSize(ctx, in.Path, res.ProcessedFilePath); err != nil {
+			release()
+			return nil, e.fail(in, entity.Failure{Stage: entity.StageConvert, Err: err, At: e.now()}, true)
+		}
+	}
 	if res.ProcessedSize < res.OriginalSize {
 		outExt := filepath.Ext(res.ProcessedFilename)
 		if outExt == "" {

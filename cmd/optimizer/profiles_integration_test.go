@@ -5,7 +5,8 @@
 // sample files in testdata/media, so they must run inside the Docker image:
 // see scripts/integration-test.sh.
 //
-// The samples are synthetic: generated with ffmpeg, sips and exiftool. The
+// The samples are synthetic: generated with ffmpeg, sips, ImageMagick and
+// exiftool. The
 // Apple Live Photo identifier and the Samsung-style motion HEIC are built by
 // hand to match what exiftool (and therefore Immich) reads.
 package main
@@ -381,5 +382,82 @@ func TestIntegrationOutputCheck(t *testing.T) {
 	runTool(t, "magick", "-size", "64x64", "xc:white", flat)
 	if err := c.Check(ctx, flat, flat); err != nil {
 		t.Errorf("a flat copy of a flat original was rejected: %v", err)
+	}
+}
+
+// pages returns how many frames or pages a picture has, as vips reads it.
+func pages(t *testing.T, file string) int {
+	t.Helper()
+	out, err := exec.Command("vipsheader", "-f", "n-pages", file).Output()
+	if err != nil {
+		return 1
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
+}
+
+// Every other image type a converting task takes. Each must come out of the
+// profile (converted or as it is, never failed), as a valid picture, with
+// every frame of an animation and every page of a document. The samples are
+// made with ImageMagick from photo.jpg: anim.gif and anim.webp have three
+// different frames, pages.tif three pages, still.webp one.
+func TestIntegrationProfilesOtherImageTypes(t *testing.T) {
+	ctx := context.Background()
+	c := mediacheck.New()
+	for _, p := range convertingProfiles {
+		for _, sample := range []string{"anim.gif", "anim.webp", "still.webp", "pages.tif"} {
+			t.Run(p+"/"+sample, func(t *testing.T) {
+				src := filepath.Join(mediaDir(), sample)
+				res := runProfile(t, p, sample, "")
+				decodes(t, res.ProcessedFilePath)
+				if got, want := pages(t, res.ProcessedFilePath), pages(t, src); got != want {
+					t.Errorf("%d frames or pages out of %d", got, want)
+				}
+				if err := c.Check(ctx, src, res.ProcessedFilePath); err != nil {
+					t.Errorf("output check: %v", err)
+				}
+				if err := c.CheckSize(ctx, src, res.ProcessedFilePath); err != nil {
+					t.Errorf("size check: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// The size check, with the image's real tools: a result far smaller than its
+// original in pixels is refused, whatever its type; a photo scaled down to a
+// screen, a rotated one and a video are not.
+func TestIntegrationSizeCheck(t *testing.T) {
+	ctx := context.Background()
+	c := mediacheck.New()
+	dir := t.TempDir()
+	img := func(name, size string) string {
+		p := filepath.Join(dir, name)
+		runTool(t, "magick", filepath.Join(mediaDir(), "photo.jpg"), "-resize", size+"!", p)
+		return p
+	}
+	big := img("big.png", "6000x4000")
+	preview := filepath.Join(dir, "preview.jxl")
+	runTool(t, "cjxl", img("preview.png", "160x120"), preview, "--quiet")
+	if err := c.CheckSize(ctx, big, preview); err == nil {
+		t.Error("a 160x120 result of a 6000x4000 photo was accepted")
+	} else {
+		t.Log(err)
+	}
+	if err := c.CheckSize(ctx, big, img("screen.jpg", "1620x1080")); err != nil {
+		t.Errorf("a photo scaled down to a screen was refused: %v", err)
+	}
+	if err := c.CheckSize(ctx, big, img("rotated.jpg", "4000x6000")); err != nil {
+		t.Errorf("a rotated photo was refused: %v", err)
+	}
+	clip := filepath.Join(mediaDir(), "clip.mp4")
+	if err := c.CheckSize(ctx, clip, clip); err != nil {
+		t.Errorf("a video against itself: %v", err)
+	}
+	if err := c.CheckSize(ctx, clip, img("frame.jpg", "16x9")); err == nil {
+		t.Error("a 16x9 picture of a video was accepted")
 	}
 }

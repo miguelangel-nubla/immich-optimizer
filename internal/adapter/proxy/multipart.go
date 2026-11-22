@@ -535,6 +535,18 @@ func escapeQuotes(s string) string { return quoteEscaper.Replace(s) }
 
 var hopHeaders = []string{"Content-Length", "Connection", "Keep-Alive", "Transfer-Encoding", "Proxy-Connection", "Upgrade", "Te", "Trailer"}
 
+// upstreamTarget is the address in Immich for a request's path and query.
+// Only those two are taken from the request: a client can put a full address
+// in its request line, and that one must never be the one contacted.
+func (s *Server) upstreamTarget(u *url.URL) string {
+	t := *s.cfg.UpstreamURL
+	t.Path = strings.TrimRight(t.Path, "/") + "/" + strings.TrimLeft(u.Path, "/")
+	t.RawPath = ""
+	t.RawQuery = u.RawQuery
+	t.Fragment = ""
+	return t.String()
+}
+
 func (s *Server) upload(ctx context.Context, spec jobSpec, outPath, contentType string) jobResult {
 	f, err := os.Open(outPath)
 	if err != nil {
@@ -546,18 +558,31 @@ func (s *Server) upload(ctx context.Context, spec jobSpec, outPath, contentType 
 		return resultFromError(fmt.Errorf("stat outgoing file: %w", err))
 	}
 
-	targetURL := s.cfg.UpstreamURL.ResolveReference(spec.url)
-	req, err := http.NewRequestWithContext(ctx, spec.method, targetURL.String(), f)
+	req, err := http.NewRequestWithContext(ctx, spec.method, s.upstreamTarget(spec.url), f)
 	if err != nil {
 		return resultFromError(fmt.Errorf("create outgoing request: %w", err))
 	}
 	for k, vv := range spec.header {
-		if strings.EqualFold(k, "Content-Type") || strings.EqualFold(k, "Content-Length") {
+		switch http.CanonicalHeaderKey(k) {
+		case "Content-Type", "Content-Length", "Expect":
+			continue
+		case "Accept-Encoding":
+			// The answer is read here. Without the client's own
+			// Accept-Encoding, Go's transport handles compression itself
+			// and hands over plain text.
+			continue
+		case "X-Immich-Checksum":
+			// The client's checksum of the file it holds. Immich uses it
+			// to answer "duplicate" without reading the body, which is
+			// not that file any more once it has been converted.
 			continue
 		}
 		for _, v := range vv {
 			req.Header.Add(k, v)
 		}
+	}
+	for _, k := range hopHeaders {
+		req.Header.Del(k)
 	}
 	req.Host = s.cfg.UpstreamURL.Host
 	req.Header.Set("Content-Type", contentType)

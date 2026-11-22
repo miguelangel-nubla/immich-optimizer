@@ -564,6 +564,28 @@ func TestLibrarySecondCopies(t *testing.T) {
 	eventually(t, time.Minute, "the copy uploaded while library mode runs to go to the trash", func() bool {
 		return u.asset(t, third.ID).IsTrashed
 	})
+
+	// While library mode is stopped nothing announces an upload to it. At
+	// its next start it asks Immich what arrived meanwhile, and finds the
+	// copy without it being tagged.
+	if out, err := exec.Command("docker", "stop", "-t", "60", name).CombinedOutput(); err != nil {
+		t.Fatalf("docker stop: %v\n%s", err, out)
+	}
+	must(t, u.key, http.MethodDelete, "/assets", map[string]any{"ids": []string{third.ID}, "force": true}, nil)
+	eventually(t, time.Minute, "Immich to delete the third copy", func() bool {
+		return call(t, u.key, http.MethodGet, "/assets/"+third.ID, nil, nil) >= 400
+	})
+	fourth := u.add(t, "plain.jpg", map[string]string{"fileCreatedAt": "2015-01-01T10:00:00.000Z"})
+	code, out, log = runLibrary(t, u, logDir, map[string]string{"E2E_TAGS": "own"})
+	if code != 0 {
+		t.Fatalf("library run exited %d:\n%s", code, out)
+	}
+	if !u.asset(t, fourth.ID).IsTrashed {
+		t.Errorf("the copy uploaded while library mode was stopped is still in the timeline: %v\n%s", events(log, fourth.ID), out)
+	}
+	if a := u.asset(t, convFirst); a.IsTrashed {
+		t.Errorf("the conversion was trashed: %+v", a)
+	}
 }
 
 // Library mode is driven by tags in Immich: the real tag API, the search by

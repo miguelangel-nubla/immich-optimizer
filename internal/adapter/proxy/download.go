@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -164,71 +165,31 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) bool {
 	name := asset.name
 
 	// The whole file is needed to convert it, whatever part was asked for.
-	resp, err := s.upstreamGet(r.Context(), r, r.URL.Path, s.streamClient)
-	if err != nil {
-		if r.Context().Err() == nil {
-			s.logger.Errorf("Download of %s: could not reach Immich: %v", name, err)
-		}
-		http.Error(w, "failed to reach Immich", http.StatusBadGateway)
+	// A player or a download manager asks for one file many times, in
+	// pieces: they all share one conversion, kept for a short while.
+	e := s.downloads.acquire(s.downloadKey(r, id), func(ctx context.Context, e *preparedDownload) {
+		s.prepareDownload(ctx, e, r.Clone(ctx), name)
+	})
+	defer s.downloads.release(e)
+	select {
+	case <-e.done:
+	case <-r.Context().Done():
 		return true
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		// Immich's own answer (not found, not allowed), as it is.
-		for k, vv := range resp.Header {
-			w.Header()[k] = vv
-		}
-		for _, k := range hopHeaders {
-			w.Header().Del(k)
-		}
-		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
-		return true
-	}
-
-	work, err := os.MkdirTemp("", "io-download-*")
-	if err != nil {
-		s.logger.Errorf("Download of %s: %v", name, err)
-		http.Error(w, "temporarily unable to prepare the download", http.StatusServiceUnavailable)
-		return true
-	}
-	defer os.RemoveAll(work)
-	ext := filepath.Ext(name)
-	if strings.ContainsAny(ext, `/\*`) || len(ext) > 32 {
-		ext = ""
-	}
-	src := filepath.Join(work, "original"+ext)
-	if err := spoolTo(src, resp.Body); err != nil {
-		if r.Context().Err() == nil {
-			s.logger.Errorf("Download of %s: %v", name, err)
-		}
-		http.Error(w, "failed to read the file from Immich", http.StatusBadGateway)
-		return true
-	}
-
-	outPath, outName := src, name
-	res, err := s.convertDownload(entity.WithTaskInfo(r.Context(), entity.TaskInfo{OriginalName: name, Source: entity.SourceDownload}), src)
-	if res != nil && res.Cleanup != nil {
-		defer res.Cleanup()
 	}
 	switch {
-	case r.Context().Err() != nil:
-		return true
-	case err != nil || res == nil || res.ProcessedFilePath == "" || res.ProcessedSize == 0:
-		// The stored file is what the person asked for in the first place:
-		// better that than nothing.
-		s.logger.Warnf("Download of %s: the conversion failed, sending the stored file: %v", name, err)
-	default:
-		outPath = res.ProcessedFilePath
-		outExt := filepath.Ext(res.ProcessedFilename)
-		if outExt == "" {
-			outExt = filepath.Ext(res.ProcessedFilePath)
+	case e.pass:
+		// Immich did not send the file (not found, not allowed): it gives
+		// that answer itself.
+		return false
+	case e.err != nil:
+		if r.Context().Err() == nil {
+			s.logger.Errorf("Download of %s: %v", name, e.err)
 		}
-		outName = utils.TrimSuffixCaseInsensitive(name, ext) + outExt
-		s.logger.Debugf("Download of %s: sent as %s (task %s)", name, outName, res.Task)
+		http.Error(w, "failed to prepare the download", http.StatusBadGateway)
+		return true
 	}
 
-	f, err := os.Open(outPath) // #nosec G304 -- a file this request just wrote
+	f, err := os.Open(e.path) // #nosec G304 -- a file the proxy itself wrote
 	if err != nil {
 		s.logger.Errorf("Download of %s: %v", name, err)
 		http.Error(w, "failed to prepare the download", http.StatusInternalServerError)
@@ -237,25 +198,288 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) bool {
 	defer f.Close()
 
 	h := w.Header()
-	if v := resp.Header.Get("Cache-Control"); v != "" {
-		h.Set("Cache-Control", v)
+	if e.cacheControl != "" {
+		h.Set("Cache-Control", e.cacheControl)
 	}
-	disposition := "attachment"
-	if d, _, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil && d != "" {
-		disposition = d
-	}
-	h.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": outName}))
-	ctype := resp.Header.Get("Content-Type")
-	if outPath != src {
-		ctype = mime.TypeByExtension(strings.ToLower(filepath.Ext(outName)))
-	}
-	if ctype == "" {
-		ctype = "application/octet-stream"
-	}
-	h.Set("Content-Type", ctype)
+	h.Set("Content-Disposition", mime.FormatMediaType(e.disposition, map[string]string{"filename": e.name}))
+	h.Set("Content-Type", e.ctype)
 	// ServeContent answers the part that was asked for, and HEAD.
 	http.ServeContent(w, r, "", time.Time{}, f)
 	return true
+}
+
+// downloadKey names one asset as one caller may download it.
+func (s *Server) downloadKey(r *http.Request, id string) string {
+	var key strings.Builder
+	key.WriteString(id)
+	auth := immich.AuthHeaders(r.Header)
+	names := make([]string, 0, len(auth))
+	for k := range auth {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, k := range names {
+		key.WriteString("\x00" + k + "\x00" + strings.Join(auth[k], "\x00"))
+	}
+	key.WriteString("\x00" + r.URL.RawQuery)
+	return key.String()
+}
+
+// preparedDownload is one original, fetched from Immich and converted, ready
+// to be sent. Its fields are set by prepareDownload and read after done.
+type preparedDownload struct {
+	key    string
+	done   chan struct{}
+	cancel context.CancelFunc
+
+	// waiters counts the requests waiting for it or sending it; last is
+	// when the latest of them left. Both belong to the cache's lock.
+	waiters int
+	last    time.Time
+
+	dir, path, name, ctype    string
+	cacheControl, disposition string
+	// pass means Immich did not send the file.
+	pass bool
+	err  error
+}
+
+// usable reports whether the download can be sent. Only read after done.
+func (e *preparedDownload) usable() bool { return e.err == nil && !e.pass }
+
+// downloadCacheTTL is how long a prepared download is kept after the last
+// request for it; maxPreparedDownloads how many are kept at most.
+const (
+	downloadCacheTTL     = time.Minute
+	maxPreparedDownloads = 16
+)
+
+// downloadCache holds the prepared downloads. It is temporary files and
+// nothing else: emptied at shutdown, and of no consequence when lost.
+type downloadCache struct {
+	mu      sync.Mutex
+	entries map[string]*preparedDownload
+	base    context.Context
+}
+
+// acquire returns the prepared download for key, starting its preparation
+// when there is none. The caller must release it.
+func (c *downloadCache) acquire(key string, prepare func(context.Context, *preparedDownload)) *preparedDownload {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sweep(time.Now())
+	if e := c.entries[key]; e != nil {
+		select {
+		case <-e.done:
+			if e.usable() {
+				e.waiters++
+				return e
+			}
+		default:
+			e.waiters++
+			return e
+		}
+	}
+	base := c.base
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
+	e := &preparedDownload{key: key, done: make(chan struct{}), cancel: cancel, waiters: 1}
+	if c.entries == nil {
+		c.entries = map[string]*preparedDownload{}
+	}
+	c.entries[key] = e
+	go func() {
+		defer cancel()
+		prepare(ctx, e)
+		// Nothing to send, or nobody left to send it to (it was dropped
+		// while it was being prepared): its files go. Decided and marked
+		// done under the lock, so that drop sees one or the other.
+		c.mu.Lock()
+		if c.entries[key] != e && e.err == nil {
+			e.err = context.Canceled
+		}
+		if !e.usable() && e.dir != "" {
+			_ = os.RemoveAll(e.dir)
+			e.dir = ""
+		}
+		close(e.done)
+		c.mu.Unlock()
+	}()
+	return e
+}
+
+// release ends one request's use of a prepared download.
+func (c *downloadCache) release(e *preparedDownload) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e.waiters--
+	e.last = time.Now()
+	if e.waiters > 0 {
+		return
+	}
+	select {
+	case <-e.done:
+		if !e.usable() {
+			c.drop(e)
+			return
+		}
+		// Kept for the requests that follow; removed when none does.
+		time.AfterFunc(downloadCacheTTL+time.Second, func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			c.sweep(time.Now())
+		})
+	default:
+		// Nobody waits for it any more: stop preparing it.
+		e.cancel()
+		c.drop(e)
+	}
+}
+
+// drop forgets an entry and removes its files. The lock is held.
+func (c *downloadCache) drop(e *preparedDownload) {
+	if c.entries[e.key] == e {
+		delete(c.entries, e.key)
+	}
+	select {
+	case <-e.done:
+		if e.dir != "" {
+			_ = os.RemoveAll(e.dir)
+		}
+	default:
+		// Still being prepared, and cancelled: it removes its own files.
+	}
+}
+
+// sweep drops the entries nobody used for a while, and the least recently
+// used ones beyond the limit. The lock is held.
+func (c *downloadCache) sweep(now time.Time) {
+	var idle []*preparedDownload
+	for _, e := range c.entries {
+		if e.waiters > 0 {
+			continue
+		}
+		if now.Sub(e.last) > downloadCacheTTL {
+			c.drop(e)
+			continue
+		}
+		idle = append(idle, e)
+	}
+	if over := len(c.entries) - maxPreparedDownloads; over > 0 {
+		sort.Slice(idle, func(i, j int) bool { return idle[i].last.Before(idle[j].last) })
+		for _, e := range idle[:min(over, len(idle))] {
+			c.drop(e)
+		}
+	}
+}
+
+// clear removes everything that is not in use, at shutdown.
+func (c *downloadCache) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.entries {
+		if e.waiters == 0 {
+			c.drop(e)
+		}
+	}
+}
+
+// prepareDownload fetches an original from Immich and converts it. Only a
+// few run at the same time, the fetch included: each holds a whole file.
+func (s *Server) prepareDownload(ctx context.Context, e *preparedDownload, r *http.Request, name string) {
+	select {
+	case s.downloadSem <- struct{}{}:
+	case <-ctx.Done():
+		e.err = ctx.Err()
+		return
+	}
+	defer func() { <-s.downloadSem }()
+
+	resp, err := s.upstreamGet(ctx, r, r.URL.Path, s.streamClient)
+	if err != nil {
+		e.err = fmt.Errorf("could not reach Immich: %w", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		e.pass = true
+		return
+	}
+
+	if e.dir, err = os.MkdirTemp("", "io-download-*"); err != nil {
+		e.err = err
+		return
+	}
+	ext := filepath.Ext(name)
+	if strings.ContainsAny(ext, `/\*`) || len(ext) > 32 {
+		ext = ""
+	}
+	src := filepath.Join(e.dir, "original"+ext)
+	if err := spoolTo(src, resp.Body); err != nil {
+		e.err = fmt.Errorf("reading the file from Immich: %w", err)
+		return
+	}
+
+	e.path, e.name = src, name
+	e.ctype = resp.Header.Get("Content-Type")
+	res, err := s.convertDownload(entity.WithTaskInfo(ctx, entity.TaskInfo{OriginalName: name, Source: entity.SourceDownload}), src)
+	switch {
+	case ctx.Err() != nil:
+		if res != nil && res.Cleanup != nil {
+			res.Cleanup()
+		}
+		e.err = ctx.Err()
+		return
+	case err != nil || res == nil || res.ProcessedFilePath == "" || res.ProcessedSize == 0:
+		// The stored file is what the person asked for in the first place:
+		// better that than nothing.
+		s.logger.Warnf("Download of %s: the conversion failed, sending the stored file: %v", name, err)
+		if res != nil && res.Cleanup != nil {
+			res.Cleanup()
+		}
+	default:
+		outExt := filepath.Ext(res.ProcessedFilename)
+		if outExt == "" {
+			outExt = filepath.Ext(res.ProcessedFilePath)
+		}
+		// Into the download's own folder: the task's work folder goes.
+		out := filepath.Join(e.dir, "converted"+outExt)
+		err := os.Rename(res.ProcessedFilePath, out)
+		if err != nil {
+			err = copyFile(res.ProcessedFilePath, out)
+		}
+		if res.Cleanup != nil {
+			res.Cleanup()
+		}
+		if err != nil {
+			e.err = err
+			return
+		}
+		_ = os.Remove(src)
+		e.path = out
+		e.name = utils.TrimSuffixCaseInsensitive(name, ext) + outExt
+		e.ctype = mime.TypeByExtension(strings.ToLower(outExt))
+		s.logger.Debugf("Download of %s: sent as %s (task %s)", name, e.name, res.Task)
+	}
+	if e.ctype == "" {
+		e.ctype = "application/octet-stream"
+	}
+	e.cacheControl = resp.Header.Get("Cache-Control")
+	e.disposition = "attachment"
+	if d, _, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil && d != "" {
+		e.disposition = d
+	}
+}
+
+func copyFile(from, to string) error {
+	in, err := os.Open(from) // #nosec G304 -- a file a task of this download wrote
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	return spoolTo(to, in)
 }
 
 func spoolTo(path string, r io.Reader) error {
@@ -270,14 +494,8 @@ func spoolTo(path string, r io.Reader) error {
 	return err
 }
 
-// convertDownload runs the download tasks on a file, a few at a time.
+// convertDownload runs the download tasks on a file.
 func (s *Server) convertDownload(ctx context.Context, path string) (*entity.ProcessResult, error) {
-	select {
-	case s.downloadSem <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	defer func() { <-s.downloadSem }()
 	if s.cfg.DownloadTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.cfg.DownloadTimeout)

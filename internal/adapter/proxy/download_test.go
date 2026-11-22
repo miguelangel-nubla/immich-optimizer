@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -91,9 +92,29 @@ func TestDownloadsAreConvertedOnlyWhereATaskSaysSo(t *testing.T) {
 	if rec.Header().Get("Cache-Control") != "private, max-age=86400" || proc.got != "original.JXL" {
 		t.Errorf("Cache-Control %q, converted from %q", rec.Header().Get("Cache-Control"), proc.got)
 	}
-	// A part is a part of the converted file.
+	// A part is a part of the converted file, and of the same one: a player
+	// asking for a file in pieces does not have it fetched and converted for
+	// every piece.
 	if rec = get("/api/assets/"+jxl+"/original", map[string]string{"Range": "bytes=2-4"}); rec.Code != http.StatusPartialContent || rec.Body.String() != "234" {
 		t.Errorf("range: %d %q", rec.Code, rec.Body.String())
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if rec := get("/api/assets/"+jxl+"/original", map[string]string{"Range": "bytes=5-6"}); rec.Body.String() != "56" {
+				t.Errorf("range: %d %q", rec.Code, rec.Body.String())
+			}
+		}()
+	}
+	wg.Wait()
+	if originals.Load() != 1 || proc.calls.Load() != 1 {
+		t.Errorf("fetched %d times and converted %d times for one file", originals.Load(), proc.calls.Load())
+	}
+	// Someone else's request for the same asset is their own.
+	if rec = get("/api/assets/"+jxl+"/original?key=shared", nil); rec.Code != 200 || originals.Load() != 2 {
+		t.Errorf("another caller: %d, fetched %d times", rec.Code, originals.Load())
 	}
 
 	// The apps and the web always ask for the edited version. An asset that
@@ -123,6 +144,7 @@ func TestDownloadsAreConvertedOnlyWhereATaskSaysSo(t *testing.T) {
 	}
 
 	// A conversion that fails still gives the person the stored file.
+	server.downloads.clear()
 	proc.err = errors.New("decoder crashed")
 	rec = get("/api/assets/"+jxl+"/original", nil)
 	if rec.Code != 200 || rec.Body.String() != "stored:" || rec.Header().Get("Content-Type") != "image/jxl" ||

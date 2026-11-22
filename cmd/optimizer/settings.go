@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,7 +81,7 @@ var settings = []setting{
 		target: func(ac *entity.AppConfig) any { return &ac.TasksTimeout }},
 
 	{Name: "undone_dir", Group: groupUndone, Default: "/undone",
-		Help:   "Folder where files that could not be converted are kept, in every mode",
+		Help:   "Folder where files that could not be converted are kept (proxy and watcher mode)",
 		target: func(ac *entity.AppConfig) any { return &ac.UndoneDir }},
 	{Name: "undone_unmatched", Group: groupUndone, Default: true,
 		Help:   "Also keep files whose type no task handles (they are refused either way)",
@@ -128,6 +129,19 @@ var envSettings = func() []envSetting {
 // plainHelp is the help text without the Markdown code marks.
 func (s setting) plainHelp() string { return strings.ReplaceAll(s.Help, "`", "") }
 
+// parseBool reads a boolean the way people write one in a compose file:
+// true/false, yes/no, on/off, 1/0, in any case.
+func parseBool(raw string) (bool, error) {
+	switch v := strings.ToLower(strings.TrimSpace(raw)); v {
+	case "yes", "y", "on":
+		return true, nil
+	case "no", "n", "off":
+		return false, nil
+	default:
+		return strconv.ParseBool(v)
+	}
+}
+
 // registerSettings defines a flag for every setting, defaulting to its
 // environment value.
 func registerSettings(fs *flag.FlagSet, v *viper.Viper, ac *entity.AppConfig) error {
@@ -141,9 +155,29 @@ func registerSettings(fs *flag.FlagSet, v *viper.Viper, ac *entity.AppConfig) er
 		case *string:
 			fs.StringVar(p, s.Name, v.GetString(s.Name), help)
 		case *int:
-			fs.IntVar(p, s.Name, v.GetInt(s.Name), help)
+			// A value that is not a number must not quietly become 0, nor
+			// one that is not a boolean false.
+			def := s.Default.(int)
+			if raw := v.GetString(s.Name); raw != "" && envSource(s.Name, osLookup) != "" {
+				n, err := strconv.Atoi(strings.TrimSpace(raw))
+				if err != nil {
+					envErrs = append(envErrs, fmt.Errorf("%s: %q is not a whole number", s.Env(), raw))
+				} else {
+					def = n
+				}
+			}
+			fs.IntVar(p, s.Name, def, help)
 		case *bool:
-			fs.BoolVar(p, s.Name, v.GetBool(s.Name), help)
+			def := s.Default.(bool)
+			if raw := v.GetString(s.Name); raw != "" && envSource(s.Name, osLookup) != "" {
+				b, err := parseBool(raw)
+				if err != nil {
+					envErrs = append(envErrs, fmt.Errorf("%s: %q is not true or false (yes, no, on, off, 1 and 0 are understood too)", s.Env(), raw))
+				} else {
+					def = b
+				}
+			}
+			fs.BoolVar(p, s.Name, def, help)
 		case *time.Duration:
 			// Durations use Go's format ("90s", "15m", "1h30m"; "0" is zero).
 			def := s.Default.(time.Duration)

@@ -3,6 +3,7 @@
 package watcher
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,10 +42,12 @@ type inotifyWatcher struct {
 	closedInodes   sync.Map
 	pendingCreates sync.Map
 	stopChan       chan struct{}
-	// rescanning is 1 while a rescan after a queue overflow is scheduled.
-	rescanning atomic.Bool
-	// settle is how recently a file may have been written and still be
-	// picked up by a rescan.
+	// rescanning is true while a rescan after a queue overflow runs;
+	// rescanWanted asks for one more, for an overflow that came meanwhile.
+	rescanning   atomic.Bool
+	rescanWanted atomic.Bool
+	// settle is how long a file must have been left alone before a scan
+	// picks it up.
 	settle time.Duration
 }
 
@@ -78,7 +81,7 @@ func (fw *inotifyWatcher) Start() error {
 		return fmt.Errorf("failed to add recursive watches: %w", err)
 	}
 
-	go fw.processExistingFilesRecursive(fw.watchDir)
+	go fw.scan(fw.watchDir)
 	go fw.cleanupLoop()
 	go fw.watchLoop()
 
@@ -101,11 +104,15 @@ func (fw *inotifyWatcher) Stop() error {
 func (fw *inotifyWatcher) cleanupLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+	settled := time.NewTicker(fw.settle)
+	defer settled.Stop()
 
 	for {
 		select {
 		case <-fw.stopChan:
 			return
+		case <-settled.C:
+			fw.takeSettledCreates()
 		case <-ticker.C:
 			now := time.Now()
 
@@ -126,13 +133,58 @@ func (fw *inotifyWatcher) cleanupLoop() {
 	}
 }
 
+// takeSettledCreates takes the files that were created but never announced
+// by a close event under their own name, once they have not been written to
+// for the settle time. That is a file published with a hard link whose
+// temporary name was removed before its own close event was handled (the
+// inode could not be learnt then), or one whose events were lost. A file
+// still being written keeps a fresh modification time and is left for later.
+func (fw *inotifyWatcher) takeSettledCreates() {
+	fw.pendingCreates.Range(func(key, value any) bool {
+		pc, ok := value.(pendingCreate)
+		if !ok || time.Since(pc.ts) < fw.settle {
+			return true
+		}
+		info, err := os.Stat(pc.path)
+		switch {
+		case err != nil || !info.Mode().IsRegular():
+			fw.pendingCreates.Delete(key)
+		case time.Since(info.ModTime()) >= fw.settle:
+			fw.pendingCreates.Delete(key)
+			fw.emitEvent(pc.path)
+		}
+		return true
+	})
+}
+
+// addWatchRecursive watches dir and every folder below it. Only a failure on
+// dir itself is returned: a folder below it that cannot be read or watched is
+// logged and skipped, so that it does not leave the rest unwatched.
 func (fw *inotifyWatcher) addWatchRecursive(dir string) error {
 	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			if path == dir {
+				return err
+			}
+			fw.logger.Warnf("Not watching %s: %v", path, err)
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
-		if d.IsDir() {
-			return fw.addDirectoryWatch(path)
+		if !d.IsDir() {
+			return nil
+		}
+		if err := fw.addDirectoryWatch(path); err != nil {
+			if path == dir {
+				return err
+			}
+			if errors.Is(err, unix.ENOSPC) {
+				fw.logger.Errorf("Not watching %s: the limit of inotify watches is reached (raise the sysctl fs.inotify.max_user_watches): %v", path, err)
+			} else {
+				fw.logger.Errorf("Not watching %s: %v", path, err)
+			}
+			return filepath.SkipDir
 		}
 		return nil
 	})
@@ -156,20 +208,51 @@ func (fw *inotifyWatcher) addDirectoryWatch(path string) error {
 	return nil
 }
 
-func (fw *inotifyWatcher) processExistingFilesRecursive(dir string) {
-	// The callback never returns an error, so neither does the walk.
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			fw.logger.Printf("Error walking directory %s: %v", path, err)
-			return nil
-		}
-		// A scan can catch a file that is still being written under a
-		// temporary name: leave it to its own rename or close event.
-		if !d.IsDir() && !utils.IsTempFile(path) {
+// scan emits the files under dir that no event will announce: those already
+// there when the watch was added. A file written to a moment ago may still be
+// open, so it is left alone and looked at again until it has settled; if it is
+// still being written, its own close event announces it as well, and the
+// pipeline ignores the second announcement.
+func (fw *inotifyWatcher) scan(dir string) {
+	emitted := make(map[string]struct{})
+	for {
+		unsettled := false
+		// The callback never returns an error, so neither does the walk.
+		_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				fw.logger.Printf("Error walking directory %s: %v", path, err)
+				return nil
+			}
+			// A file under a temporary name is left to its rename or close
+			// event.
+			if d.IsDir() || utils.IsTempFile(path) {
+				return nil
+			}
+			if _, done := emitted[path]; done {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			// A date in the future says nothing about a write in progress.
+			if age := time.Since(info.ModTime()); age >= 0 && age < fw.settle {
+				unsettled = true
+				return nil
+			}
+			emitted[path] = struct{}{}
 			fw.emitEvent(path)
+			return nil
+		})
+		if !unsettled {
+			return
 		}
-		return nil
-	})
+		select {
+		case <-fw.stopChan:
+			return
+		case <-time.After(fw.settle):
+		}
+	}
 }
 
 func (fw *inotifyWatcher) watchLoop() {
@@ -236,35 +319,32 @@ func (fw *inotifyWatcher) findWatchedDirectory(wd int) string {
 }
 
 // rescan walks the whole watch directory again after the kernel dropped
-// events (queue overflow): it re-adds the watches and emits every file that
-// has not been written to for a moment. Files still being written are left to
-// their own close event, and a second pass catches any whose event was among
-// the dropped ones.
+// events (queue overflow): it re-adds the watches and scans for files. An
+// overflow that arrives while a rescan runs starts one more when it ends,
+// because its dropped events may be for files the running one already passed.
 func (fw *inotifyWatcher) rescan() {
+	fw.rescanWanted.Store(true)
 	if !fw.rescanning.CompareAndSwap(false, true) {
 		return
 	}
 	go func() {
-		defer fw.rescanning.Store(false)
-		for pass := 0; pass < 2; pass++ {
-			select {
-			case <-fw.stopChan:
-				return
-			case <-time.After(time.Duration(pass) * 2 * fw.settle):
+		for {
+			for fw.rescanWanted.Swap(false) {
+				select {
+				case <-fw.stopChan:
+					fw.rescanning.Store(false)
+					return
+				default:
+				}
+				_ = fw.addWatchRecursive(fw.watchDir)
+				fw.scan(fw.watchDir)
 			}
-			_ = fw.addWatchRecursive(fw.watchDir)
-			_ = filepath.WalkDir(fw.watchDir, func(path string, d os.DirEntry, err error) error {
-				if err != nil || d.IsDir() {
-					return nil
-				}
-				if utils.IsTempFile(path) {
-					return nil
-				}
-				if info, err := d.Info(); err == nil && time.Since(info.ModTime()) >= fw.settle {
-					fw.emitEvent(path)
-				}
-				return nil
-			})
+			fw.rescanning.Store(false)
+			// An overflow between the last check and the line above found a
+			// rescan running and left it to this one.
+			if !fw.rescanWanted.Load() || !fw.rescanning.CompareAndSwap(false, true) {
+				return
+			}
 		}
 	}()
 }
@@ -285,7 +365,9 @@ func (fw *inotifyWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, wat
 		return
 	}
 
-	if name == "" {
+	// An event for a watch that is not known (any more) has no folder to
+	// resolve its name against.
+	if name == "" || watchedDir == "" {
 		return
 	}
 
@@ -295,8 +377,10 @@ func (fw *inotifyWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, wat
 	if info, err := os.Stat(filePath); err == nil && info.IsDir() {
 		if event.Mask&(unix.IN_CREATE|unix.IN_MOVED_TO) != 0 {
 			fw.logger.Debugf("New directory detected (%s), adding recursive watches", filePath)
-			_ = fw.addWatchRecursive(filePath)
-			go fw.processExistingFilesRecursive(filePath)
+			if err := fw.addWatchRecursive(filePath); err != nil {
+				fw.logger.Errorf("Not watching %s: %v", filePath, err)
+			}
+			go fw.scan(filePath)
 		}
 		return
 	}
@@ -305,10 +389,8 @@ func (fw *inotifyWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, wat
 		if info, err := os.Stat(filePath); err == nil && !info.IsDir() && !utils.IsTempFile(filePath) {
 			if statT, ok := info.Sys().(*syscall.Stat_t); ok {
 				if _, loaded := fw.closedInodes.LoadAndDelete(statT.Ino); loaded {
-					if watchedDir != "" {
-						fw.emitEvent(filePath)
-					}
-				} else if watchedDir != "" {
+					fw.emitEvent(filePath)
+				} else {
 					fw.pendingCreates.Store(statT.Ino, pendingCreate{
 						path: filePath,
 						ts:   time.Now(),
@@ -335,9 +417,16 @@ func (fw *inotifyWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, wat
 			// when it is already gone (renamed into place) by now.
 			return
 		}
-		if watchedDir != "" {
-			fw.emitEvent(filePath)
+		// The file is announced under its own name: forget what was noted
+		// about its inode, or a later file that gets the same inode number
+		// would be mistaken for this one.
+		if info, err := os.Stat(filePath); err == nil {
+			if statT, ok := info.Sys().(*syscall.Stat_t); ok {
+				fw.closedInodes.Delete(statT.Ino)
+				fw.pendingCreates.Delete(statT.Ino)
+			}
 		}
+		fw.emitEvent(filePath)
 	}
 }
 

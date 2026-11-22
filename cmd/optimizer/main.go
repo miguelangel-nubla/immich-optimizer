@@ -299,17 +299,20 @@ func validateAppConfig(ac *entity.AppConfig) error {
 	}
 
 	if ac.ImmichURL == "" {
-		return fmt.Errorf("the -immich_url flag is required")
+		return fmt.Errorf("immich_url (IO_IMMICH_URL) is required")
+	}
+	if ac.LogLevel != "" && !customlogger.ValidLevel(ac.LogLevel) {
+		return fmt.Errorf("log_level (IO_LOG_LEVEL) %q is not one of debug, info, warn, error", ac.LogLevel)
 	}
 
 	if ac.MaxConcurrentRequests <= 0 {
-		return fmt.Errorf("max_concurrent_requests must be greater than 0")
+		return fmt.Errorf("tasks_concurrency (IO_TASKS_CONCURRENCY) must be greater than 0")
 	}
 	if ac.ImmichTimeout <= 0 {
 		return fmt.Errorf("immich_timeout must be greater than 0")
 	}
 	if ac.InotifyBufferSize <= 0 {
-		return fmt.Errorf("inotify_buffer_size must be greater than 0")
+		return fmt.Errorf("watcher_inotify_buffer_size (IO_WATCHER_INOTIFY_BUFFER_SIZE) must be greater than 0")
 	}
 	if ac.TasksTimeout < 0 {
 		return fmt.Errorf("tasks_timeout must be 0 (no limit) or greater")
@@ -353,7 +356,7 @@ func validateAppConfig(ac *entity.AppConfig) error {
 
 	if runWatcher {
 		if ac.ImmichAPIKey == "" {
-			return fmt.Errorf("the -immich_api_key flag is required in watcher mode")
+			return fmt.Errorf("immich_api_key (IO_IMMICH_API_KEY) is required in watcher mode")
 		}
 
 		if len(strings.TrimSpace(ac.ImmichAPIKey)) < 10 {
@@ -734,24 +737,30 @@ func run(args []string) error {
 		<-sigChan
 	}
 	cancelLibrary()
-	// Let the assets in flight be rolled back cleanly. If this times out the
-	// next start finds the unfinished copies and resolves them.
-	timeout := time.After(config.ShutdownTimeout)
-	for ; running > 0; running-- {
-		select {
-		case err := <-libraryDone:
-			if err != nil {
-				logger.Errorf("Library mode stopped: %v", err)
-			}
-		case <-timeout:
-			logger.Warnf("Library mode did not stop in time; the next start will resolve what was in progress")
-			running = 0
-		}
-	}
-
 	grace := config.ShutdownTimeout
 	logger.Printf("Shutting down gracefully (waiting up to %s for running jobs)...", grace)
+	// Library mode winds down while the other modes drain, not before them:
+	// one grace period for all, and no new uploads or files taken meanwhile.
+	libraryStopped := make(chan struct{})
+	go func() {
+		defer close(libraryStopped)
+		// Let the assets in flight be rolled back cleanly. If this times out
+		// the next start finds the unfinished copies and resolves them.
+		timeout := time.After(grace)
+		for ; running > 0; running-- {
+			select {
+			case err := <-libraryDone:
+				if err != nil {
+					logger.Errorf("Library mode stopped: %v", err)
+				}
+			case <-timeout:
+				logger.Warnf("Library mode did not stop in time; the next start will resolve what was in progress")
+				return
+			}
+		}
+	}()
 	shutdown(logger, grace, watcherAdapter, pipelineService, proxyServer)
+	<-libraryStopped
 	return nil
 }
 

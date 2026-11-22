@@ -5,15 +5,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/immich"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
@@ -157,6 +160,15 @@ type syncInjector struct {
 	done    map[string]bool
 	lookups int
 
+	// alive remembers, for this one stream, the assets whose line said they
+	// are not in the trash. state asks Immich about an asset whose line did
+	// not go by: whether it is known, and since when it is in the trash (""
+	// when it is not). A marker line alone says nothing about the trash.
+	alive        map[[16]byte]struct{}
+	aliveFull    bool
+	state        func(assetID string) (trashedSince string, known bool)
+	stateLookups int
+
 	// cloud holds, for this one stream, the iOS app's own record of each
 	// asset it was told about (its iCloud id), and cloudSent the hidden
 	// entries that were given theirs.
@@ -178,6 +190,18 @@ const mobileAppKey = "mobile-app"
 
 // maxCloudRecords bounds how many of those records one stream remembers.
 const maxCloudRecords = 50000
+
+// maxAlive bounds how many assets one stream remembers as not in the trash.
+const maxAlive = 1000000
+
+// uuidKey is an asset id in 16 bytes, to remember many of them cheaply.
+func uuidKey(id string) (k [16]byte, ok bool) {
+	if !isUUID(id) {
+		return k, false
+	}
+	_, err := hex.Decode(k[:], []byte(strings.ReplaceAll(id, "-", "")))
+	return k, err == nil
+}
 
 // maxLookups bounds how many markers are asked for in one stream for assets
 // that are not in the trash. A first sync has a line for every asset, and
@@ -261,7 +285,7 @@ func (in *syncInjector) extra(line []byte) [][]byte {
 			ID        string  `json:"id"`
 			DeletedAt *string `json:"deletedAt"`
 		}
-		if json.Unmarshal(l.Data, &d) != nil || hiddenID(d.ID) == "" || in.marker == nil {
+		if json.Unmarshal(l.Data, &d) != nil || hiddenID(d.ID) == "" {
 			return nil
 		}
 		if d.DeletedAt != nil {
@@ -270,10 +294,24 @@ func (in *syncInjector) extra(line []byte) [][]byte {
 			}
 			in.trashed[d.ID] = *d.DeletedAt
 		} else {
-			if in.lookups >= maxLookups {
+			delete(in.trashed, d.ID)
+			if k, ok := uuidKey(d.ID); ok {
+				if in.alive == nil {
+					in.alive = map[[16]byte]struct{}{}
+				}
+				if len(in.alive) < maxAlive {
+					in.alive[k] = struct{}{}
+				} else {
+					in.aliveFull = true
+				}
+			}
+			if in.marker == nil || in.lookups >= maxLookups {
 				return nil
 			}
 			in.lookups++
+		}
+		if in.marker == nil {
+			return nil
 		}
 		// Same kind of line as the one before it, so the same token.
 		return in.entry(d.ID, in.marker(d.ID), l.Ack)
@@ -296,6 +334,12 @@ func (in *syncInjector) entry(assetID string, m *entity.Marker, ack string) [][]
 	asset := hiddenAsset(id, owner, sum)
 	if since, ok := in.trashed[assetID]; ok {
 		asset["deletedAt"] = since
+	} else if since, ok := in.trashedSince(assetID); !ok {
+		// Not known: an entry that says "not in the trash" for an asset
+		// that is there would tell the app its photo is safely backed up.
+		return nil
+	} else if since != "" {
+		asset["deletedAt"] = since
 	}
 	data, _ := json.Marshal(asset)
 	if in.done == nil {
@@ -305,6 +349,26 @@ func (in *syncInjector) entry(assetID string, m *entity.Marker, ack string) [][]
 	in.Injected++
 	lines := [][]byte{encodeLine(syncLine{Type: in.assetType, Data: data, Ack: ack})}
 	return append(lines, in.cloudLine(assetID)...)
+}
+
+// trashedSince says since when an asset whose line did not say "in the trash"
+// is there ("" when it is not), and whether that is known.
+func (in *syncInjector) trashedSince(assetID string) (since string, known bool) {
+	if k, ok := uuidKey(assetID); ok {
+		if _, seen := in.alive[k]; seen {
+			return "", true
+		}
+	}
+	// Its line did not go by in this stream (only its marker did), unless
+	// the stream had more assets than are remembered: those were all seen.
+	if in.state == nil || in.aliveFull {
+		return "", true
+	}
+	if in.stateLookups >= maxLookups {
+		return "", false
+	}
+	in.stateLookups++
+	return in.state(assetID)
 }
 
 // cloudRecord handles the app's own record of an asset going by. When the
@@ -493,8 +557,7 @@ func (s *Server) serveSyncStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read request", http.StatusBadRequest)
 		return
 	}
-	target := s.cfg.UpstreamURL.ResolveReference(r.URL)
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, s.upstreamTarget(r.URL), bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -554,6 +617,13 @@ func (s *Server) serveSyncStream(w http.ResponseWriter, r *http.Request) {
 			}
 			return m
 		},
+		state: func(assetID string) (string, bool) {
+			since, known, err := s.assetTrashedSince(r.Context(), r.Header, assetID)
+			if err != nil && r.Context().Err() == nil {
+				s.logger.Warnf("App sync: could not read asset %s: %v", assetID, err)
+			}
+			return since, known
+		},
 	}
 	if err := in.copyStream(w, resp.Body, flush); err != nil && r.Context().Err() == nil {
 		s.logger.Warnf("Sync stream ended early: %v", err)
@@ -564,6 +634,42 @@ func (s *Server) serveSyncStream(w http.ResponseWriter, r *http.Request) {
 	if in.Injected > 0 {
 		s.logger.Debugf("App sync: added %d hidden entr(ies) for converted assets", in.Injected)
 	}
+}
+
+// assetTrashedSince asks Immich whether an asset is in the trash. Immich's
+// answer does not say since when; the time of its last change stands in for
+// it, which is when it was trashed unless something changed it afterwards.
+func (s *Server) assetTrashedSince(ctx context.Context, h http.Header, assetID string) (since string, known bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	target := strings.TrimRight(s.cfg.UpstreamURL.String(), "/") + "/api/assets/" + url.PathEscape(assetID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return "", false, err
+	}
+	req.Header = immich.AuthHeaders(h)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", false, err
+	}
+	defer resp.Body.Close()
+	var a struct {
+		IsTrashed bool   `json:"isTrashed"`
+		UpdatedAt string `json:"updatedAt"`
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", false, fmt.Errorf("status %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&a); err != nil {
+		return "", false, err
+	}
+	if !a.IsTrashed {
+		return "", true, nil
+	}
+	if a.UpdatedAt == "" {
+		a.UpdatedAt = time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	}
+	return a.UpdatedAt, true, nil
 }
 
 // serveSyncAck removes the tokens of proxy-made lines from an

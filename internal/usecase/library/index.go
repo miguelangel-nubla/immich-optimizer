@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 )
@@ -36,6 +37,9 @@ type logIndex struct {
 	// pending are copies library mode uploaded whose replacement the log
 	// does not show as finished or undone.
 	pending map[string]bool
+	// lastLibrary is the time of the newest entry library mode wrote for
+	// this user: it was running then.
+	lastLibrary time.Time
 	// known says the log holds anything library mode can go by: a
 	// conversion, a replacement, or a full read.
 	known bool
@@ -101,13 +105,18 @@ func (x *logIndex) add(line []byte) {
 	case e.Event == eventFullRead:
 		x.known = true
 	case e.Source == string(entity.SourceLibrary):
+		if e.Time.After(x.lastLibrary) {
+			x.lastLibrary = e.Time
+		}
 		switch e.Event {
 		case "uploaded":
 			if e.NewAsset != "" {
 				x.pending[e.NewAsset], x.known = true, true
 			}
 		case "replaced":
-			delete(x.pending, e.NewAsset)
+			if !strings.HasSuffix(e.Detail, pendingMarkLeft) {
+				delete(x.pending, e.NewAsset)
+			}
 			if sha != "" && e.NewAsset != "" {
 				x.originals[sha] = e.NewAsset
 			}
@@ -139,6 +148,21 @@ func (x *logIndex) remember(originals map[string]string) {
 	for sha, id := range originals {
 		x.originals[sha] = id
 	}
+}
+
+// lastSeen is when library mode last wrote to the log for this user; zero
+// when it never did.
+func (x *logIndex) lastSeen() time.Time {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.lastLibrary
+}
+
+// hasOriginals reports whether any converted original is known.
+func (x *logIndex) hasOriginals() bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return len(x.originals) > 0
 }
 
 func (x *logIndex) pendingIDs() []string {

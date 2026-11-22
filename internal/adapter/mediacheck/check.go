@@ -87,31 +87,62 @@ func (c *Checker) Check(ctx context.Context, original, output string) error {
 	return fmt.Errorf("converted %s is a single flat colour", what)
 }
 
-// Preview returns a small JPEG of a photo, or of the middle frame of a video,
-// for showing it to a person.
-func (c *Checker) Preview(ctx context.Context, path string) ([]byte, error) {
-	tmp, err := os.MkdirTemp("", "io-preview-*")
+// minScale is how much smaller than the original, in width and in height, a
+// converted picture may be: one sixteenth. A task may resize, and scaling a
+// large photo down to a screen's size stays far above this; a result below it
+// is not a smaller version of the picture but something else, such as the
+// preview stored inside a camera RAW file, which is what a tool that cannot
+// develop RAW reads from one.
+const minScale = 16
+
+// CheckSize returns an error when the converted picture or video is tiny next
+// to its original. It says nothing (nil) when either size cannot be read:
+// whether the output is valid at all is Check's question.
+func (c *Checker) CheckSize(ctx context.Context, original, output string) error {
+	ow, oh, ok := pixelSize(ctx, original)
+	if !ok {
+		return nil
+	}
+	w, h, ok := pixelSize(ctx, output)
+	if !ok {
+		return nil
+	}
+	// Longer side with longer side: a task may rotate.
+	if max(w, h)*minScale < max(ow, oh) && min(w, h)*minScale < min(ow, oh) {
+		return fmt.Errorf("the converted file is %dx%d, the original %dx%d: less than 1/%d of its width and height is not taken for the same picture", w, h, ow, oh, minScale)
+	}
+	return nil
+}
+
+// pixelSize returns the width and height of a photo or a video, whatever its
+// file name says it is.
+func pixelSize(ctx context.Context, path string) (w, h int, ok bool) {
+	if out, err := run(ctx, "vipsheader", "-f", "width", path); err == nil {
+		if w, err = strconv.Atoi(out); err == nil {
+			if out, err = run(ctx, "vipsheader", "-f", "height", path); err == nil {
+				if h, err = strconv.Atoi(out); err == nil && w > 0 && h > 0 {
+					return w, h, true
+				}
+			}
+		}
+	}
+	out, err := run(ctx, "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", path)
 	if err != nil {
-		return nil, err
+		return 0, 0, false
 	}
-	defer os.RemoveAll(tmp)
-	src := path
-	if isVideo(path) {
-		src = filepath.Join(tmp, "frame.png")
-		d, err := videoDuration(ctx, path)
-		if err != nil {
-			return nil, err
-		}
-		at := strconv.FormatFloat(d/2, 'f', 3, 64)
-		if _, err := run(ctx, "ffmpeg", "-v", "error", "-y", "-ss", at, "-i", path, "-frames:v", "1", src); err != nil {
-			return nil, err
-		}
+	ws, hs, found := strings.Cut(strings.TrimSpace(strings.Split(out, "\n")[0]), "x")
+	if !found {
+		return 0, 0, false
 	}
-	out := filepath.Join(tmp, "preview.jpg")
-	if _, err := run(ctx, "vips", "thumbnail", src, out+"[Q=78,strip]", "360"); err != nil {
-		return nil, err
+	w, err = strconv.Atoi(ws)
+	if err != nil {
+		return 0, 0, false
 	}
-	return os.ReadFile(out)
+	h, err = strconv.Atoi(strings.TrimRight(hs, "x"))
+	if err != nil || w <= 0 || h <= 0 {
+		return 0, 0, false
+	}
+	return w, h, true
 }
 
 // Flat reports whether the picture is (nearly) one single colour, or empty.

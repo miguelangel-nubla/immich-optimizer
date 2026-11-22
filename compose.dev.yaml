@@ -1,8 +1,8 @@
+# Runs the image built from this checkout: scripts/build-image.sh builds
+# immich-optimizer:local.
 services:
   immich-optimizer:
-    build:
-      context: .
-      dockerfile: Dockerfile.goreleaser
+    image: immich-optimizer:local
     env_file:
       - .env
     ports:

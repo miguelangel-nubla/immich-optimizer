@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -281,9 +282,12 @@ func TestSaveUndoneDelegates(t *testing.T) {
 }
 
 type fakeChecker struct {
-	got []string
-	err error
+	got     []string
+	err     error
+	sizeErr error
 }
+
+func (c *fakeChecker) CheckSize(_ context.Context, _, _ string) error { return c.sizeErr }
 
 func (c *fakeChecker) Check(_ context.Context, original, output string) error {
 	c.got = []string{original, output}
@@ -392,5 +396,34 @@ func TestEngineRefusesWorkWhenAuditLogIsBroken(t *testing.T) {
 	}
 	if store.count() != 0 {
 		t.Error("something was saved to undone")
+	}
+}
+
+// A result that is tiny next to its original is not delivered, in any mode:
+// the original is saved like that of any failed conversion.
+func TestConvertRefusesATinyResult(t *testing.T) {
+	out, cleanup, cleaned := output(t, "file-123.jxl", 10)
+	proc := &fakeProc{fn: func(context.Context, string) (*entity.ProcessResult, error) {
+		return &entity.ProcessResult{ProcessedFilePath: out, ProcessedFilename: "file-123.jxl", OriginalSize: 100, ProcessedSize: 10, Cleanup: cleanup}, nil
+	}}
+	store := &fakeStore{}
+	chk := &fakeChecker{sizeErr: errors.New("160x120 against 6000x4000")}
+	e := New(Config{Tasks: jpgTasks, MaxConcurrent: 1, Checker: chk}, proc, store, quiet())
+	_, err := e.Convert(context.Background(), input(t, 100))
+	var ce *entity.ConversionError
+	if !errors.As(err, &ce) || ce.Undone == nil || store.count() != 1 || !*cleaned {
+		t.Fatalf("err = %v, saved %d, cleaned %v", err, store.count(), *cleaned)
+	}
+	if !strings.Contains(ce.Failure.Err.Error(), "160x120") {
+		t.Errorf("the failure does not say why: %v", ce.Failure.Err)
+	}
+
+	chk.sizeErr = nil
+	out2, cleanup2, _ := output(t, "file-124.jxl", 10)
+	proc.fn = func(context.Context, string) (*entity.ProcessResult, error) {
+		return &entity.ProcessResult{ProcessedFilePath: out2, ProcessedFilename: "file-124.jxl", OriginalSize: 100, ProcessedSize: 10, Cleanup: cleanup2}, nil
+	}
+	if res, err := e.Convert(context.Background(), input(t, 100)); err != nil || res.Outcome != entity.OutcomeOptimized {
+		t.Fatalf("a result of a sensible size was refused: %v", err)
 	}
 }

@@ -56,18 +56,8 @@ tasks:
   - jpeg
   - jpg
   - png
-  - tiff
-  - tif
   - webp
   - gif
-
-- name: vips
-  command: |
-    vips copy \
-      "{{.src_folder}}/{{.name}}.{{.extension}}" \
-      "{{.dst_folder}}/{{.name}}.jxl[Q=75]"
-  extensions:
-  - dng
 
 - name: handbrake
   command: |
@@ -96,9 +86,9 @@ tasks:
   - webm
   - wmv
 
-# Block all other formats from being uploaded.
-
-# Every other image format Immich accepts (including camera RAW) is uploaded as it is.
+# Every other image format Immich accepts is uploaded as it is. That includes
+# camera RAW, DNG too: the tools in the image do not develop RAW files. They
+# read the small preview stored inside one, and would replace the photo with it.
 - name: passthrough-other-images
   command: ""
   extensions:
@@ -112,6 +102,10 @@ tasks:
   - jxl
   - mpo
   - svg
+  # caesiumclt 1.5 does not take TIFF ("Unable to compute the base path
+  # for the files"), and nothing else in the image keeps every page of one.
+  - tif
+  - tiff
   - 3fr
   - ari
   - arw
@@ -121,6 +115,7 @@ tasks:
   - cr3
   - crw
   - dcr
+  - dng
   - erf
   - fff
   - iiq

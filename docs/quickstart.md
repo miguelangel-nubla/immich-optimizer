@@ -41,6 +41,8 @@ The optimizer takes over that address, and passes everything on to Immich.
     restart: unless-stopped
 ```
 
+On Linux, create the folder for it first, owned by the user the optimizer runs as (id `1001`), or the optimizer cannot write to it and does not start: `mkdir -p optimizer-undone && sudo chown 1001 optimizer-undone`.
+
 Indent it exactly like the other services. If your `immich-server` goes by another name in your file, use that name in the `IO_IMMICH_URL` line.
 
 **4. Apply it.** In the folder of that file, run:

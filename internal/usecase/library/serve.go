@@ -28,15 +28,15 @@ var settleDelay = 2 * time.Second
 var retryDelay = 30 * time.Second
 
 // Serve runs library mode until ctx ends: it reacts to Immich's events,
-// with SafetyInterval as a fallback, and returns only on an error it cannot
-// continue after (the audit log cannot be written) or when ctx ends.
+// with SafetyInterval as a fallback, and returns when ctx ends. A pass that
+// cannot write the audit log ends there; the next one tries again.
 //
 // At startup it settles what an interrupted run left unfinished and acts on
 // whatever is tagged. Which unfinished copies exist, and which originals were
 // converted into what, comes from the audit log; only when the log knows
 // nothing is the whole library read (see Run).
 func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
-	defer func() { s.idx = nil }()
+	defer func() { s.idx, s.uploadsChecked = nil, time.Time{} }()
 
 	// Start: retried until Immich answers.
 	var me string
@@ -45,9 +45,8 @@ func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
 		if err == nil {
 			break
 		}
-		var fatal *errFatal
-		if errors.As(err, &fatal) || ctx.Err() != nil {
-			return ignoreCanceled(ctx, err)
+		if ctx.Err() != nil {
+			return nil
 		}
 		if s.log != nil {
 			s.log.Errorf("Library: %v; trying again in %s", err, retryDelay)
@@ -64,11 +63,22 @@ func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
 		default:
 		}
 	}
+	// recheck asks for a look at the recent uploads: events for them may
+	// have been missed.
+	recheck := make(chan struct{}, 1)
+	missed := func() {
+		select {
+		case recheck <- struct{}{}:
+		default:
+		}
+	}
 	type upload struct{ id, checksum string }
 	uploads := make(chan upload, 1024)
 	if events != nil {
 		go events.Listen(ctx, port.LibraryEventHandlers{
-			Connected: poke,
+			// Also after a lost connection: what was uploaded meanwhile was
+			// not announced.
+			Connected: func() { poke(); missed() },
 			AssetUpdated: func(_ string, tags []string) {
 				for _, t := range tags {
 					if t == TagConvert || strings.HasPrefix(t, TagConvert+"/") {
@@ -80,7 +90,8 @@ func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
 			Uploaded: func(id, checksum string) {
 				select {
 				case uploads <- upload{id, checksum}:
-				default: // a flood of uploads: the safety pass catches up
+				default: // a flood of uploads: they are looked for afterwards
+					missed()
 				}
 			},
 		})
@@ -103,16 +114,28 @@ func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
 			}
 			err = s.taggedPass(ctx, me)
 		case <-safety.C:
-			err = s.taggedPass(ctx, me)
+			// Also what a replacement left unfinished since the start, and
+			// uploads whose event did not arrive.
+			if err = s.pendingPass(ctx, me); err == nil {
+				err = s.taggedPass(ctx, me)
+			}
+			if err == nil {
+				err = s.recentPass(ctx, me)
+			}
+		case <-recheck:
+			err = s.recentPass(ctx, me)
 		case u := <-uploads:
 			err = s.uploadPass(ctx, me, u.id, u.checksum)
 		}
+		// Also when the audit log could not be written: that pass is over,
+		// and the next one finds out whether the log is back.
 		var fatal *errFatal
-		if errors.As(err, &fatal) {
-			return err
-		}
 		if err != nil && ctx.Err() == nil && s.log != nil {
-			s.log.Errorf("Library: %v", err)
+			if errors.As(err, &fatal) {
+				s.log.Errorf("Library: the audit log cannot be written, so nothing is converted until it can: %v", err)
+			} else {
+				s.log.Errorf("Library: %v", err)
+			}
 		}
 	}
 }
@@ -123,13 +146,6 @@ func (s *Service) Warnf(format string, args ...any) {
 	if s.log != nil {
 		s.log.Warnf(format, args...)
 	}
-}
-
-func ignoreCanceled(ctx context.Context, err error) error {
-	if ctx.Err() != nil {
-		return nil
-	}
-	return err
 }
 
 // start identifies the user, settles what earlier runs left and acts on
@@ -154,30 +170,111 @@ func (s *Service) start(ctx context.Context, me *string) error {
 		if err := s.idx.refresh(); err != nil && s.log != nil {
 			s.log.Warnf("Library: could not read the audit log (%v); reading the whole library instead", err)
 		}
+		// Uploads have been looked at for as long as library mode ran,
+		// which the log shows.
+		s.uploadsChecked = s.idx.lastSeen()
 	}
 	if err := s.tidyTags(ctx); err != nil {
 		return err
 	}
 	if !s.idx.isKnown() {
 		s.infof("Library: the audit log has no record of earlier conversions; reading the whole library once")
+		began := time.Now()
 		_, err := s.Run(ctx)
+		if err == nil {
+			s.uploadsChecked = began
+		}
 		return err
 	}
-	if ids := s.idx.pendingIDs(); len(ids) > 0 {
-		s.infof("Library: %d replacement(s) may have been interrupted; checking them", len(ids))
+	if err := s.pendingPass(ctx, id); err != nil {
+		return err
+	}
+	if err := s.taggedPass(ctx, id); err != nil {
+		return err
+	}
+	if err := s.recentPass(ctx, id); err != nil {
+		return err
+	}
+	// So that the next start knows from when to look, also when nothing
+	// else is written for a long time.
+	return s.record(Entry{Event: eventUploadsChecked})
+}
+
+// eventUploadsChecked is logged at startup, once the uploads made while
+// library mode was not running have been looked at.
+const eventUploadsChecked = "uploads_checked"
+
+// uploadCheckMargin is how far before the last check recentPass looks: the
+// clocks of Immich and the optimizer may differ, and an upload takes a
+// moment to appear.
+const uploadCheckMargin = 10 * time.Minute
+
+// recentPass looks at what was uploaded since uploads were last looked at,
+// for second copies of converted originals. Immich announces every upload,
+// but not to a listener that is not connected: while the optimizer was
+// stopped or the connection was down, or when more arrived than it could
+// take. One search, and no asset is read unless its checksum is that of a
+// converted original.
+func (s *Service) recentPass(ctx context.Context, me string) error {
+	if err := s.idx.refresh(); err != nil && s.log != nil {
+		s.log.Warnf("Library: could not read the audit log: %v", err)
+	}
+	now := time.Now()
+	if !s.idx.hasOriginals() {
+		s.uploadsChecked = now
+		return nil
+	}
+	since := s.uploadsChecked
+	if !since.IsZero() {
+		since = since.Add(-uploadCheckMargin)
+	}
+	recent, err := s.base.AssetsCreatedSince(ctx, since)
+	if err != nil {
+		return fmt.Errorf("listing recent uploads: %w", err)
+	}
+	var copies []entity.LibraryAsset
+	for _, a := range recent {
+		if a.OwnerID != me || a.IsTrashed || a.Checksum == "" {
+			continue
+		}
+		if conv, ok := s.idx.convertedFrom(a.Checksum); ok && conv != a.ID {
+			copies = append(copies, a)
+		}
+	}
+	if len(copies) > 0 {
+		s.infof("Library: %d recent upload(s) may be second copies of converted originals; checking them", len(copies))
 		rt, err := s.loadTags(ctx)
 		if err != nil {
 			return err
 		}
-		assets, err := s.fetch(ctx, ids)
-		if err != nil {
-			return err
-		}
-		if _, err := s.pass(ctx, id, rt, assets); err != nil {
+		if _, err := s.pass(ctx, me, rt, copies); err != nil {
 			return err
 		}
 	}
-	return s.taggedPass(ctx, id)
+	s.uploadsChecked = now
+	return nil
+}
+
+// pendingPass settles the copies the audit log lists as unfinished.
+func (s *Service) pendingPass(ctx context.Context, me string) error {
+	if err := s.idx.refresh(); err != nil && s.log != nil {
+		s.log.Warnf("Library: could not read the audit log: %v", err)
+	}
+	ids := s.idx.pendingIDs()
+	if len(ids) == 0 {
+		return nil
+	}
+	assets, err := s.fetch(ctx, ids)
+	if err != nil || len(assets) == 0 {
+		return err
+	}
+	s.infof("Library: %d replacement(s) may have been interrupted; checking them", len(assets))
+	rt, err := s.loadTags(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = s.pass(ctx, me, rt, assets)
+	return err
 }
 
 // taggedPass acts on every asset that carries a command tag.

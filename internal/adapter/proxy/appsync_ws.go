@@ -68,6 +68,10 @@ func (s *Server) dialUpstream(ctx context.Context) (net.Conn, error) {
 	return d.DialContext(ctx, "tcp", host)
 }
 
+// wsHandshakeTimeout is how long Immich may take to answer the websocket
+// handshake.
+const wsHandshakeTimeout = 30 * time.Second
+
 // serveSocket carries the app's websocket. It reports whether it answered the
 // request; when it did not, nothing was written.
 func (s *Server) serveSocket(w http.ResponseWriter, r *http.Request) bool {
@@ -82,6 +86,11 @@ func (s *Server) serveSocket(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 	defer func() { _ = up.Close() }()
+
+	// Immich has to answer the handshake in reasonable time; without a limit
+	// a server that accepts and then says nothing would hold this connection
+	// and the app's for good.
+	_ = up.SetDeadline(time.Now().Add(wsHandshakeTimeout))
 
 	out := r.Clone(r.Context())
 	out.Host = s.cfg.UpstreamURL.Host
@@ -102,10 +111,15 @@ func (s *Server) serveSocket(w http.ResponseWriter, r *http.Request) bool {
 		for k, vv := range resp.Header {
 			w.Header()[k] = vv
 		}
+		for _, k := range hopHeaders {
+			w.Header().Del(k)
+		}
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 		return true
 	}
+
+	_ = up.SetDeadline(time.Time{})
 
 	client, crw, err := hj.Hijack()
 	if err != nil {

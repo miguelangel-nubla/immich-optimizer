@@ -89,6 +89,7 @@ type Server struct {
 	streamClient *http.Client
 	users        userCache
 	names        nameCache
+	downloads    downloadCache
 	downloadSem  chan struct{}
 
 	baseCtx    context.Context
@@ -134,6 +135,7 @@ func NewServer(cfg Config, conv port.Converter, log *logger.Logger) *Server {
 		jobs:         newJobManager(cfg.ResultTTL, cfg.MaxKeptJobs),
 		admission:    newAdmission(tempFree),
 		downloadSem:  make(chan struct{}, max(cfg.DownloadConcurrency, 2)),
+		downloads:    downloadCache{base: baseCtx},
 		baseCtx:      baseCtx,
 		cancelBase:   cancel,
 	}
@@ -216,6 +218,7 @@ func (s *Server) Drain(ctx context.Context) error {
 // 503 with Retry-After.
 func (s *Server) Cancel() {
 	s.cancelBase(entity.ErrShuttingDown)
+	s.downloads.clear()
 }
 
 // FinishShutdown waits up to ctx for active handlers to write the results of

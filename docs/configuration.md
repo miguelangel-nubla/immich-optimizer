@@ -3,6 +3,7 @@
 Every setting can be given as an environment variable or as a command-line flag. The flag is the variable's name without `IO_`, in lower case: `IO_PROXY_BIND_ADDR` is `-proxy_bind_addr`.
 
 - A flag wins over an environment variable.
+- A setting that is on or off takes `true` or `false`; `yes`/`no`, `on`/`off` and `1`/`0` mean the same. Anything else is refused at startup.
 - A setting's name starts with what it belongs to: `IO_PROXY_…` only matters in proxy mode, `IO_TASKS_…` is about converting files. Settings without such a prefix apply to everything.
 - `immich-optimizer -help` prints this list.
 
@@ -41,7 +42,7 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 
 | Environment variable | Flag | Default | Description |
 |---|---|---|---|
-| `IO_UNDONE_DIR` | `-undone_dir` | `/undone` | Folder where files that could not be converted are kept, in every mode |
+| `IO_UNDONE_DIR` | `-undone_dir` | `/undone` | Folder where files that could not be converted are kept (proxy and watcher mode) |
 | `IO_UNDONE_UNMATCHED` | `-undone_unmatched` | `true` | Also keep files whose type no task handles (they are refused either way) |
 | `IO_AUDIT_LOG_FILE` | `-audit_log_file` | `audit.log` in the undone folder | Persistent record of every asset operation |
 

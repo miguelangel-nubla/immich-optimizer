@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -595,6 +596,20 @@ func TestBundledProfilesCoverImmichFormats(t *testing.T) {
 				t.Errorf("%s: no task handles .%s", p, e)
 			}
 		}
+		// Camera RAW is uploaded as it is. The tools in the image cannot
+		// develop it: they read the preview inside the file (160x120 for
+		// the DNG this was found with), and that would replace the photo.
+		for _, e := range strings.Fields(`3fr ari arw cap cin cr2 cr3 crw dcr dng erf fff iiq k25 kdc mrw nef nrw orf ori pef
+			raf raw rw2 rwl sr2 srf srw x3f`) {
+			for _, task := range cfg.Tasks {
+				if slices.Contains(task.Extensions, e) {
+					if strings.TrimSpace(task.Command) != "" {
+						t.Errorf("%s: .%s is given to the command of task %s", p, e, task.Name)
+					}
+					break
+				}
+			}
+		}
 	}
 }
 
@@ -709,7 +724,7 @@ func TestDocsLinksAndSettingNames(t *testing.T) {
 	}
 	known := map[string]bool{"IO_UPDATE_DOCS": true, "IO_DEV_DIR": true,
 		// Read by the test scripts.
-		"IO_IOS_FULL_SPEED": true, "IO_IOS_DEVICES": true,
+		"IO_IOS_FULL_SPEED": true, "IO_IOS_DEVICES": true, "IO_TEST_CPUS": true, "IO_TEST_MEMORY": true,
 		// Given to task commands, not settings.
 		"IO_MOTION_PHOTOS": true, "IO_SRC_FOLDER": true, "IO_DST_FOLDER": true, "IO_NAME": true, "IO_EXTENSION": true,
 		"IO_ORIGINAL_NAME": true, "IO_SOURCE": true, "IO_TASK": true}
@@ -780,6 +795,29 @@ func TestDurationSettings(t *testing.T) {
 	if cfg, err = parse("-tasks_timeout", "5m"); err != nil || cfg.TasksTimeout != 5*time.Minute {
 		t.Errorf("flag did not win: %v %v", cfg, err)
 	}
+
+	// A boolean or a number that cannot be read is an error, not false or 0.
+	env["IO_PROXY_CONVERT_UPLOADS"] = "maybe"
+	if _, err = parse(); err == nil || !strings.Contains(err.Error(), "IO_PROXY_CONVERT_UPLOADS") {
+		t.Errorf("an unreadable boolean was accepted: %v", err)
+	}
+	// The ways people write a boolean are all understood.
+	for raw, want := range map[string]bool{"yes": true, "On": true, "TRUE": true, "1": true, "no": false, "off": false, "False": false, "0": false} {
+		env["IO_PROXY_CONVERT_UPLOADS"] = raw
+		if cfg, err = parse(); err != nil || cfg.ProxyConvertUploads != want {
+			t.Errorf("IO_PROXY_CONVERT_UPLOADS=%s: %v, %v", raw, cfg, err)
+		}
+	}
+	env["IO_PROXY_CONVERT_UPLOADS"], env["IO_TASKS_CONCURRENCY"] = "false", "many"
+	if _, err = parse(); err == nil || !strings.Contains(err.Error(), "IO_TASKS_CONCURRENCY") {
+		t.Errorf("an unreadable number was accepted: %v", err)
+	}
+	env["IO_TASKS_CONCURRENCY"] = "3"
+	if cfg, err = parse(); err != nil || cfg.MaxConcurrentRequests != 3 {
+		t.Errorf("valid values refused: %v %v", cfg, err)
+	}
+	delete(env, "IO_PROXY_CONVERT_UPLOADS")
+	delete(env, "IO_TASKS_CONCURRENCY")
 
 	// A bare number is not a duration.
 	if _, err := parse("-immich_timeout", "120"); err == nil {

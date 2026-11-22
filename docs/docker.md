@@ -26,7 +26,16 @@ Images are built for amd64 and arm64.
 | `/watch` | the [watched folder](watcher.md) |
 | `2283` | the [proxy](proxy.md) |
 
-The container runs as user id `1001`, not root. Mounted folders must be writable by it, and mounted scripts readable and executable. For GPU devices such as `/dev/dri`, add the device's group with `group_add`.
+The container runs as user id `1001`, not root. Mounted folders must be writable by it, and mounted scripts readable and executable.
+
+On Linux, a host folder that does not exist yet is created by Docker for root, and the optimizer then refuses to start ("not writable by uid 1001"). Create the folders yourself and hand them over before the first start:
+
+```bash
+mkdir -p undone && sudo chown 1001 undone
+```
+
+The same goes for a watch folder. Docker Desktop (macOS, Windows) shares host folders with every user, so nothing is needed there. A named volume instead of a host folder needs no step either, but then the undone folder and the audit log are only reachable through Docker.
+ For GPU devices such as `/dev/dri`, add the device's group with `group_add`.
 
 ## Stopping and restarting
 
@@ -65,7 +74,7 @@ services:
 
 ## Health check
 
-The image has a Docker health check. It runs `immich-optimizer -healthcheck` inside the container, with the container's own settings:
+The image has a Docker health check. It runs `immich-optimizer -healthcheck` inside the container, with the container's own settings. It only sees settings given as environment variables: if you pass them as command-line flags instead, the check does not know the mode or the port and reports the container as unhealthy.
 
 - **Proxy mode:** it asks the proxy for `/_immich-optimizer/health`, which the proxy answers itself with `200` (and `503` while it is shutting down). It does not ask Immich: an Immich that is down is not a reason to restart the optimizer.
 - **Watcher and library mode** have nothing to ask, so the check only confirms that the container runs.

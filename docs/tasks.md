@@ -18,7 +18,7 @@ tasks:
 ## How a file is handled
 
 1. The file's extension selects the tasks, in the order they appear in the file.
-2. The first matching task runs. If its command fails, the next matching task is tried.
+2. The first matching task runs. If its command fails, or does not leave exactly one file with content in the output folder, the next matching task is tried.
 3. **If the output is smaller than the original**, the output is uploaded under the original name with the new extension. If it is not smaller, the original is uploaded unchanged.
 4. **If every matching task fails**, or the output is empty, nothing is uploaded and the original is kept in the [undone folder](undone.md).
 5. **If no task matches the extension**, the file is refused (and kept in the undone folder unless [`IO_UNDONE_UNMATCHED`](configuration.md#undone-folder-and-audit-log) is `false`). List every type you want to accept, with an empty command for those you do not convert.
@@ -68,7 +68,7 @@ The bundled profiles are written this way. Use `|`, not `>`: with `>` YAML joins
 - An unknown placeholder stops the optimizer at startup with an error.
 - The output's extension is taken from the file the command wrote.
 - The last 4 KiB of a failed command's output is saved with the file in the undone folder.
-- A command that runs longer than [`IO_TASKS_TIMEOUT`](configuration.md#tasks) is killed together with everything it started.
+- [`IO_TASKS_TIMEOUT`](configuration.md#tasks) limits how long one file may take, all its tasks together. When it is reached, the running command is killed together with everything it started, and no further task is tried.
 
 ## Bundled profiles
 
@@ -80,6 +80,8 @@ The image ships these under `/etc/immich-optimizer/bundled-configs/<profile>/`. 
 | [`profile1`](../config/profile1/tasks.yaml) | lossy JPEG XL (quality 75), HEIC included | HandBrake |
 
 Every bundled profile accepts every file type Immich accepts.
+
+**Camera RAW is uploaded as it is** by both profiles, DNG included. The tools in the image do not develop RAW files: given one, they read the small preview stored inside it. Up to version 0.4.0-dev.1, `profile1` gave `.dng` files to such a command, and the result was a thumbnail-sized JPEG XL in place of the photo. If you used `profile1` with DNG files, look for `.jxl` assets of a few kilobytes whose original name ended in `.dng`: with library mode the originals are in Immich's trash until it is emptied; with proxy and watcher mode only the phone or the source folder still has them.
 
 **`profile1` and video from current phones:** its HandBrake preset encodes to AV1 at a very high quality. Measured on clips straight from an iPhone and a Pixel, the result was two to three times larger than the phone's own file, so the original was kept and nothing was saved. It is useful for older or high-bitrate video; expect no gain on recent phone video until the preset is changed.
 
@@ -141,6 +143,6 @@ downloads:
 - **Only the download of a single original is converted** ("Download" in the web and mobile apps, `GET /api/assets/{id}/original`). Archives of several assets, and a photo edited in Immich itself (rotated or cropped there), are sent as Immich makes them.
 - **If the command fails, the stored file is sent**, and the log says so.
 - **To switch it off** without changing the tasks file, set `IO_PROXY_CONVERT_DOWNLOADS=false`: downloads then come as Immich stores them.
-- The file is downloaded from Immich in full and converted on every request, also when only a part of it is asked for. It takes one more request to Immich per download, to learn the file's type.
+- The file is downloaded from Immich in full and converted, also when only a part of it is asked for. The result is kept for a minute after its last use, so a player or a download manager that asks for one file in many pieces has it converted once. It takes one more request to Immich per download, to learn the file's type.
 - **The bundled profiles that store JPEG XL have this list**, so with them originals are downloaded as JPEG. This includes a JXL you uploaded as one. Remove the list from your tasks file to download files as they are stored; a tasks file without it converts nothing.
 - Only proxy mode reads it.

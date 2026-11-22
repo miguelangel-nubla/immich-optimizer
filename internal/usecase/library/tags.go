@@ -276,14 +276,6 @@ func (w withoutOwnTags) GetAsset(ctx context.Context, id string) (*entity.Librar
 	return a, err
 }
 
-func (w withoutOwnTags) ListAssets(ctx context.Context, page int) ([]entity.LibraryAsset, int, error) {
-	assets, next, err := w.LibraryAPI.ListAssets(ctx, page)
-	for i := range assets {
-		assets[i].TagIDs = w.strip(assets[i].TagIDs)
-	}
-	return assets, next, err
-}
-
 // dropOwnTags removes the optimizer's tags from an asset this run created.
 func (s *Service) dropOwnTags(ctx context.Context, id string) error {
 	a, err := s.base.GetAsset(ctx, id)
@@ -340,11 +332,21 @@ func (s *Service) settleTags(ctx context.Context, rt *runTags, items []*Item) er
 	for _, it := range items {
 		status[it.ID] = it
 	}
+	// The failed tag holds back a convert tag: it is of no use on an asset
+	// nobody tagged (a second copy, an unfinished copy).
+	tagged := map[string]bool{}
+	for _, ids := range rt.convertTagged {
+		for id := range ids {
+			tagged[id] = true
+		}
+	}
 	var failed, review []string
 	for _, it := range items {
 		switch {
 		case it.Status == statusFailed:
-			failed = append(failed, it.ID)
+			if tagged[it.ID] {
+				failed = append(failed, it.ID)
+			}
 		case it.review:
 			review = append(review, it.ID)
 		}

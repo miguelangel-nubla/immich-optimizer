@@ -105,8 +105,8 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 	fp.originalFilename = filepath.Base(filePath)
 
 	var attempts []entity.TaskAttempt
+	var result *entity.ProcessResult
 	matched := false
-	succeeded := false
 
 	for _, task := range tasks {
 		if !slices.Contains(task.Extensions, utils.NormalizeExtension(fp.originalExtension)) {
@@ -126,6 +126,14 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 		}
 
 		convErr := fp.run(ctx, cmdTmpl, task.MotionPhotos, &attempt)
+		if convErr == nil {
+			// A command that reports success without leaving exactly one
+			// file with content has failed like any other: the next task
+			// gets its turn.
+			attempt.ExitCode = 0
+			fp.taskName, fp.taskCommand = task.Name, task.Command
+			result, convErr = fp.processResults()
+		}
 		attempt.Duration = time.Since(start)
 		if convErr != nil {
 			attempt.Err = convErr.Error()
@@ -138,17 +146,14 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 			}
 			continue
 		}
-		attempt.ExitCode = 0
 		attempts = append(attempts, attempt)
-		fp.taskName, fp.taskCommand = task.Name, task.Command
-		succeeded = true
 		break
 	}
 
 	if !matched {
 		return nil, &entity.ProcessError{Err: fmt.Errorf("%w: %s", entity.ErrNoTask, fp.originalExtension)}
 	}
-	if !succeeded {
+	if result == nil {
 		last := attempts[len(attempts)-1]
 		return nil, &entity.ProcessError{
 			Attempts: attempts,
@@ -156,12 +161,7 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 		}
 	}
 
-	res, err := fp.processResults()
-	if err != nil {
-		attempts[len(attempts)-1].Err = err.Error()
-		return nil, &entity.ProcessError{Attempts: attempts, Err: err}
-	}
-	return res, nil
+	return result, nil
 }
 
 func firstLine(s string) string {
@@ -453,6 +453,11 @@ func (fp *fileProcessor) processResults() (*entity.ProcessResult, error) {
 		return nil, fmt.Errorf("unable to get file size: %w", err)
 	}
 	processedSize := stat.Size()
+	// An empty original is reported as such by the engine, not as a task
+	// that produced nothing.
+	if processedSize == 0 && fp.originalSize > 0 {
+		return nil, errors.New("the output file is empty")
+	}
 
 	processedFilename := utils.TrimSuffixCaseInsensitive(fp.originalFilename, fp.originalExtension) + processedExtension
 

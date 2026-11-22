@@ -91,6 +91,10 @@ func EnsureMarker(ctx context.Context, hc *http.Client, baseURL string, auth htt
 				return err
 			}
 		}
+	} else if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
+		// Anything else says nothing about a marker being there or not, and
+		// writing a new one over an existing one would lose its history.
+		return fmt.Errorf("reading asset metadata: status %d: %s", resp.StatusCode, strings.TrimSpace(string(existing[:min(len(existing), 512)])))
 	} else if value, err = json.Marshal(marker); err != nil {
 		return err
 	}
