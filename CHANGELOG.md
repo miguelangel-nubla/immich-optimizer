@@ -2,6 +2,30 @@
 
 What changes for someone who runs the optimizer: behaviour, settings, files. The release notes on GitHub list every commit as well.
 
+## 0.4.0 (2026-11-22)
+
+The first stable release of the 0.4 series, and the first one that moves `:latest` to it. The program is the same as 0.4.0-beta.1. The documentation was reorganised: library mode now has a second page, [How library mode works](docs/library-details.md).
+
+**Upgrading from 0.3 or earlier, or from immich-upload-optimizer, is not a drop-in change.** Go through the [migration guide](docs/migration.md) before you update. The points that stop a container from starting, or change what it does (some were already in the 0.3 betas):
+
+- **`IO_MODE` has to be set.** There is no default mode.
+- **Settings are named `IO_...`.** The `IUO_...` names are not read any more: a variable left at its old name is silently ignored, and an old flag stops the optimizer at startup. Settings that hold a time are durations (`90s`), not a number of seconds.
+- **The container runs as user id `1001`**, not root, and needs a writable folder mounted at `/undone`.
+- **Tasks files:** `{{.folder}}` is gone. The input is in `{{.src_folder}}` and the command must leave exactly one file in `{{.dst_folder}}`.
+- **Only the current Immich (3.x) is supported.**
+
+What is new since 0.3, in short:
+
+- **Library mode** converts the assets already in Immich. You choose them in Immich with the tag `immich-optimizer/convert`; each original goes to Immich's trash only after its converted copy has everything the original had. See [docs/library.md](docs/library.md).
+- **The mobile app no longer uploads converted photos again.** The proxy tells the app the checksum of each original, without keeping a database. See [docs/proxy.md](docs/proxy.md#the-mobile-app).
+- **Downloads are converted back**: with the bundled profiles, an original stored as JPEG XL is downloaded as JPEG.
+- **A failed conversion never uploads the original in its place.** It is kept in the undone folder, with the reason.
+- **A conversion is no longer cut off** when the client disconnects or a timeout passes.
+- **Every converted asset carries a marker** in Immich that records its original, and every operation is written to a persistent audit log.
+- **Motion photos and HDR photos** are handled by the `motion_photos` and `gain_maps` settings of the tasks file.
+
+The entries below, and the release notes of the v0.4.0-dev releases, have the details.
+
 ## 0.4.0-beta.1 (2026-11-22)
 
 Changes since v0.4.0-dev.7. For what changed from 0.3.0-beta.5 to dev.7, see the release notes of the v0.4.0-dev releases.
