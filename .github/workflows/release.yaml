@@ -1,61 +1,67 @@
 name: Release
 
-# Real releases only: runs when a tag is pushed (pre-release tags such as
+# Real releases only: runs when a v* tag is pushed (pre-release tags such as
 # v1.2.3-beta.1 included). Pull requests and branches are covered by ci.yaml,
 # dev builds by dev.yaml.
 on:
   push:
     tags:
-      - '*'
+      - 'v*'
 
+# Read-only by default: only the job that publishes gets write access.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  # The same checks as every push (ci.yaml), on the tagged commit: lint,
+  # formatting, vet, unit tests, vulnerabilities, GoReleaser config, the
+  # profile integration tests and the end-to-end tests. The long video test
+  # runs only when what it tests changed since the previous release tag.
+  ci:
+    uses: ./.github/workflows/ci.yaml
+    permissions:
+      contents: read
+
   release:
+    needs: ci
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: 'go.mod'
-          check-latest: true
-
-      - name: Run quality checks
-        run: |
-          go mod verify
-          go vet ./...
-          go test -race ./...
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: v2.20.3
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -5,10 +5,15 @@
 # metadata that cjxl and vips write into JPEG XL files; Immich's own exiftool
 # has it too.
 #
-#   EXIFTOOL_VERSION=13.59 sh install-exiftool.sh
+#   EXIFTOOL_VERSION=13.59 EXIFTOOL_SHA256=<sha256 of that version's tarball> sh install-exiftool.sh
+#
+# EXIFTOOL_SHA256 is the checksum of
+# https://github.com/exiftool/exiftool/archive/refs/tags/<version>.tar.gz and
+# must be updated together with the version.
 set -eu
 
 : "${EXIFTOOL_VERSION:?set EXIFTOOL_VERSION}"
+: "${EXIFTOOL_SHA256:?set EXIFTOOL_SHA256 to the sha256 of the ExifTool tarball}"
 BROTLI_MODULE_VERSION="${BROTLI_MODULE_VERSION:-0.023}"
 
 if command -v apk >/dev/null 2>&1; then
@@ -31,6 +36,7 @@ fi
 work="$(mktemp -d)"
 curl -fsSL -o "$work/exiftool.tar.gz" \
     "https://github.com/exiftool/exiftool/archive/refs/tags/${EXIFTOOL_VERSION}.tar.gz"
+echo "${EXIFTOOL_SHA256}  $work/exiftool.tar.gz" | sha256sum -c -
 tar xzf "$work/exiftool.tar.gz" -C "$work"
 cd "$work/exiftool-${EXIFTOOL_VERSION}"
 perl Makefile.PL >/dev/null

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by the test scripts. It reads .dev.env from the top of the checkout,
 # if there is one: a file of your own (not in git) that says where things are
 # on this machine, so that it need not be typed with every command.

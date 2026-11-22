@@ -1,5 +1,7 @@
+# Base images are pinned by digest (the multi-arch index) so a rebuild uses
+# exactly the same base; Dependabot proposes digest updates.
 # Builder stage for downloading caesium-clt
-FROM ubuntu:24.04 AS builder
+FROM ubuntu:24.04@sha256:9c7f200c07e3d4a03e7249d2c16bf66a51120fb876aa2242cf31451412543289 AS builder
 
 # Install required packages with security updates
 RUN apt-get update && \
@@ -15,22 +17,27 @@ ARG TARGETPLATFORM
 ARG CAESIUM_GITHUB_REPO=Lymphatus/caesium-clt
 # Pinned so that image rebuilds do not change conversion results. Check the
 # flags used by the bundled profiles before bumping it.
+# The checksums are those of this version's release tarballs: update them
+# together with CAESIUM_VERSION (sha256sum of each downloaded asset).
 ARG CAESIUM_VERSION=v1.5.0
+ARG CAESIUM_SHA256_AMD64=215a9e9ecde54d1ca5701ee0299d0916aa0a153b8ecd63ca0e832c8efdca2cd5
+ARG CAESIUM_SHA256_ARM64=77ed209433c20c4b46c107609641340941a2197019f9508d57c70d398dd956b1
 RUN set -eux; \
     case "$TARGETPLATFORM" in \
-    "linux/amd64") CAESIUM_ARCH=x86_64-unknown-linux-musl ;; \
-    "linux/arm64") CAESIUM_ARCH=aarch64-unknown-linux-musl ;; \
+    "linux/amd64") CAESIUM_ARCH=x86_64-unknown-linux-musl; CAESIUM_SHA256=${CAESIUM_SHA256_AMD64} ;; \
+    "linux/arm64") CAESIUM_ARCH=aarch64-unknown-linux-musl; CAESIUM_SHA256=${CAESIUM_SHA256_ARM64} ;; \
     *) echo "Platform $TARGETPLATFORM not supported by ${CAESIUM_GITHUB_REPO}"; exit 1 ;; \
     esac; \
     CAESIUM_ARCHIVE=caesiumclt-${CAESIUM_VERSION}-${CAESIUM_ARCH}; \
     curl -fsSL -o "/tmp/${CAESIUM_ARCHIVE}.tar.gz" \
     "https://github.com/$CAESIUM_GITHUB_REPO/releases/download/${CAESIUM_VERSION}/${CAESIUM_ARCHIVE}.tar.gz"; \
+    echo "${CAESIUM_SHA256}  /tmp/${CAESIUM_ARCHIVE}.tar.gz" | sha256sum -c -; \
     tar xzf "/tmp/${CAESIUM_ARCHIVE}.tar.gz" -C /tmp; \
     install -m 755 "/tmp/${CAESIUM_ARCHIVE}/caesiumclt" /usr/local/bin/caesiumclt; \
     caesiumclt --version
 
 # Runtime stage
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 # Create non-root user for security
 RUN groupadd -r appuser && \
@@ -59,29 +66,34 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Pinned ExifTool with Brotli support, the same in every image. See the script.
+# The checksum is that of this version's source tarball: update it together
+# with EXIFTOOL_VERSION.
 ARG EXIFTOOL_VERSION=13.59
+ARG EXIFTOOL_SHA256=87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac
 COPY docker/install-exiftool.sh /tmp/install-exiftool.sh
-RUN EXIFTOOL_VERSION=${EXIFTOOL_VERSION} sh /tmp/install-exiftool.sh && rm /tmp/install-exiftool.sh
+RUN EXIFTOOL_VERSION=${EXIFTOOL_VERSION} EXIFTOOL_SHA256=${EXIFTOOL_SHA256} sh /tmp/install-exiftool.sh && rm /tmp/install-exiftool.sh
 
 # Copy caesium-clt from builder
 COPY --from=builder /usr/local/bin/caesiumclt /usr/local/bin/caesiumclt
 
-# Create directories with proper permissions
+# Only what the optimizer writes belongs to its user. The program and its
+# configuration stay root's: a conversion tool that a crafted file takes over
+# runs as appuser and must not be able to change what runs next time.
 RUN mkdir -p /etc/immich-optimizer/config \
     /etc/immich-optimizer/bundled-configs \
     /watch \
     /undone && \
-    chown -R appuser:appuser /etc/immich-optimizer /watch /undone
+    chown appuser:appuser /watch /undone
 
 # Copy configuration files
-COPY --chown=appuser:appuser config/lossless /etc/immich-optimizer/config
-COPY --chown=appuser:appuser config /etc/immich-optimizer/bundled-configs
+COPY config/lossless /etc/immich-optimizer/config
+COPY config /etc/immich-optimizer/bundled-configs
 
 # Copy the binary built for this platform. The build context holds one per
 # platform, as <os>/<arch>/immich-optimizer (see scripts/build-image.sh).
 ARG TARGETPLATFORM
-COPY --chown=appuser:appuser $TARGETPLATFORM/immich-optimizer /usr/local/bin/
-RUN chmod +x /usr/local/bin/immich-optimizer
+COPY $TARGETPLATFORM/immich-optimizer /usr/local/bin/
+RUN chmod 755 /usr/local/bin/immich-optimizer
 
 # Add metadata labels
 LABEL \

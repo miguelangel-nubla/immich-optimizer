@@ -29,7 +29,13 @@ set -euo pipefail
 [ "$(uname)" = Darwin ] || { echo "the iOS simulator only exists on macOS" >&2; exit 1; }
 
 APP_VERSION="${IMMICH_APP_VERSION:-v3.4.2}"
-IDB_VERSION="${IO_IDB_VERSION:-v1.7.8}"
+IDB_VERSION="v1.7.8"
+# Downloads are checked against these. Update a checksum with its version.
+MISE_VERSION="v2026.11.4"
+MISE_SHA256_ARM64="21c269cd3c88e31c56aad7f7ccd9916b6fa78683937d93e5d17129b783d6f962"
+MISE_SHA256_X64="f16f34e9dc498ce23af603ef0066638258d9659896b84087ff1ce1585c012238"
+IDB_COMPANION_SHA256="44369a2df0b62e3a1764de61bd09280999c7e9b27ea8f20bff1ea3a9db0302a2" # v1.7.8
+IDB_WHEEL_SHA256="ed8557a4c54ffee53006c1fe63f070cda567949312ab24be56faf987c5a3d04b"      # v1.7.8
 DIR="${IO_IOS_DIR:-${IO_DEV_DIR:+$IO_DEV_DIR/ios}}"
 DIR="${DIR:-$HOME/Library/Caches/immich-optimizer-ios}"
 DEVICES="${IO_IOS_DEVICES:-$HOME/Library/Caches/immich-optimizer-ios-simulators}"
@@ -59,6 +65,11 @@ bg() {
   fi
 }
 sim() { xcrun simctl --set "$DEVICES" "$@"; }
+# fetch downloads a URL to a file and checks its SHA-256.
+fetch() {
+  curl -fsSL -o "$2" "$1"
+  echo "$3  $2" | shasum -a 256 -c - >/dev/null || { echo "checksum mismatch for $1" >&2; rm -f "$2"; exit 1; }
+}
 step() { echo "== $*"; }
 
 udid() { sim list devices 2>/dev/null | sed -n "s/^ *$DEVICE_NAME (\([0-9A-F-]*\)).*/\1/p" | head -1; }
@@ -74,8 +85,8 @@ build() {
 
   if [ ! -x "$DIR/bin/mise" ]; then
     step "mise (the tool manager Immich's build uses)"
-    tag="$(curl -fsSL https://api.github.com/repos/jdx/mise/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
-    curl -fsSL -o "$DIR/bin/mise" "https://github.com/jdx/mise/releases/download/$tag/mise-$tag-macos-$( [ "$(uname -m)" = arm64 ] && echo arm64 || echo x64)"
+    if [ "$(uname -m)" = arm64 ]; then arch=arm64 sum="$MISE_SHA256_ARM64"; else arch=x64 sum="$MISE_SHA256_X64"; fi
+    fetch "https://github.com/jdx/mise/releases/download/$MISE_VERSION/mise-$MISE_VERSION-macos-$arch" "$DIR/bin/mise" "$sum"
     chmod +x "$DIR/bin/mise"
   fi
   if [ "$(git -C "$SRC" describe --tags 2>/dev/null)" != "$APP_VERSION" ]; then
@@ -105,12 +116,14 @@ build() {
 
 idb_tools() {
   [ -x "$COMPANION" ] && [ -x "$IDB" ] && return
+  # idb publishes its companion for Apple silicon only.
+  [ "$(uname -m)" = arm64 ] || { echo "idb_companion is only published for Apple silicon Macs" >&2; exit 1; }
   step "idb $IDB_VERSION"
   mkdir -p "$DIR/idb"
   base="https://github.com/facebook/idb/releases/download/$IDB_VERSION"
-  curl -fsSL "$base/idb-companion.macos-arm64.tar.gz" | tar xz -C "$DIR/idb"
-  curl -fsSL -o "$DIR/idb/fb_idb.whl" "$base/fb_idb-${IDB_VERSION#v}-py3-none-any.whl"
-  mv "$DIR/idb/fb_idb.whl" "$DIR/idb/fb_idb-${IDB_VERSION#v}-py3-none-any.whl"
+  fetch "$base/idb-companion.macos-arm64.tar.gz" "$DIR/idb/companion.tar.gz" "$IDB_COMPANION_SHA256"
+  tar xzf "$DIR/idb/companion.tar.gz" -C "$DIR/idb" && rm "$DIR/idb/companion.tar.gz"
+  fetch "$base/fb_idb-${IDB_VERSION#v}-py3-none-any.whl" "$DIR/idb/fb_idb-${IDB_VERSION#v}-py3-none-any.whl" "$IDB_WHEEL_SHA256"
   python3 -m venv "$DIR/idb/venv"
   "$DIR/idb/venv/bin/pip" install -q "$DIR/idb/fb_idb-${IDB_VERSION#v}-py3-none-any.whl"
 }

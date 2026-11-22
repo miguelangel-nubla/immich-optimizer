@@ -1,13 +1,21 @@
 # Runs the image built from this checkout: scripts/build-image.sh builds
 # immich-optimizer:local.
+#
+# Settings go in .env (optional). On Linux, create the folders first and give
+# them to the user the optimizer runs as, or Docker creates them for root and
+# the optimizer refuses to start:
+#   mkdir -p watch undone && sudo chown 1001 watch undone
 services:
   immich-optimizer:
     image: immich-optimizer:local
     env_file:
-      - .env
+      - path: .env
+        required: false
     ports:
       - "2283:2283"
     volumes:
       - ./watch:/watch
       - ./undone:/undone
+    # Time for running jobs on shutdown: IO_SHUTDOWN_TIMEOUT plus 5 seconds.
+    stop_grace_period: 10s
     restart: unless-stopped

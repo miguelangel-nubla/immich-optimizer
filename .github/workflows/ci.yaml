@@ -1,11 +1,14 @@
 name: CI
 
 # Checks only: nothing is published and no registry is logged into.
+# release.yaml calls this workflow too, so a tag is published only after the
+# same checks pass on the tagged commit.
 on:
   pull_request:
   push:
     branches:
       - '**'
+  workflow_call:
 
 permissions:
   contents: read
@@ -20,13 +23,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: 'go.mod'
-          check-latest: true
 
       - name: Verify modules
         run: go mod verify
@@ -50,9 +52,16 @@ jobs:
         run: go test -race ./...
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
+
+      # The shell scripts and the workflows themselves. shellcheck comes with
+      # the runner.
+      - name: Lint scripts and workflows
+        run: |
+          shellcheck -S warning scripts/*.sh docker/*.sh
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck= -pyflakes=
 
       # Known vulnerabilities in the Go version and the modules, in code the
       # optimizer actually calls. Most fixes are a newer Go patch release in
@@ -65,30 +74,29 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: 'go.mod'
-          check-latest: true
 
       - name: Check GoReleaser configs
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: v2.20.3
           args: check .goreleaser.yaml .goreleaser.dev.yaml
         env:
           IMAGE_OWNER: ci
 
       - name: Build snapshot binaries
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: v2.20.3
           args: build --snapshot --clean
 
   # Runs the bundled profiles' real commands (cjxl, caesiumclt, vips, magick,
@@ -100,13 +108,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: 'go.mod'
-          check-latest: true
 
       - name: Vet integration tests
         run: go vet -tags integration ./cmd/optimizer
@@ -127,13 +134,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: 'go.mod'
-          check-latest: true
 
       - name: Vet end-to-end tests
         run: go vet -tags e2e ./e2e/
@@ -144,15 +150,28 @@ jobs:
       # The video test transcodes real phone clips for several minutes. It
       # runs when what it tests has changed (the profiles, the image, the
       # test itself), and always on main, so a change whose own run was
-      # cancelled by a later push is still tested before a release.
+      # cancelled by a later push is still tested before a release. For a
+      # release tag (called from release.yaml) the change is the one since the
+      # newest other release tag.
       - name: Is the video test needed?
         id: video
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
+          case "$GITHUB_REF" in
+            refs/tags/*)
+              # The checkout is shallow: take the newest other v* tag by
+              # version, without walking history, and fetch just that commit.
+              BASE="$(git ls-remote -q --tags --refs origin 'v*' | sed 's#.*refs/tags/##' \
+                | grep -vxF "${GITHUB_REF#refs/tags/}" | sort -rV | head -n1 || true)"
+              if [ -n "$BASE" ]; then
+                git fetch -q --depth=1 origin "refs/tags/$BASE:refs/tags/$BASE" 2>/dev/null || BASE=
+              fi
+              ;;
+          esac
           run=1
           if [ "$GITHUB_REF" != refs/heads/main ] && [ -n "$BASE" ] && git fetch -q --depth=1 origin "$BASE" 2>/dev/null; then
-            if ! git diff --name-only "$BASE" HEAD | grep -qE '^(config/|Dockerfile|e2e/video_test\.go)'; then
+            if ! git diff --name-only "$BASE" HEAD | grep -qE '^(config/|Dockerfile|docker/|scripts/build-image\.sh|e2e/video_test\.go)'; then
               run=
             fi
           fi
@@ -169,13 +188,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: 'go.mod'
-          check-latest: true
 
       - name: Allow the emulator to use KVM
         run: |

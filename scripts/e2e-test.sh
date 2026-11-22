@@ -70,7 +70,7 @@ curl -fs -m 5 "http://127.0.0.1:$E2E_PORT/api/server/ping" >/dev/null || { "${CO
 
 if [ -n "${E2E_ANDROID:-}" ]; then
   ANDROID_SERIAL="$(scripts/android-emulator.sh serial)"
-  if ! "$ANDROID_HOME/platform-tools/adb" devices | grep -q "^$ANDROID_SERIAL[[:space:]]*device"; then
+  if ! "$ANDROID_HOME/platform-tools/adb" devices | grep -q "^${ANDROID_SERIAL}[[:space:]]*device"; then
     ANDROID_STARTED=1
     scripts/android-emulator.sh up
   fi
@@ -81,7 +81,7 @@ if [ -n "${E2E_IOS:-}" ]; then
     IOS_STARTED=1
     scripts/ios-simulator.sh up
   fi
-  while read -r line; do export "$line"; done < <(scripts/ios-simulator.sh env)
+  while read -r line; do export "${line?}"; done < <(scripts/ios-simulator.sh env)
 fi
 
 E2E_ANDROID_SERIAL="$ANDROID_SERIAL" \

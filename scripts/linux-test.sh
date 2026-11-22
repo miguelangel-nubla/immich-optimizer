@@ -26,16 +26,19 @@ fi
 # tests run as an ordinary user: some check what happens without permission.
 # --init reaps what the tests kill (the processor's tests check that a task's
 # whole process tree is gone). The arguments reach the inner shell quoted,
-# whatever they contain.
+# whatever they contain: quoted by bash's printf %q, so read by bash (the
+# tester's shell). Build leftovers (dist/, compiled tests) are not copied.
 QUOTED="$(printf '%q ' "${ARGS[@]}")"
 docker run --rm --init --cpus "${IO_TEST_CPUS:-2}" --memory "${IO_TEST_MEMORY:-2g}" \
   -v "$PWD:/src:ro" -v io-test-gomod:/go/pkg/mod -v io-test-gocache:/cache \
   -e GOFLAGS=-buildvcs=false -e "TEST_ARGS=$QUOTED" \
   "golang:${GO_VERSION%.*}" bash -c '
     set -e
-    useradd -m tester 2>/dev/null || true
+    useradd -m -s /bin/bash tester 2>/dev/null || true
     chown -R tester /go/pkg/mod /cache
-    cp -r /src /home/tester/src && chown -R tester /home/tester/src
+    mkdir -p /home/tester/src
+    tar -C /src --exclude=./dist --exclude="*.test" --exclude=./.git -cf - . | tar -C /home/tester/src -xf -
+    chown -R tester /home/tester/src
     cd /home/tester/src
     exec su tester -c "PATH=/usr/local/go/bin:\$PATH GOCACHE=/cache GOMODCACHE=/go/pkg/mod GOFLAGS=-buildvcs=false go test -race $TEST_ARGS"
   '
