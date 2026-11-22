@@ -368,12 +368,14 @@ func (s *Server) startJob(spec jobSpec, async bool) (*job, bool) {
 }
 
 // clientFollowsRedirects tells a browser from every other client. Browsers
-// add Sec-Fetch-Mode to every request, and a script cannot set it; the Immich
-// web app uploads with XMLHttpRequest, whose Accept is only "*/*". Other
-// clients (the mobile app, the CLI, immich-go) do not follow a redirect of an
-// upload, so they are answered on the request itself.
+// add Sec-Fetch-Dest to every request, and a script cannot set it; the Immich
+// web app uploads with XMLHttpRequest, whose Accept is only "*/*". Node's
+// fetch, which the Immich CLI uses, sends Sec-Fetch-Mode but not
+// Sec-Fetch-Dest. Other clients (the mobile app, the CLI, immich-go) do not
+// all follow a redirect of an upload, so they are answered on the request
+// itself.
 func (s *Server) clientFollowsRedirects(r *http.Request) bool {
-	return r.Header.Get("Sec-Fetch-Mode") != "" || strings.Contains(r.Header.Get("Accept"), "text/html")
+	return r.Header.Get("Sec-Fetch-Dest") != "" || strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 func (s *Server) continueJob(w http.ResponseWriter, r *http.Request) {

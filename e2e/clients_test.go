@@ -6,7 +6,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -16,6 +19,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Clients other than the web and mobile apps, through the proxy. The versions
@@ -23,6 +27,8 @@ import (
 const (
 	cliImage        = "ghcr.io/immich-app/immich-cli:3.4.2"
 	immichGoVersion = "v0.32.0"
+	// Chrome without a display, driven over its DevTools HTTP endpoints.
+	chromeImage = "chromedp/headless-shell:158.0.8117.2"
 )
 
 // converted checks that the user has exactly n assets and that each is a
@@ -230,4 +236,112 @@ func TestProxySharedLinkUpload(t *testing.T) {
 			t.Errorf("an upload without credentials was accepted: %d", resp.StatusCode)
 		}
 	}
+}
+
+// An upload as the Immich web app makes it (XMLHttpRequest, no Accept), from
+// a real browser. A browser gets the keep-alive redirect, so a reverse proxy's
+// response timeout cannot cut a long conversion short: it follows the 303
+// with a GET, without sending the file again, and receives Immich's answer.
+//
+// Chrome sends the Sec-Fetch headers the proxy recognises a browser by only
+// to a trustworthy address (HTTPS, or localhost), so it shares the optimizer's
+// network and reaches the proxy as localhost.
+func TestProxyBrowserUpload(t *testing.T) {
+	u := newUser(t)
+	undone := sharedDir(t)
+	name, _ := startOptimizer(t, map[string]string{"IO_MODE": "proxy"}, true, undone+":/undone", "--publish=127.0.0.1::9222")
+
+	chrome := "io-e2e-chrome-" + randomName()
+	if out, err := exec.Command("docker", "run", "-d", "--name", chrome, "--network", "container:"+name,
+		chromeImage, "--disable-web-security", "--user-data-dir=/tmp/profile").CombinedOutput(); err != nil {
+		t.Fatalf("starting Chrome: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", chrome).Run() })
+	out, err := exec.Command("docker", "port", name, "9222/tcp").Output()
+	if err != nil {
+		t.Fatalf("docker port: %v", err)
+	}
+	devtools := "http://" + strings.TrimSpace(strings.Split(string(out), "\n")[0])
+	for deadline := time.Now().Add(time.Minute); ; {
+		if resp, err := httpc.Get(devtools + "/json/version"); err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Chrome did not come up")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	data, err := os.ReadFile(filepath.Join(mediaDir, "photo.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The page reports the outcome in its title, which /json/list shows.
+	page := fmt.Sprintf(`<script>
+const bytes = Uint8Array.from(atob(%q), c => c.charCodeAt(0));
+const fd = new FormData();
+fd.append("deviceAssetId", "web-1");
+fd.append("deviceId", "WEB");
+fd.append("fileCreatedAt", "2019-03-04T05:06:07.000Z");
+fd.append("fileModifiedAt", "2019-03-04T05:06:07.000Z");
+fd.append("assetData", new Blob([bytes], {type: "image/jpeg"}), "photo.jpg");
+const x = new XMLHttpRequest();
+x.open("POST", "http://localhost:2283/api/assets");
+x.setRequestHeader("x-api-key", %q);
+x.responseType = "json";
+x.onload = () => { document.title = "done " + JSON.stringify({status: x.status, url: x.responseURL}); };
+x.onerror = () => { document.title = "done " + JSON.stringify({status: -1}); };
+x.send(fd);
+</script>`, base64.StdEncoding.EncodeToString(data), u.keyS)
+	req, _ := http.NewRequest(http.MethodPut, devtools+"/json/new?data:text/html;base64,"+base64.StdEncoding.EncodeToString([]byte(page)), nil)
+	resp, err := httpc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("opening the page: status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Status int    `json:"status"`
+		URL    string `json:"url"`
+	}
+	for deadline := time.Now().Add(2 * time.Minute); result.Status == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the browser's upload did not finish")
+		}
+		time.Sleep(time.Second)
+		var targets []struct {
+			Type  string `json:"type"`
+			Title string `json:"title"`
+		}
+		resp, err := httpc.Get(devtools + "/json/list")
+		if err != nil {
+			continue
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&targets)
+		resp.Body.Close()
+		for _, tg := range targets {
+			// The title comes HTML-escaped.
+			if title := html.UnescapeString(tg.Title); tg.Type == "page" && strings.HasPrefix(title, "done ") {
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(title, "done ")), &result); err != nil {
+					t.Fatalf("page title %q: %v", tg.Title, err)
+				}
+			}
+		}
+	}
+	if result.Status != http.StatusCreated {
+		t.Fatalf("the browser's upload: status %d", result.Status)
+	}
+	if !strings.Contains(result.URL, "/_immich-optimizer/wait?job=") {
+		t.Errorf("the browser was answered at %s, not through the keep-alive redirect", result.URL)
+	}
+	for _, a := range u.live(t) {
+		u.waitReady(t, a.ID)
+	}
+	u.converted(t, 1)
 }

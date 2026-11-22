@@ -236,11 +236,13 @@ func TestProxyUploadNonMatchingExtensionBlocked(t *testing.T) {
 }
 
 // asyncReq is an upload as the Immich web app sends it: XMLHttpRequest, whose
-// Accept is "*/*", from a browser, which adds Sec-Fetch-Mode.
+// Accept is "*/*", from a browser, which adds the Sec-Fetch headers.
 func asyncReq(t *testing.T, filename, content string) *http.Request {
 	req := uploadReq(t, filename, content)
 	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	return req
 }
@@ -335,10 +337,12 @@ func TestClientFollowsRedirects(t *testing.T) {
 		headers map[string]string
 		want    bool
 	}{
-		{"web app (XMLHttpRequest)", map[string]string{"Accept": "*/*", "Sec-Fetch-Mode": "cors", "User-Agent": "Mozilla/5.0"}, true},
+		// As Chrome sends it.
+		{"web app (XMLHttpRequest)", map[string]string{"Accept": "*/*", "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty", "User-Agent": "Mozilla/5.0"}, true},
 		{"HTML form", map[string]string{"Accept": "text/html,application/xhtml+xml", "User-Agent": "Mozilla/5.0"}, true},
 		{"mobile app", map[string]string{"Accept": "*/*", "User-Agent": "Dart/3.5 (dart:io)"}, false},
-		{"Immich CLI", map[string]string{"Accept": "*/*", "User-Agent": "node"}, false},
+		// Node's fetch, as the Immich CLI 3.4.2 sends it.
+		{"Immich CLI", map[string]string{"Accept": "*/*", "Sec-Fetch-Mode": "cors", "User-Agent": "node"}, false},
 		{"immich-go", map[string]string{"Accept": "application/json", "User-Agent": "immich-go"}, false},
 		{"curl", map[string]string{"Accept": "*/*", "User-Agent": "curl/8.7.1"}, false},
 	}
