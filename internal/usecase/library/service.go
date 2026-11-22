@@ -916,7 +916,7 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 		rb.Event, rb.NewAsset, rb.Detail = "rolled_back", newID, err.Error()
 		if derr := s.api.Delete(context.WithoutCancel(ctx), []string{newID}); derr != nil {
 			rb.Event = "rollback_failed"
-			rb.Detail = fmt.Sprintf("%v; and deleting the new asset failed: %v. A later check will remove it.", err, derr)
+			rb.Detail = fmt.Sprintf("%v; and deleting the new asset failed: %v. A later check will settle it.", err, derr)
 		} else {
 			t.RolledBack++
 		}

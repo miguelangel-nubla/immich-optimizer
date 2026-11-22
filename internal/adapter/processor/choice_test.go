@@ -140,3 +140,20 @@ func TestGainMapsDrop(t *testing.T) {
 		t.Errorf("an ordinary photo was changed: dropped %v, %d bytes", res2.GainMapDropped, res2.ProcessedSize)
 	}
 }
+
+// Download tasks are for compatibility: the first that works is used, also
+// when its result is bigger.
+func TestDownloadUsesFirstWorkingTask(t *testing.T) {
+	in := inputFile(t, "a.jpg", []byte("a photo of a few dozen bytes, for the tasks to work on"))
+	ctx := entity.WithTaskInfo(context.Background(), entity.TaskInfo{Source: entity.SourceDownload})
+	res, err := NewLocalProcessor(nil, "").Process(ctx, in, []entity.Task{
+		jpgTask("grows", growCommand), jpgTask("shrinks", shrinkCommand),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Cleanup()
+	if res.Task != "grows" {
+		t.Errorf("download used %s, want the first task", res.Task)
+	}
+}

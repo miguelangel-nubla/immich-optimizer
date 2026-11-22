@@ -114,3 +114,18 @@ func FuzzExtractTargets(f *testing.F) {
 		}
 	})
 }
+
+func TestUpstreamTargetKeepsEscapes(t *testing.T) {
+	for _, c := range []struct{ base, req, want string }{
+		{"http://immich:2283", "/api/x/a%2Fb?q=1", "http://immich:2283/api/x/a%2Fb?q=1"},
+		{"http://host/immich/", "/api/assets", "http://host/immich/api/assets"},
+		{"http://immich", "/api/a%20b", "http://immich/api/a%20b"},
+	} {
+		base, _ := url.Parse(c.base)
+		req, _ := url.Parse(c.req)
+		s := &Server{cfg: Config{UpstreamURL: base}}
+		if got := s.upstreamTarget(req); got != c.want {
+			t.Errorf("%s + %s = %s, want %s", c.base, c.req, got, c.want)
+		}
+	}
+}

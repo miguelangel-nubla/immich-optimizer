@@ -544,8 +544,14 @@ var hopHeaders = []string{"Content-Length", "Connection", "Keep-Alive", "Transfe
 // in its request line, and that one must never be the one contacted.
 func (s *Server) upstreamTarget(u *url.URL) string {
 	t := *s.cfg.UpstreamURL
-	t.Path = strings.TrimRight(t.Path, "/") + "/" + strings.TrimLeft(u.Path, "/")
-	t.RawPath = ""
+	// The escaped form is joined, so that an escaped "/" in the request's
+	// path stays one.
+	raw := strings.TrimRight(t.EscapedPath(), "/") + "/" + strings.TrimLeft(u.EscapedPath(), "/")
+	if p, err := url.PathUnescape(raw); err == nil {
+		t.Path, t.RawPath = p, raw
+	} else {
+		t.Path, t.RawPath = strings.TrimRight(t.Path, "/")+"/"+strings.TrimLeft(u.Path, "/"), ""
+	}
 	t.RawQuery = u.RawQuery
 	t.Fragment = ""
 	return t.String()

@@ -100,6 +100,7 @@ func (fp *fileProcessor) logf(str string, args ...any) {
 }
 
 func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []entity.Task) (*entity.ProcessResult, error) {
+	download := entity.TaskInfoFrom(ctx).Source == entity.SourceDownload
 	originalFile, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("unable to open file: %w", err)
@@ -169,8 +170,9 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 		attempts = append(attempts, attempt)
 		// A command whose result is not smaller: a later task may do better.
 		// Until one does, the first such result stands. A task without a
-		// command (upload as it is) is always the answer.
-		if strings.TrimSpace(task.Command) != "" && result.ProcessedSize >= result.OriginalSize && (kept != nil || fp.anyTakes(tasks[i+1:])) {
+		// command (upload as it is) is always the answer. Download tasks are
+		// for compatibility, not size: the first that works is used.
+		if !download && strings.TrimSpace(task.Command) != "" && result.ProcessedSize >= result.OriginalSize && (kept != nil || fp.anyTakes(tasks[i+1:])) {
 			if kept == nil {
 				if kept, err = fp.keepAside(result); err != nil {
 					return nil, err

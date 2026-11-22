@@ -461,3 +461,53 @@ func TestConvertRefusesAnInvalidResult(t *testing.T) {
 		t.Errorf("CheckOutput checked again: %v", err)
 	}
 }
+
+// slowChecker blocks until its context ends, and reports how many checks
+// ran at once.
+type slowChecker struct {
+	mu        sync.Mutex
+	now, most int
+}
+
+func (c *slowChecker) CheckSize(context.Context, string, string) error { return nil }
+
+func (c *slowChecker) Check(ctx context.Context, _, _ string) error {
+	c.mu.Lock()
+	c.now++
+	c.most = max(c.most, c.now)
+	c.mu.Unlock()
+	<-ctx.Done()
+	c.mu.Lock()
+	c.now--
+	c.mu.Unlock()
+	return ctx.Err()
+}
+
+// The checks of a result decode the whole file: they hold a conversion slot
+// and end with the task timeout.
+func TestConvertChecksAreLimited(t *testing.T) {
+	chk := &slowChecker{}
+	proc := &fakeProc{fn: func(context.Context, string) (*entity.ProcessResult, error) {
+		out, cleanup, _ := output(t, "file.jxl", 10)
+		return &entity.ProcessResult{ProcessedFilePath: out, ProcessedFilename: "file.jxl", OriginalSize: 100, ProcessedSize: 10, Cleanup: cleanup}, nil
+	}}
+	e := New(Config{Tasks: jpgTasks, MaxConcurrent: 1, TaskTimeout: 50 * time.Millisecond, Checker: chk}, proc, &fakeStore{}, quiet())
+	var wg sync.WaitGroup
+	errs := make([]error, 3)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = e.Convert(context.Background(), input(t, 100))
+		}()
+	}
+	wg.Wait()
+	if chk.most != 1 {
+		t.Errorf("%d checks ran at once with one slot", chk.most)
+	}
+	for _, err := range errs {
+		if !errors.Is(err, entity.ErrTaskTimeout) {
+			t.Errorf("a check that never ends: %v, want the task timeout", err)
+		}
+	}
+}

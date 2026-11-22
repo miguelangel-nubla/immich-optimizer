@@ -26,6 +26,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/miguelangel-nubla/immich-optimizer/internal/utils"
 )
 
 // flatStdDev is the brightness spread (0-255 scale) below which a picture
@@ -169,6 +171,8 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stderr = &stderr
+	// The decoders read untrusted files: they get no secrets.
+	cmd.Env = utils.EnvWithoutSecrets(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		msg := strings.TrimSpace(stderr.String())

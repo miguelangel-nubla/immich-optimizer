@@ -204,6 +204,20 @@ func (x *logIndex) uploadingSince() (map[string]bool, time.Time) {
 	return out, oldest
 }
 
+// forgetUploading drops the converted files whose uploads have been looked
+// for and that were converted before the given time: an upload still under
+// way may not have shown up yet. Without this, a failed upload would widen
+// every later search of recent uploads.
+func (x *logIndex) forgetUploading(sums map[string]bool, before time.Time) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	for sha := range sums {
+		if at, ok := x.uploading[sha]; ok && at.Before(before) {
+			delete(x.uploading, sha)
+		}
+	}
+}
+
 func (x *logIndex) isKnown() bool {
 	x.mu.Lock()
 	defer x.mu.Unlock()

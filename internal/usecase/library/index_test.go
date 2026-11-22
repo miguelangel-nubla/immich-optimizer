@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeLog(t *testing.T, path, text string) {
@@ -119,5 +120,30 @@ func TestLogIndexPerUser(t *testing.T) {
 	// conversion is still something to go by for her.
 	if !carol.isKnown() {
 		t.Error("carol: the shared proxy conversion should count")
+	}
+}
+
+// A conversion whose upload never showed a result is looked for among the
+// recent uploads, but not forever: once looked for, an old one is dropped,
+// so that a failed upload does not widen every later search.
+func TestLogIndexForgetsLookedForUploads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	old := time.Now().Add(-3 * time.Hour).UTC().Format(time.RFC3339Nano)
+	recent := time.Now().UTC().Format(time.RFC3339Nano)
+	writeLog(t, path, `{"source":"library","event":"converted","time":"`+old+`","converted_sha1":"AAAA"}
+{"source":"library","event":"converted","time":"`+recent+`","converted_sha1":"bbbb"}
+`)
+	x := newLogIndex(path, "")
+	if err := x.refresh(); err != nil {
+		t.Fatal(err)
+	}
+	sums, _ := x.uploadingSince()
+	if len(sums) != 2 {
+		t.Fatalf("uploading = %v", sums)
+	}
+	x.forgetUploading(sums, time.Now().Add(-uploadSettle))
+	sums, since := x.uploadingSince()
+	if len(sums) != 1 || !sums["bbbb"] || time.Since(since) > time.Minute {
+		t.Errorf("after looking: %v since %v; want only the recent one", sums, since)
 	}
 }

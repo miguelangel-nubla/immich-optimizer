@@ -122,10 +122,16 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 		pctx, cancel = context.WithTimeoutCause(ctx, e.cfg.TaskTimeout, entity.ErrTaskTimeout)
 	}
 	pctx = entity.WithTaskInfo(pctx, entity.TaskInfo{OriginalName: in.Filename, Source: string(in.Source)})
+	// The slot and the timeout also cover the checks of the result below:
+	// they decode the whole photo or video.
+	var freeOnce sync.Once
+	free := func() { freeOnce.Do(func() { cancel(); <-e.sem }) }
+	defer free()
 	res, procErr := e.proc.Process(pctx, in.Path, e.cfg.Tasks)
 	timedOut := errors.Is(context.Cause(pctx), entity.ErrTaskTimeout)
-	cancel()
-	<-e.sem
+	if procErr != nil || res == nil {
+		free()
+	}
 
 	if procErr != nil {
 		if ctx.Err() != nil {
@@ -178,10 +184,14 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 		// truncated or broken file (a full disk). And a valid, much smaller
 		// file is exactly what a wrong conversion looks like too: the
 		// thumbnail of a photo instead of the photo.
-		err := e.cfg.Checker.Check(ctx, in.Path, res.ProcessedFilePath)
+		err := e.cfg.Checker.Check(pctx, in.Path, res.ProcessedFilePath)
 		if err == nil {
-			err = e.cfg.Checker.CheckSize(ctx, in.Path, res.ProcessedFilePath)
+			err = e.cfg.Checker.CheckSize(pctx, in.Path, res.ProcessedFilePath)
 		}
+		if err != nil && errors.Is(context.Cause(pctx), entity.ErrTaskTimeout) {
+			err = fmt.Errorf("%w (%s) while checking the result: %w", entity.ErrTaskTimeout, e.cfg.TaskTimeout, err)
+		}
+		free()
 		if err != nil {
 			release()
 			if ctx.Err() != nil {
@@ -191,6 +201,7 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 		}
 		checked = true
 	}
+	free()
 	if res.ProcessedSize < res.OriginalSize {
 		outExt := filepath.Ext(res.ProcessedFilename)
 		if outExt == "" {

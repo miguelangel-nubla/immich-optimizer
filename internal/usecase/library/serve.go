@@ -259,6 +259,10 @@ func (s *Service) recentPass(ctx context.Context, me string) error {
 	return nil
 }
 
+// uploadSettle is how long after its conversion an upload is still looked
+// for among the recent uploads: a large video takes a while to send.
+const uploadSettle = time.Hour
+
 // pendingPass settles the copies the audit log lists as unfinished.
 func (s *Service) pendingPass(ctx context.Context, me string) error {
 	if err := s.idx.refresh(); err != nil && s.log != nil {
@@ -268,6 +272,7 @@ func (s *Service) pendingPass(ctx context.Context, me string) error {
 	// A copy uploaded right before an interruption, whose upload the log
 	// does not show: found by its checksum among the recent uploads.
 	if sums, since := s.idx.uploadingSince(); len(sums) > 0 {
+		looked := time.Now()
 		recent, err := s.base.AssetsCreatedSince(ctx, since.Add(-uploadCheckMargin))
 		if err != nil {
 			return fmt.Errorf("listing recent uploads: %w", err)
@@ -286,6 +291,7 @@ func (s *Service) pendingPass(ctx context.Context, me string) error {
 				ids = append(ids, a.ID)
 			}
 		}
+		s.idx.forgetUploading(sums, looked.Add(-uploadSettle))
 	}
 	if len(ids) == 0 {
 		return nil
