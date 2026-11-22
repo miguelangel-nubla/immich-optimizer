@@ -235,9 +235,13 @@ func TestProxyUploadNonMatchingExtensionBlocked(t *testing.T) {
 	}
 }
 
+// asyncReq is an upload as the Immich web app sends it: XMLHttpRequest, whose
+// Accept is "*/*", from a browser, which adds Sec-Fetch-Mode.
 func asyncReq(t *testing.T, filename, content string) *http.Request {
 	req := uploadReq(t, filename, content)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
 	return req
 }
 
@@ -245,8 +249,8 @@ func startAsync(t *testing.T, s *Server, req *http.Request) (string, *job) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
-	if rec.Code != http.StatusTemporaryRedirect {
-		t.Fatalf("expected 307, got %d", rec.Code)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rec.Code)
 	}
 	loc := rec.Header().Get("Location")
 	if !strings.HasPrefix(loc, WaitPath+"?job=") {
@@ -261,7 +265,7 @@ func startAsync(t *testing.T, s *Server, req *http.Request) (string, *job) {
 
 func wait(s *Server, loc string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, loc, strings.NewReader("re-posted body")))
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, loc, nil))
 	return rec
 }
 
@@ -312,13 +316,41 @@ func TestProxyAsyncWaitRedirectsWhileRunning(t *testing.T) {
 	}
 	server := newTestServer(t, up.srv.URL, c, func(cfg *Config) { cfg.WaitPoll = 10 * time.Millisecond })
 	loc, j := startAsync(t, server, asyncReq(t, "image.jpg", "x"))
-	if rec := wait(server, loc); rec.Code != http.StatusTemporaryRedirect {
+	if rec := wait(server, loc); rec.Code != http.StatusSeeOther {
 		t.Fatalf("expected keep-alive redirect, got %d", rec.Code)
 	}
 	close(release)
 	<-j.done
 	if rec := wait(server, loc); rec.Code != http.StatusCreated {
 		t.Fatalf("got %d", rec.Code)
+	}
+}
+
+// Which clients get the keep-alive redirect. Getting it wrong either way
+// breaks uploads: a client that does not follow it sees an error, and a
+// browser answered on the request is cut off by a reverse proxy's timeout.
+func TestClientFollowsRedirects(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers map[string]string
+		want    bool
+	}{
+		{"web app (XMLHttpRequest)", map[string]string{"Accept": "*/*", "Sec-Fetch-Mode": "cors", "User-Agent": "Mozilla/5.0"}, true},
+		{"HTML form", map[string]string{"Accept": "text/html,application/xhtml+xml", "User-Agent": "Mozilla/5.0"}, true},
+		{"mobile app", map[string]string{"Accept": "*/*", "User-Agent": "Dart/3.5 (dart:io)"}, false},
+		{"Immich CLI", map[string]string{"Accept": "*/*", "User-Agent": "node"}, false},
+		{"immich-go", map[string]string{"Accept": "application/json", "User-Agent": "immich-go"}, false},
+		{"curl", map[string]string{"Accept": "*/*", "User-Agent": "curl/8.7.1"}, false},
+	}
+	s := newTestServer(t, "http://127.0.0.1:1", &fakeConverter{})
+	for _, c := range cases {
+		r := httptest.NewRequest(http.MethodPost, "/api/assets", nil)
+		for k, v := range c.headers {
+			r.Header.Set(k, v)
+		}
+		if got := s.clientFollowsRedirects(r); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

@@ -2,6 +2,10 @@
 
 What changes for someone who runs the optimizer: behaviour, settings, files. The release notes on GitHub list every commit as well.
 
+## Unreleased
+
+- **A long upload from the web app no longer times out behind a reverse proxy.** The keep-alive that sends a browser from one short wait to the next never applied to the Immich web app: it was given only to requests asking for a web page. Browsers are now recognised by the header every browser adds (`Sec-Fetch-Mode`), and the redirect is a `303`, so the browser no longer sends the whole file again at each step.
+
 ## 0.4.0 (2026-11-22)
 
 The first stable release of the 0.4 series, and the first one that moves `:latest` to it. The program is the same as 0.4.0-beta.1. The documentation was reorganised: library mode now has a second page, [How library mode works](docs/library-details.md).

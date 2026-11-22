@@ -31,7 +31,11 @@ import (
 	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
 )
 
-// WaitPath is the browser keep-alive redirect target.
+// WaitPath is the browser keep-alive redirect target. A browser's upload is
+// answered at once with a 303 to it, and each wait there lasts at most
+// WaitPoll, so no request outlasts a reverse proxy's timeout (Cloudflare cuts
+// one after 100 seconds). XHR and fetch follow a 303 with a GET, without the
+// body, and hand the web app the final answer.
 const WaitPath = "/_immich-optimizer/wait"
 
 // HealthPath is answered by the proxy itself: 200 while it takes uploads.
@@ -321,7 +325,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if async {
-		http.Redirect(w, r, fmt.Sprintf("%s?job=%s", WaitPath, j.id), http.StatusTemporaryRedirect)
+		http.Redirect(w, r, fmt.Sprintf("%s?job=%s", WaitPath, j.id), http.StatusSeeOther)
 		return
 	}
 
@@ -363,21 +367,17 @@ func (s *Server) startJob(spec jobSpec, async bool) (*job, bool) {
 	return j, true
 }
 
+// clientFollowsRedirects tells a browser from every other client. Browsers
+// add Sec-Fetch-Mode to every request, and a script cannot set it; the Immich
+// web app uploads with XMLHttpRequest, whose Accept is only "*/*". Other
+// clients (the mobile app, the CLI, immich-go) do not follow a redirect of an
+// upload, so they are answered on the request itself.
 func (s *Server) clientFollowsRedirects(r *http.Request) bool {
-	acceptHeader := r.Header.Get("Accept")
-	follows := strings.Contains(acceptHeader, "text/html")
-
-	brokenRedirectUserAgents := []string{"Dart/", "Dalvik/", "Immich"}
-	for _, userAgent := range brokenRedirectUserAgents {
-		if strings.HasPrefix(r.UserAgent(), userAgent) {
-			return false
-		}
-	}
-	return follows
+	return r.Header.Get("Sec-Fetch-Mode") != "" || strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 func (s *Server) continueJob(w http.ResponseWriter, r *http.Request) {
-	// The browser's 307 re-sends the whole upload; discard it.
+	// A 303 is followed with a GET, so there is no body; drain one anyway.
 	if r.Body != nil {
 		_, _ = io.Copy(io.Discard, r.Body)
 	}
@@ -399,7 +399,7 @@ func (s *Server) continueJob(w http.ResponseWriter, r *http.Request) {
 	case <-j.done:
 		j.result.write(w)
 	case <-t.C:
-		http.Redirect(w, r, r.URL.String(), http.StatusTemporaryRedirect)
+		http.Redirect(w, r, r.URL.String(), http.StatusSeeOther)
 	case <-r.Context().Done():
 	}
 }
