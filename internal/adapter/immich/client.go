@@ -133,20 +133,10 @@ func (c *client) doUpload(ctx context.Context, u entity.Upload, stat os.FileInfo
 		}
 		defer file.Close()
 
-		// Add required fields
-		deviceAssetId := fmt.Sprintf("%s-%d", filename, u.ModTime.Unix())
-		deviceId := "immich-optimizer"
-
 		// The dates of the original file, in UTC as the "Z" suffix says.
 		fileCreatedAt := u.ModTime.UTC().Format("2006-01-02T15:04:05.000Z")
 		fileModifiedAt := fileCreatedAt
 
-		if copyErr = writer.WriteField("deviceAssetId", deviceAssetId); copyErr != nil {
-			return
-		}
-		if copyErr = writer.WriteField("deviceId", deviceId); copyErr != nil {
-			return
-		}
 		if copyErr = writer.WriteField("fileCreatedAt", fileCreatedAt); copyErr != nil {
 			return
 		}

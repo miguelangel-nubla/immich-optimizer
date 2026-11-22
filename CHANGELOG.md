@@ -33,3 +33,4 @@ What changes for someone who runs the optimizer: behaviour, settings, files. The
 - On shutdown with several modes, proxy and watcher stop taking work at once, and all modes share one `IO_SHUTDOWN_TIMEOUT`.
 - Library mode reads the whole library with Immich's current search instead of the one Immich will remove in version 4.
 - Built with Go 1.26.11 (security fixes in the standard library).
+- **Only the current Immich (3.x) is supported.** Uploads no longer send `deviceAssetId` and `deviceId`, which Immich 1.x and 2.x required and 3.x ignores.

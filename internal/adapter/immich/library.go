@@ -443,9 +443,6 @@ func (c *LibraryClient) Upload(ctx context.Context, u entity.LibraryUpload) (*en
 	}
 	const layout = "2006-01-02T15:04:05.000Z"
 	fields := [][2]string{
-		// Older servers require the two device fields; current ones ignore them.
-		{"deviceAssetId", fmt.Sprintf("%s-%d", u.Filename, u.FileCreatedAt.Unix())},
-		{"deviceId", "immich-optimizer"},
 		{"fileCreatedAt", u.FileCreatedAt.UTC().Format(layout)},
 		{"fileModifiedAt", u.FileModifiedAt.UTC().Format(layout)},
 		{"isFavorite", strconv.FormatBool(u.IsFavorite)},

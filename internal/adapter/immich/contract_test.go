@@ -471,19 +471,8 @@ func TestImmichAPIContract(t *testing.T) {
 	}
 	sort.Strings(srv.problems)
 	for _, p := range dedupe(srv.problems) {
-		if knownExtra[p] {
-			continue
-		}
 		t.Errorf("against Immich %s: %s", c.Version, p)
 	}
-}
-
-// knownExtra are fields sent on purpose although the Immich version of the
-// contract does not list them.
-var knownExtra = map[string]bool{
-	// Immich 1.x and 2.x require both on an upload; 3.x ignores them.
-	"POST /assets.deviceAssetId is not a field Immich knows": true,
-	"POST /assets.deviceId is not a field Immich knows":      true,
 }
 
 // The checker itself: it must notice what it is there for.

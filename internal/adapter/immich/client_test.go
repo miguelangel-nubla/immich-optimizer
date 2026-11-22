@@ -80,8 +80,8 @@ func TestUploadAssetWithFilenameSuccess(t *testing.T) {
 	if string(receivedContent) != string(fileContent) {
 		t.Errorf("expected content '%s', got '%s'", string(fileContent), string(receivedContent))
 	}
-	if receivedDeviceID != "immich-optimizer" {
-		t.Errorf("expected deviceId 'immich-optimizer', got '%s'", receivedDeviceID)
+	if receivedDeviceID != "" {
+		t.Errorf("deviceId was sent (%q): current Immich has no such field", receivedDeviceID)
 	}
 }
 
