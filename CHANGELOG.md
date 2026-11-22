@@ -2,9 +2,12 @@
 
 What changes for someone who runs the optimizer: behaviour, settings, files. The release notes on GitHub list every commit as well.
 
-## Unreleased
+## 0.4.1 (2026-11-22)
+
+A bug fix for uploads from the web app, and new documentation on video tasks. Nothing to change when upgrading from 0.4.0.
 
 - **A long upload from the web app no longer times out behind a reverse proxy.** The keep-alive that sends a browser from one short wait to the next never applied to the Immich web app: it was given only to requests asking for a web page. Browsers are now recognised by a header every browser adds and scripts cannot set (`Sec-Fetch-Dest`), and the redirect is a `303`, so the browser no longer sends the whole file again at each step. Browsers send that header over HTTPS only, which is how a web app behind such a reverse proxy is opened. A new end-to-end test uploads from a real Chrome.
+- **Docs:** [HandBrake or ffmpeg](docs/tasks.md#video-handbrake-or-ffmpeg) for video tasks, and how to keep a video's date and location with either: neither tool keeps them by itself.
 
 ## 0.4.0 (2026-11-22)
 
