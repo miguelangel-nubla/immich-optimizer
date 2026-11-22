@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -72,6 +73,10 @@ func (s *Server) dialUpstream(ctx context.Context) (net.Conn, error) {
 // handshake.
 const wsHandshakeTimeout = 30 * time.Second
 
+// wsMarkerTimeout bounds the marker lookup for an upload announced on the
+// websocket. The app learns about the upload from its next sync anyway.
+const wsMarkerTimeout = 5 * time.Second
+
 // serveSocket carries the app's websocket. It reports whether it answered the
 // request; when it did not, nothing was written.
 func (s *Server) serveSocket(w http.ResponseWriter, r *http.Request) bool {
@@ -94,6 +99,15 @@ func (s *Server) serveSocket(w http.ResponseWriter, r *http.Request) bool {
 
 	out := r.Clone(r.Context())
 	out.Host = s.cfg.UpstreamURL.Host
+	// The path as Immich serves it, under the prefix of its address if it has
+	// one, like every other request passed on.
+	target, err := url.Parse(s.upstreamTarget(r.URL))
+	if err != nil {
+		http.Error(w, "failed to reach Immich", http.StatusBadGateway)
+		return true
+	}
+	out.URL = target
+	out.RequestURI = ""
 	// No compression: the messages have to be readable here.
 	out.Header.Del("Sec-WebSocket-Extensions")
 	if err := out.Write(up); err != nil {
@@ -268,7 +282,10 @@ func (s *Server) hiddenUploadReady(ctx context.Context, auth http.Header, payloa
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// The messages from Immich wait meanwhile, socket.io's pings among
+	// them: a slow answer must not make the app's connection time out
+	// (socket.io's default ping timeout is 20 seconds).
+	ctx, cancel := context.WithTimeout(ctx, wsMarkerTimeout)
 	defer cancel()
 	m, err := immich.GetMarker(ctx, s.client, s.cfg.UpstreamURL.String(), auth, assetID)
 	if err != nil {
@@ -299,7 +316,7 @@ func (s *Server) hiddenUploadReady(ctx context.Context, auth http.Header, payloa
 // kept as it is (its own checksum is already right) or a replacement that is
 // not finished.
 func hiddenChecksum(m *entity.Marker) ([]byte, bool) {
-	if m == nil || m.Kept || m.State == entity.MarkerStatePending {
+	if m == nil || m.Kept || m.Unfinished() {
 		return nil, false
 	}
 	sum, err := hex.DecodeString(m.SHA1)

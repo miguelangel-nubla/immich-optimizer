@@ -14,7 +14,7 @@ func tempFree() (int64, bool) {
 	if err := syscall.Statfs(os.TempDir(), &st); err != nil {
 		return 0, false
 	}
-	free := uint64(st.Bavail) * uint64(st.Bsize) // #nosec G115 -- both are non-negative counts
+	free := uint64(st.Bavail) * uint64(st.Bsize) //nolint:unconvert // the field types differ between platforms. #nosec G115 -- both are non-negative counts
 	if free > math.MaxInt64 {
 		return math.MaxInt64, true
 	}

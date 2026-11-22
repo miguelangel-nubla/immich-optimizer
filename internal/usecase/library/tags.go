@@ -365,8 +365,11 @@ func (s *Service) settleTags(ctx context.Context, rt *runTags, items []*Item) er
 				return // the tag does not exist, so no asset has it
 			}
 			created, err := s.base.UpsertTags(ctx, []string{tag})
-			if err != nil || created[tag] == "" {
-				errs = append(errs, fmt.Errorf("creating the tag %s: %v", tag, err))
+			if err == nil && created[tag] == "" {
+				err = errors.New("no id came back from Immich")
+			}
+			if err != nil {
+				errs = append(errs, fmt.Errorf("creating the tag %s: %w", tag, err))
 				return
 			}
 			id = created[tag]
@@ -409,6 +412,13 @@ func (s *Service) settleTags(ctx context.Context, rt *runTags, items []*Item) er
 			// A failed asset keeps its convert tag: see TagFailed.
 			if it := status[id]; it != nil && !it.retry && it.Status != statusFailed {
 				settled = append(settled, id)
+				// Immich can apply the tags of the sidecar it copied to the
+				// new asset late, after the replacement removed them: the
+				// new asset would then be converted again. Only the assets
+				// that have the tag are changed (and logged).
+				if it.Status == statusReplaced && it.NewID != "" {
+					settled = append(settled, it.NewID)
+				}
 			}
 		}
 		change(false, v, settled)

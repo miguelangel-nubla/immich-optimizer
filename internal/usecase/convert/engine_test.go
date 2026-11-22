@@ -427,3 +427,37 @@ func TestConvertRefusesATinyResult(t *testing.T) {
 		t.Fatalf("a result of a sensible size was refused: %v", err)
 	}
 }
+
+// A result that cannot be read as a photo or video (a task that exited 0
+// after writing a broken file) is not delivered, in any mode; a result that
+// passes is not checked a second time.
+func TestConvertRefusesAnInvalidResult(t *testing.T) {
+	out, cleanup, cleaned := output(t, "file-125.jxl", 10)
+	proc := &fakeProc{fn: func(context.Context, string) (*entity.ProcessResult, error) {
+		return &entity.ProcessResult{ProcessedFilePath: out, ProcessedFilename: "file-125.jxl", OriginalSize: 100, ProcessedSize: 10, Cleanup: cleanup}, nil
+	}}
+	store := &fakeStore{}
+	chk := &fakeChecker{err: errors.New("converted image cannot be decoded: truncated")}
+	e := New(Config{Tasks: jpgTasks, MaxConcurrent: 1, Checker: chk}, proc, store, quiet())
+	_, err := e.Convert(context.Background(), input(t, 100))
+	var ce *entity.ConversionError
+	if !errors.As(err, &ce) || ce.Undone == nil || store.count() != 1 || !*cleaned {
+		t.Fatalf("err = %v, saved %d, cleaned %v", err, store.count(), *cleaned)
+	}
+
+	chk.err = nil
+	out2, cleanup2, _ := output(t, "file-126.jxl", 10)
+	proc.fn = func(context.Context, string) (*entity.ProcessResult, error) {
+		return &entity.ProcessResult{ProcessedFilePath: out2, ProcessedFilename: "file-126.jxl", OriginalSize: 100, ProcessedSize: 10, Cleanup: cleanup2}, nil
+	}
+	in := input(t, 100)
+	res, err := e.Convert(context.Background(), in)
+	if err != nil || !res.Checked {
+		t.Fatalf("a valid result: %v, checked %v", err, res != nil && res.Checked)
+	}
+	defer res.Release()
+	chk.err = errors.New("must not be asked again")
+	if err := e.CheckOutput(context.Background(), in, res); err != nil {
+		t.Errorf("CheckOutput checked again: %v", err)
+	}
+}

@@ -35,9 +35,15 @@ type admission struct {
 	free func() (int64, bool)
 	wait time.Duration
 
-	mu       sync.Mutex
-	count    int           // uploads taken on and not finished
-	bytes    int64         // their request sizes
+	mu    sync.Mutex
+	count int   // uploads taken on and not finished
+	bytes int64 // their request sizes, as far as known
+	// unspooled is the part of bytes whose request is still being received:
+	// it is not on disk yet, so all its copies are still to be written.
+	unspooled int64
+	// unknown counts uploads still being received whose size the client did
+	// not say (chunked): nothing can be counted for them.
+	unknown  int
 	released chan struct{} // closed, and replaced, when one finishes
 }
 
@@ -47,9 +53,17 @@ func newAdmission(free func() (int64, bool)) *admission {
 
 // ticket is one upload's place. Release it when its files are gone.
 type ticket struct {
-	a    *admission
-	size int64
-	once sync.Once
+	a       *admission
+	size    int64
+	unknown bool // the client did not say the size
+	spooled bool // the request is on disk
+	once    sync.Once
+}
+
+// signalLocked wakes the uploads waiting for room.
+func (a *admission) signalLocked() {
+	close(a.released)
+	a.released = make(chan struct{})
 }
 
 func (t *ticket) release() {
@@ -59,42 +73,67 @@ func (t *ticket) release() {
 	t.once.Do(func() {
 		a := t.a
 		a.mu.Lock()
+		t.unspoolLocked()
 		a.count--
 		a.bytes -= t.size
-		close(a.released)
-		a.released = make(chan struct{})
+		a.signalLocked()
 		a.mu.Unlock()
 	})
 }
 
-// resize corrects the ticket once the real size of the request is known.
-func (t *ticket) resize(size int64) {
-	t.a.mu.Lock()
-	t.a.bytes += size - t.size
-	t.size = size
-	t.a.mu.Unlock()
+// unspoolLocked takes the ticket out of what is still being received.
+func (t *ticket) unspoolLocked() {
+	if t.spooled {
+		return
+	}
+	t.spooled = true
+	if t.unknown {
+		t.a.unknown--
+	} else {
+		t.a.unspooled -= t.size
+	}
 }
 
-// fitsLocked reports whether an upload of size bytes can be taken on now.
-func (a *admission) fitsLocked(size int64) bool {
+// resize records that the request is on disk, with its real size.
+func (t *ticket) resize(size int64) {
+	a := t.a
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t.unspoolLocked()
+	a.bytes += size - t.size
+	t.size = size
+	// An upload of unknown size being received held the others back.
+	a.signalLocked()
+}
+
+// fitsLocked reports whether an upload of size bytes (unknown: the client
+// did not say) can be taken on now.
+func (a *admission) fitsLocked(size int64, unknown bool) bool {
 	// With nothing else going on, waiting would not make room: let it try.
 	if a.count == 0 {
 		return true
+	}
+	// What an upload of unknown size may write cannot be counted while its
+	// request comes in: the others wait meanwhile, and it is taken on only
+	// when no other request is coming in.
+	if a.unknown > 0 || unknown && a.unspooled > 0 {
+		return false
 	}
 	free, ok := a.free()
 	if !ok {
 		return true
 	}
-	// The uploads taken on have written their request already and may
-	// still write the rest of their copies.
-	return free-(copiesPerUpload-1)*a.bytes >= copiesPerUpload*size
+	// The uploads taken on may still write the rest of their copies: all
+	// of them for a request still coming in, the two after it otherwise.
+	return free-(copiesPerUpload-1)*a.bytes-a.unspooled >= copiesPerUpload*size
 }
 
-// acquire takes on an upload whose request is size bytes long (0 when the
-// client did not say). It waits for room for a while, and returns nil when
-// there is still none, or ctx ends.
+// acquire takes on an upload whose request is size bytes long (negative
+// when the client did not say). It waits for room for a while, and returns
+// nil when there is still none, or ctx ends.
 func (a *admission) acquire(ctx context.Context, size int64) *ticket {
-	if size < 0 {
+	unknown := size < 0
+	if unknown {
 		size = 0
 	}
 	deadline := time.NewTimer(a.wait)
@@ -105,11 +144,16 @@ func (a *admission) acquire(ctx context.Context, size int64) *ticket {
 	defer again.Stop()
 	for {
 		a.mu.Lock()
-		if a.fitsLocked(size) {
+		if a.fitsLocked(size, unknown) {
 			a.count++
 			a.bytes += size
+			if unknown {
+				a.unknown++
+			} else {
+				a.unspooled += size
+			}
 			a.mu.Unlock()
-			return &ticket{a: a, size: size}
+			return &ticket{a: a, size: size, unknown: unknown}
 		}
 		released := a.released
 		a.mu.Unlock()

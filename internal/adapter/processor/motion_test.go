@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -108,5 +109,49 @@ func TestMotionPhotosSettingIgnoredForOrdinaryFiles(t *testing.T) {
 			t.Errorf("%s: an ordinary JPEG was changed", setting)
 		}
 		res.Cleanup()
+	}
+}
+
+// HEIC motion photos are split like JPEG ones: the task gets the photo
+// without the video, or only the video.
+func TestMotionPhotosHEIC(t *testing.T) {
+	orig, err := os.ReadFile(filepath.Join(motionFixtures, "motion.heic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := filepath.Join(t.TempDir(), "IMG_2.heic")
+	if err := os.WriteFile(in, orig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(setting string) (*entity.ProcessResult, []byte) {
+		t.Helper()
+		res, err := NewLocalProcessor(nil, t.TempDir()).Process(context.Background(), in, []entity.Task{
+			{Name: "t", Extensions: []string{"heic"}, Command: "", MotionPhotos: setting},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(res.Cleanup)
+		out, err := os.ReadFile(res.ProcessedFilePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res, out
+	}
+
+	res, out := run(entity.MotionPhotosDropPhoto)
+	if res.ProcessedFilename != "IMG_2.mp4" || len(out) < 8 || string(out[4:8]) != "ftyp" || res.MotionPhotos != entity.MotionPhotosDropPhoto {
+		t.Errorf("drop_photo: got %d bytes as %q (split %q)", len(out), res.ProcessedFilename, res.MotionPhotos)
+	}
+	if !bytes.Contains(orig, out) {
+		t.Error("drop_photo did not pass the exact embedded video")
+	}
+
+	if _, err := exec.LookPath("exiftool"); err != nil {
+		t.Skip("exiftool is not installed: drop_video is not tried")
+	}
+	res, out = run(entity.MotionPhotosDropVideo)
+	if res.ProcessedFilename != "IMG_2.heic" || len(out) >= len(orig) || bytes.Contains(out, []byte("mpvd")) || res.MotionPhotos != entity.MotionPhotosDropVideo {
+		t.Errorf("drop_video: got %d of %d bytes as %q (split %q)", len(out), len(orig), res.ProcessedFilename, res.MotionPhotos)
 	}
 }

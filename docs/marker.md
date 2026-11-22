@@ -37,9 +37,10 @@ For every file it converts, the optimizer stores a record in Immich's asset meta
 | `versions[].task.name` | the task that made it |
 | `versions[].task.command` | that task's command **as it was in the tasks file at the time**, placeholders included. A task keeps its name when you change what it does; this is what was actually run |
 | `versions[].task.motion_photos` | `drop_video` or `drop_photo`, only when the file was a motion photo that was split |
+| `versions[].task.gain_maps` | `drop`, only when the file was an HDR photo whose gain map was removed for the task |
 | `versions[].config.sha256` | a fingerprint of the folder the tasks file is in: the file itself and the scripts and presets next to it. Two versions with the same value were made with the same configuration; a changed script changes it even when the command is the same |
 | `library.replaces` | the id of the asset this one replaced (library mode) |
-| `library.state` | `pending` while library mode is still replacing the earlier asset with this one; absent once it is done |
+| `library.state` | `pending` while library mode is still replacing the earlier asset with this one, `verified` once this one was checked against it and the earlier one is being moved to the trash; absent once it is done |
 | `kept` | on an asset library mode left as it is, instead of any conversion: `note` says why (for example, converting it did not make it smaller), with `at` and `optimizer`. Its `versions` holds only the original |
 
 A part that does not apply is left out.

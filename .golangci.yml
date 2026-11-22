@@ -1,7 +1,19 @@
 version: "2"
 
 linters:
+  # Besides the default set: mistakes that compile and pass tests.
+  enable:
+    - bodyclose     # a response body left open
+    - errorlint     # an error compared or formatted in a way that loses wrapping
+    - misspell
+    - nilerr        # an error checked, then nil returned
+    - unconvert
+    - usestdlibvars
+    - wastedassign
   settings:
+    misspell:
+      # A misspelt placeholder that a test expects to be refused.
+      ignore-rules: [nmae]
     errcheck:
       # Closing a file that was only read, removing a temporary file and
       # printing help cannot fail in a way anything could act on. Files that

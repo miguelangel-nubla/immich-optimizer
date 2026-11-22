@@ -77,6 +77,9 @@ type ConvertResult struct {
 	// Marker is the provenance record to store with the asset. It is nil
 	// when the original itself is delivered (OutcomeUnchanged).
 	Marker *Marker
+	// Checked says the output was already found to be a valid photo or
+	// video (see port.OutputChecker).
+	Checked bool
 }
 
 type FailureStage string

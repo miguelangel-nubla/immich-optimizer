@@ -28,6 +28,21 @@ const (
 type pendingCreate struct {
 	path string
 	ts   time.Time
+	// linked is true when the file looks published with a hard link: it
+	// had a second name when it was created, or a temporary file in the same
+	// folder had just been closed and was gone already. Only such a file is
+	// taken without a close event of its own; any other one may still be open
+	// for writing (a writer stalled on a network share) and waits for it.
+	linked bool
+}
+
+// closedInode is what was seen of a temporary file when it was closed. A file
+// created later with the same inode number is the same file only if it still
+// has this size and modification time: the kernel reuses inode numbers.
+type closedInode struct {
+	ts    time.Time
+	size  int64
+	mtime time.Time
 }
 
 type inotifyWatcher struct {
@@ -39,8 +54,11 @@ type inotifyWatcher struct {
 	watchMap       map[string]int
 	watchDirMap    map[int]string
 	events         chan entity.FileEvent
-	closedInodes   sync.Map
-	pendingCreates sync.Map
+	closedInodes   sync.Map // inode -> closedInode
+	pendingCreates sync.Map // inode -> pendingCreate
+	// goneTempCloses notes, per folder, when a temporary file was closed and
+	// already gone when the event was handled (folder -> time.Time).
+	goneTempCloses sync.Map
 	stopChan       chan struct{}
 	// rescanning is true while a rescan after a queue overflow runs;
 	// rescanWanted asks for one more, for an overflow that came meanwhile.
@@ -117,8 +135,14 @@ func (fw *inotifyWatcher) cleanupLoop() {
 			now := time.Now()
 
 			fw.closedInodes.Range(func(key, value any) bool {
-				if ts, ok := value.(time.Time); ok && now.Sub(ts) > time.Minute {
+				if ci, ok := value.(closedInode); ok && now.Sub(ci.ts) > time.Minute {
 					fw.closedInodes.Delete(key)
+				}
+				return true
+			})
+			fw.goneTempCloses.Range(func(key, value any) bool {
+				if ts, ok := value.(time.Time); ok && now.Sub(ts) > time.Minute {
+					fw.goneTempCloses.Delete(key)
 				}
 				return true
 			})
@@ -133,16 +157,15 @@ func (fw *inotifyWatcher) cleanupLoop() {
 	}
 }
 
-// takeSettledCreates takes the files that were created but never announced
-// by a close event under their own name, once they have not been written to
-// for the settle time. That is a file published with a hard link whose
-// temporary name was removed before its own close event was handled (the
-// inode could not be learnt then), or one whose events were lost. A file
-// still being written keeps a fresh modification time and is left for later.
+// takeSettledCreates takes the files published with a hard link whose
+// temporary name was removed before its close event was handled (the inode
+// could not be learnt then), once they have not been written to for the
+// settle time. Other created files are left to their own close event: one
+// that is still open may simply have a writer that stalled.
 func (fw *inotifyWatcher) takeSettledCreates() {
 	fw.pendingCreates.Range(func(key, value any) bool {
 		pc, ok := value.(pendingCreate)
-		if !ok || time.Since(pc.ts) < fw.settle {
+		if !ok || !pc.linked || time.Since(pc.ts) < fw.settle {
 			return true
 		}
 		info, err := os.Stat(pc.path)
@@ -233,7 +256,7 @@ func (fw *inotifyWatcher) scan(dir string) {
 			}
 			info, err := d.Info()
 			if err != nil {
-				return nil
+				return nil //nolint:nilerr // gone since it was listed: the walk goes on
 			}
 			// A date in the future says nothing about a write in progress.
 			if age := time.Since(info.ModTime()); age >= 0 && age < fw.settle {
@@ -388,12 +411,18 @@ func (fw *inotifyWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, wat
 	if event.Mask&unix.IN_CREATE != 0 {
 		if info, err := os.Stat(filePath); err == nil && !info.IsDir() && !utils.IsTempFile(filePath) {
 			if statT, ok := info.Sys().(*syscall.Stat_t); ok {
-				if _, loaded := fw.closedInodes.LoadAndDelete(statT.Ino); loaded {
+				if v, loaded := fw.closedInodes.LoadAndDelete(statT.Ino); loaded &&
+					v.(closedInode).size == info.Size() && v.(closedInode).mtime.Equal(info.ModTime()) {
 					fw.emitEvent(filePath)
 				} else {
+					linked := statT.Nlink > 1
+					if v, ok := fw.goneTempCloses.Load(watchedDir); ok && time.Since(v.(time.Time)) < fw.settle {
+						linked = true
+					}
 					fw.pendingCreates.Store(statT.Ino, pendingCreate{
-						path: filePath,
-						ts:   time.Now(),
+						path:   filePath,
+						ts:     time.Now(),
+						linked: linked,
 					})
 				}
 			}
@@ -409,9 +438,11 @@ func (fw *inotifyWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, wat
 							fw.emitEvent(pc.path)
 						}
 					} else {
-						fw.closedInodes.Store(statT.Ino, time.Now())
+						fw.closedInodes.Store(statT.Ino, closedInode{ts: time.Now(), size: info.Size(), mtime: info.ModTime()})
 					}
 				}
+			} else {
+				fw.goneTempCloses.Store(watchedDir, time.Now())
 			}
 			// A temporary file is never emitted under its own name, also
 			// when it is already gone (renamed into place) by now.

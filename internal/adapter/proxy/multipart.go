@@ -124,6 +124,10 @@ func (s *Server) runJob(ctx context.Context, j *job, spec jobSpec) jobResult {
 			// holding them for as long as the original job runs.
 			releaseTargets()
 			_ = os.Remove(spec.spoolPath)
+			// Nor its place in the temp folder: a client that retries while
+			// a long conversion runs would otherwise hold back other uploads
+			// with room it does not use. (Releasing again later is a no-op.)
+			spec.place.release()
 			select {
 			case <-existing.done:
 				res := existing.result
@@ -202,7 +206,7 @@ func (s *Server) extractTargets(spoolPath, boundary string) (targets []*targetPa
 	mr := multipart.NewReader(f, boundary)
 	for idx := 0; ; idx++ {
 		part, err := mr.NextPart()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -435,7 +439,7 @@ func (s *Server) buildOutgoing(spoolPath, boundary string, targets []*targetPart
 	mr := multipart.NewReader(in, boundary)
 	for idx := 0; ; idx++ {
 		part, err := mr.NextPart()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

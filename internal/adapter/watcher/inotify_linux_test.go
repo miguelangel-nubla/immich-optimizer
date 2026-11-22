@@ -395,3 +395,37 @@ func TestInotifyHardLinkWhoseTemporaryNameIsGoneFirst(t *testing.T) {
 		t.Errorf("the linked file was not taken: %v", got)
 	}
 }
+
+// A file that is still open is not taken because its writer paused: it may
+// be an upload over a network share that stalled. Its close announces it.
+func TestInotifyOpenFileIsNotTakenWhileTheWriterPauses(t *testing.T) {
+	fw, dir := startWatcher(t)
+	// Past the startup scan, which takes whatever looks settled: files
+	// present at start have no events to wait for.
+	collect(fw, fw.settle)
+	path := filepath.Join(dir, "VID_1.mp4")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("first half")); err != nil {
+		t.Fatal(err)
+	}
+	// Looks long untouched, as after a stall longer than the settle time.
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if got := collect(fw, 4*fw.settle); got[path] {
+		t.Fatal("taken while still open")
+	}
+	if _, err := f.Write([]byte(" and the rest")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := collect(fw, 2*time.Second); !got[path] {
+		t.Errorf("not taken once closed: %v", got)
+	}
+}

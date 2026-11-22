@@ -37,6 +37,11 @@ type logIndex struct {
 	// pending are copies library mode uploaded whose replacement the log
 	// does not show as finished or undone.
 	pending map[string]bool
+	// uploading maps the SHA-1 of a converted file to when it was converted,
+	// for conversions the log shows no upload result of: an interruption
+	// between the upload and its log entry leaves a copy only a search of
+	// recent uploads finds. Cleared once a start has looked.
+	uploading map[string]time.Time
 	// lastLibrary is the time of the newest entry library mode wrote for
 	// this user: it was running then.
 	lastLibrary time.Time
@@ -49,7 +54,7 @@ type logIndex struct {
 const eventFullRead = "full_read"
 
 func newLogIndex(path, user string) *logIndex {
-	return &logIndex{path: path, user: user, originals: map[string]string{}, pending: map[string]bool{}}
+	return &logIndex{path: path, user: user, originals: map[string]string{}, pending: map[string]bool{}, uploading: map[string]time.Time{}}
 }
 
 // refresh reads what was added to the log since the last call.
@@ -108,8 +113,16 @@ func (x *logIndex) add(line []byte) {
 		if e.Time.After(x.lastLibrary) {
 			x.lastLibrary = e.Time
 		}
+		conv := strings.ToLower(e.ConvertedSHA1)
 		switch e.Event {
+		case "converted":
+			if conv != "" {
+				x.uploading[conv] = e.Time
+			}
+		case eventUploadsChecked:
+			clear(x.uploading)
 		case "uploaded":
+			delete(x.uploading, conv)
 			if e.NewAsset != "" {
 				x.pending[e.NewAsset], x.known = true, true
 			}
@@ -173,6 +186,22 @@ func (x *logIndex) pendingIDs() []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// uploadingSince returns the converted files whose upload the log does not
+// show the result of, and the time of the oldest.
+func (x *logIndex) uploadingSince() (map[string]bool, time.Time) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	out := make(map[string]bool, len(x.uploading))
+	var oldest time.Time
+	for sha, at := range x.uploading {
+		out[sha] = true
+		if oldest.IsZero() || at.Before(oldest) {
+			oldest = at
+		}
+	}
+	return out, oldest
 }
 
 func (x *logIndex) isKnown() bool {

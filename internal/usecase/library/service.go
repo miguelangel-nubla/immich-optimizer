@@ -61,6 +61,46 @@ type Config struct {
 	// IsMotionPhoto reports whether a downloaded original is a photo with an
 	// embedded video. Optional.
 	IsMotionPhoto func(path string) bool
+	// Users is shared by the services of one process (one per API key), so
+	// that two keys of the same user do not work on the same assets at the
+	// same time. Optional.
+	Users *Users
+}
+
+// Users records which service works for which Immich user.
+type Users struct {
+	mu sync.Mutex
+	by map[string]*Service
+}
+
+func NewUsers() *Users { return &Users{by: map[string]*Service{}} }
+
+// claim takes the user for s, unless another service has it.
+func (u *Users) claim(id string, s *Service) bool {
+	if u == nil {
+		return true
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if owner, ok := u.by[id]; ok && owner != s {
+		return false
+	}
+	u.by[id] = s
+	return true
+}
+
+// release gives up whatever user s had.
+func (u *Users) release(s *Service) {
+	if u == nil {
+		return
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for id, owner := range u.by {
+		if owner == s {
+			delete(u.by, id)
+		}
+	}
 }
 
 // Entry is an audit log entry.
@@ -561,7 +601,7 @@ func (s *Service) classify(ctx context.Context, me string, listed entity.Library
 	m := markerOf(items)
 	if m != nil {
 		switch {
-		case m.State == entity.MarkerStatePending:
+		case m.Unfinished():
 			return nil, m, nil
 		case !again:
 			return nil, nil, &errSkip{reason: "it was already handled by the optimizer", converted: m}
@@ -608,7 +648,7 @@ func (s *Service) secondCopy(ctx context.Context, listed entity.LibraryAsset, co
 		old.Checksum == "" || !strings.EqualFold(m.SHA1, old.Checksum) {
 		return errNotSecondCopy
 	}
-	if conv.IsTrashed || m.State == entity.MarkerStatePending {
+	if conv.IsTrashed || m.Unfinished() {
 		return later("it looked like a second copy of the converted asset %s, which has changed since; a later run decides", convertedID)
 	}
 	t.item.NewFile, t.item.NewSize = conv.OriginalFileName, conv.Size
@@ -845,7 +885,7 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 			return fmt.Errorf("reading the existing converted asset %s: %w", up.ID, err)
 		}
 		m := markerOf(existing)
-		if m == nil || m.State != entity.MarkerStatePending || m.Replaces != old.ID {
+		if !m.Unfinished() || m.Replaces != old.ID {
 			return skip("Immich already has the converted file as asset %s", up.ID)
 		}
 		s.infof("Library: resuming the unfinished replacement of %s (%s)", old.OriginalFileName, old.ID)
@@ -860,7 +900,13 @@ func (s *Service) replace(ctx context.Context, old *entity.LibraryAsset, oldItem
 	}
 
 	// 4-6. Carry over, verify, trash. Any failure removes the new asset.
-	if err := s.finish(ctx, old, oldAlbums, newID, convertedSHA1, entry); err != nil {
+	verifiedMarker := marker
+	verifiedMarker.State = entity.MarkerStateVerified
+	verified, err := markerItem(&verifiedMarker)
+	if err != nil {
+		return err
+	}
+	if err := s.finish(ctx, old, oldAlbums, newID, convertedSHA1, entry, verified); err != nil {
 		var fatal *errFatal
 		var unsettled *errUnsettled
 		if errors.As(err, &fatal) || errors.As(err, &unsettled) {
@@ -945,8 +991,10 @@ func (s *Service) writeKept(ctx context.Context, old *entity.LibraryAsset, note 
 }
 
 // finish carries everything over to the new asset, verifies it and moves the
-// original to the trash. On error the caller removes the new asset.
-func (s *Service) finish(ctx context.Context, old *entity.LibraryAsset, oldAlbums []entity.LibraryAlbum, newID, convertedSHA1 string, entry Entry) error {
+// original to the trash. verified is the new asset's marker for the moment
+// between verification and the trash. On error the caller removes the new
+// asset.
+func (s *Service) finish(ctx context.Context, old *entity.LibraryAsset, oldAlbums []entity.LibraryAlbum, newID, convertedSHA1 string, entry Entry, verified entity.MetadataItem) error {
 	if err := s.api.CopyAsset(ctx, old.ID, newID); err != nil {
 		return fmt.Errorf("copying albums, links, stack and sidecar: %w", err)
 	}
@@ -1017,11 +1065,21 @@ func (s *Service) finish(ctx context.Context, old *entity.LibraryAsset, oldAlbum
 	if d := assetDiffs(old, now, false); len(d) > 0 {
 		return &errChanged{"the original changed while it was being replaced (" + strings.Join(d, "; ") + ")"}
 	}
+	// Nor what is kept next to it: albums, shared links, faces and comments
+	// were read before the conversion, which can take long.
+	if err := s.unchangedAround(ctx, old.ID, oldAlbums, oldLinks, oldFaces); err != nil {
+		return err
+	}
 
 	e := entry
 	e.Event, e.NewAsset = "verified", newID
 	if err := s.record(e); err != nil {
 		return err
+	}
+	// The copy says it is complete before the original goes: an interrupted
+	// replacement is then finished, never undone by deleting a good copy.
+	if err := s.api.PutMetadata(ctx, newID, []entity.MetadataItem{verified}); err != nil {
+		return fmt.Errorf("marking the new asset verified: %w", err)
 	}
 	// From here the swap is committed even if the process is interrupted.
 	if err := s.api.Trash(context.WithoutCancel(ctx), []string{old.ID}); err != nil {
@@ -1035,10 +1093,60 @@ func (s *Service) finish(ctx context.Context, old *entity.LibraryAsset, oldAlbum
 		case rerr == nil:
 			return fmt.Errorf("moving the original to the trash: %w", err)
 		default:
-			return &errUnsettled{fmt.Errorf("moving the original to the trash: %w; and it could not be read to see whether it is there (%v). The copy %s is left unfinished and is settled at a later check", err, rerr, newID)}
+			return &errUnsettled{fmt.Errorf("moving the original to the trash: %w; and it could not be read to see whether it is there (%w). The copy %s is left unfinished and is settled at a later check", err, rerr, newID)}
 		}
 	}
 	return nil
+}
+
+// unchangedAround returns errChanged when the original was put into an album
+// or a shared link, got a face, or got comments or likes in a shared album
+// since those were read and carried over to the copy.
+func (s *Service) unchangedAround(ctx context.Context, id string, albums []entity.LibraryAlbum, links []string, faces []entity.LibraryFace) error {
+	nowAlbums, err := s.api.Albums(ctx, id)
+	if err != nil {
+		return fmt.Errorf("re-reading the original's albums: %w", err)
+	}
+	if added := minus(albumIDs(nowAlbums), albumIDs(albums)); len(added) > 0 {
+		return &errChanged{"the original was added to an album meanwhile"}
+	}
+	for _, al := range nowAlbums {
+		if !al.Shared {
+			continue
+		}
+		n, err := s.api.ActivityCount(ctx, al.ID, id)
+		if err != nil {
+			return fmt.Errorf("re-reading activity in album %q: %w", al.Name, err)
+		}
+		if n > 0 {
+			return &errChanged{fmt.Sprintf("the original got comments or likes in the shared album %q meanwhile", al.Name)}
+		}
+	}
+	nowLinks, err := s.api.SharedLinkIDs(ctx, id)
+	if err != nil {
+		return fmt.Errorf("re-reading the original's shared links: %w", err)
+	}
+	if len(minus(nowLinks, links)) > 0 {
+		return &errChanged{"the original was added to a shared link meanwhile"}
+	}
+	nowFaces, err := s.api.Faces(ctx, id)
+	if err != nil {
+		return fmt.Errorf("re-reading the original's faces: %w", err)
+	}
+	if len(minus(personIDs(nowFaces), personIDs(faces))) > 0 {
+		return &errChanged{"a person was tagged on the original meanwhile"}
+	}
+	return nil
+}
+
+func personIDs(faces []entity.LibraryFace) []string {
+	out := make([]string, 0, len(faces))
+	for _, f := range faces {
+		if f.PersonID != "" {
+			out = append(out, f.PersonID)
+		}
+	}
+	return out
 }
 
 func (s *Service) waitReady(ctx context.Context, id string) (*entity.LibraryAsset, error) {
@@ -1371,36 +1479,41 @@ func fmtPos(a *entity.LibraryAsset) string {
 }
 
 // resumePending deals with a converted asset whose replacement was
-// interrupted: if its original is already gone or in the trash the swap had
-// been committed and only the mark is cleared; otherwise the half-made copy
-// is removed and the original is converted afresh when the run reaches it.
+// interrupted. What is done depends on how far it got:
+//
+//   - verified, original in the trash or gone: the swap was committed; only
+//     the mark is cleared.
+//   - verified, original still there (the call to trash it was lost, or the
+//     person restored it): the copy was complete, so it is never deleted. If
+//     it still matches the original, the swap is completed; otherwise both are
+//     kept and the copy is tagged for review.
+//   - not verified, original in the trash or gone: the copy may be the only
+//     one left, so it is kept and tagged for review.
+//   - not verified, original there: the half-made copy is removed and the
+//     original is converted afresh when the run reaches it.
 func (s *Service) resumePending(ctx context.Context, pending entity.LibraryAsset, m *entity.Marker, t *tally) error {
-	committed := m.Replaces == ""
-	if !committed {
-		old, err := s.api.GetAsset(ctx, m.Replaces)
-		switch {
-		case err == nil:
-			committed = old.IsTrashed
-		case errors.Is(err, entity.ErrAssetNotFound):
-			committed = true // the original no longer exists
-		default:
-			return fmt.Errorf("reading the original %s of an unfinished replacement: %w", m.Replaces, err)
-		}
+	if m.Replaces == "" {
+		return s.finalize(ctx, pending, m, t, "")
 	}
-	if committed {
-		final := *m
-		final.State = ""
-		mi, err := markerItem(&final)
-		if err != nil {
-			return err
-		}
-		if err := s.api.PutMetadata(ctx, pending.ID, []entity.MetadataItem{mi}); err != nil {
-			return fmt.Errorf("clearing the pending mark: %w", err)
-		}
-		t.Finalized++
-		t.item.Status, t.item.Reason = statusFinalized, "replacement of "+m.Replaces+" from an earlier run completed"
-		s.infof("Library: finished the interrupted replacement of %s by %s", m.Replaces, pending.ID)
-		return s.record(Entry{Event: "finalized", Asset: m.Replaces, NewAsset: pending.ID, File: pending.OriginalFileName})
+	old, err := s.api.GetAsset(ctx, m.Replaces)
+	var gone bool
+	switch {
+	case err == nil:
+		gone = old.IsTrashed
+	case errors.Is(err, entity.ErrAssetNotFound):
+		gone = true // the original no longer exists
+	default:
+		return fmt.Errorf("reading the original %s of an unfinished replacement: %w", m.Replaces, err)
+	}
+	verified := m.State == entity.MarkerStateVerified
+	switch {
+	case verified && gone:
+		return s.finalize(ctx, pending, m, t, "")
+	case verified:
+		return s.resumeVerified(ctx, pending, old, m, t)
+	case gone:
+		t.item.review = true
+		return s.finalize(ctx, pending, m, t, "its original went to the trash before this copy was verified: check that nothing is missing from it")
 	}
 	if err := s.api.Delete(ctx, []string{pending.ID}); err != nil {
 		return fmt.Errorf("removing the unfinished copy %s: %w", pending.ID, err)
@@ -1410,6 +1523,67 @@ func (s *Service) resumePending(ctx context.Context, pending entity.LibraryAsset
 	s.infof("Library: removed the unfinished copy %s; its original %s is untouched", pending.ID, m.Replaces)
 	return s.record(Entry{Event: "rolled_back", Asset: m.Replaces, NewAsset: pending.ID, File: pending.OriginalFileName,
 		Detail: "unfinished replacement from an earlier run"})
+}
+
+// resumeVerified completes a verified replacement whose original is not in
+// the trash, if the two still match.
+func (s *Service) resumeVerified(ctx context.Context, pending entity.LibraryAsset, old *entity.LibraryAsset, m *entity.Marker, t *tally) error {
+	albums, err := s.api.Albums(ctx, old.ID)
+	if err != nil {
+		return fmt.Errorf("listing the original's albums: %w", err)
+	}
+	links, err := s.api.SharedLinkIDs(ctx, old.ID)
+	if err != nil {
+		return fmt.Errorf("listing the original's shared links: %w", err)
+	}
+	diffs, err := s.compare(ctx, old, albums, links, pending.ID)
+	if err != nil {
+		return err
+	}
+	for _, al := range albums {
+		if !al.Shared {
+			continue
+		}
+		n, err := s.api.ActivityCount(ctx, al.ID, old.ID)
+		if err != nil {
+			return fmt.Errorf("reading activity in album %q: %w", al.Name, err)
+		}
+		if n > 0 {
+			diffs = append(diffs, fmt.Sprintf("the original has comments or likes in the shared album %q", al.Name))
+		}
+	}
+	if len(diffs) > 0 {
+		t.item.review = true
+		return s.finalize(ctx, pending, m, t, "its original is back out of the trash and differs from it ("+strings.Join(diffs, "; ")+"): both are kept, merge them by hand")
+	}
+	if err := s.api.Trash(ctx, []string{old.ID}); err != nil {
+		return fmt.Errorf("moving the original %s of a verified replacement to the trash: %w", old.ID, err)
+	}
+	return s.finalize(ctx, pending, m, t, "")
+}
+
+// finalize clears the mark of an unfinished replacement, which leaves the
+// copy as a finished conversion. note says why it needs a look, if it does.
+func (s *Service) finalize(ctx context.Context, pending entity.LibraryAsset, m *entity.Marker, t *tally, note string) error {
+	final := *m
+	final.State = ""
+	mi, err := markerItem(&final)
+	if err != nil {
+		return err
+	}
+	if err := s.api.PutMetadata(ctx, pending.ID, []entity.MetadataItem{mi}); err != nil {
+		return fmt.Errorf("clearing the pending mark: %w", err)
+	}
+	t.Finalized++
+	t.item.Status, t.item.Reason = statusFinalized, "replacement of "+m.Replaces+" from an earlier run completed"
+	if note != "" {
+		t.item.Reason += "; " + note
+		if s.log != nil {
+			s.log.Warnf("Library: %s (%s): %s; tagged %s", pending.OriginalFileName, pending.ID, note, TagReview)
+		}
+	}
+	s.infof("Library: finished the interrupted replacement of %s by %s", m.Replaces, pending.ID)
+	return s.record(Entry{Event: "finalized", Asset: m.Replaces, NewAsset: pending.ID, File: pending.OriginalFileName, Detail: note})
 }
 
 func fileSHA1(path string) (string, error) {

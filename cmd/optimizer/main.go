@@ -320,6 +320,9 @@ func validateAppConfig(ac *entity.AppConfig) error {
 	if ac.ShutdownTimeout < 0 {
 		return fmt.Errorf("shutdown_timeout must be 0 or greater")
 	}
+	if ac.LibraryReadyTimeout <= 0 {
+		return fmt.Errorf("library_ready_timeout must be greater than 0")
+	}
 	if ac.UndoneDir == "" {
 		return fmt.Errorf("undone_dir must not be empty")
 	}
@@ -358,6 +361,9 @@ func validateAppConfig(ac *entity.AppConfig) error {
 		if ac.ImmichAPIKey == "" {
 			return fmt.Errorf("immich_api_key (IO_IMMICH_API_KEY) is required in watcher mode")
 		}
+		if len(ac.ImmichAPIKeys) > 1 && !hasMode(ac.Mode, "library") {
+			return fmt.Errorf("immich_api_key: watcher mode uploads for one user and takes one key; several are for library mode")
+		}
 
 		if len(strings.TrimSpace(ac.ImmichAPIKey)) < 10 {
 			return fmt.Errorf("immich_api_key appears to be too short")
@@ -368,7 +374,7 @@ func validateAppConfig(ac *entity.AppConfig) error {
 		}
 
 		if mkdirErr := os.MkdirAll(ac.WatchDir, 0750); mkdirErr != nil {
-			return fmt.Errorf("error creating watch directory: %v", mkdirErr)
+			return fmt.Errorf("error creating watch directory: %w", mkdirErr)
 		}
 	}
 
@@ -387,7 +393,7 @@ func validateAppConfig(ac *entity.AppConfig) error {
 
 	ac.Tasks, err = loadTasks(ac.ConfigFile)
 	if err != nil {
-		return fmt.Errorf("error loading config file: %v", err)
+		return fmt.Errorf("error loading config file: %w", err)
 	}
 
 	return nil
@@ -415,6 +421,12 @@ func loadTasks(configFile string) (*entity.Config, error) {
 	if !entity.ValidMotionPhotos(c.MotionPhotos) {
 		return nil, fmt.Errorf("error validating config: %s", motionPhotosError("top-level", c.MotionPhotos))
 	}
+	if c.GainMaps == "" {
+		c.GainMaps = entity.GainMapsKeep
+	}
+	if !entity.ValidGainMaps(c.GainMaps) {
+		return nil, fmt.Errorf("error validating config: %s", gainMapsError("top-level", c.GainMaps))
+	}
 
 	for i := range c.Tasks {
 		// A task without its own setting uses the top-level default.
@@ -424,6 +436,12 @@ func loadTasks(configFile string) (*entity.Config, error) {
 		if !entity.ValidMotionPhotos(c.Tasks[i].MotionPhotos) {
 			return nil, fmt.Errorf("error validating config: %s", motionPhotosError("task "+c.Tasks[i].Name, c.Tasks[i].MotionPhotos))
 		}
+		if c.Tasks[i].GainMaps == "" {
+			c.Tasks[i].GainMaps = c.GainMaps
+		}
+		if !entity.ValidGainMaps(c.Tasks[i].GainMaps) {
+			return nil, fmt.Errorf("error validating config: %s", gainMapsError("task "+c.Tasks[i].Name, c.Tasks[i].GainMaps))
+		}
 		if err := initTask(&c.Tasks[i]); err != nil {
 			return nil, fmt.Errorf("error validating config: %w", err)
 		}
@@ -432,6 +450,7 @@ func loadTasks(configFile string) (*entity.Config, error) {
 	for i := range c.Downloads {
 		// A download is converted as it is stored: nothing is split off.
 		c.Downloads[i].MotionPhotos = entity.MotionPhotosKeep
+		c.Downloads[i].GainMaps = entity.GainMapsKeep
 		if c.Downloads[i].Command == "" {
 			return nil, fmt.Errorf("error validating config: download task %s has no command", c.Downloads[i].Name)
 		}
@@ -505,6 +524,11 @@ func motionPhotosError(where, got string) string {
 		entity.MotionPhotosKeep, entity.MotionPhotosDropVideo, entity.MotionPhotosDropPhoto, got)
 }
 
+func gainMapsError(where, got string) string {
+	return fmt.Sprintf("%s gain_maps must be %q, %q or %q, got %q", where,
+		entity.GainMapsKeep, entity.GainMapsDrop, entity.GainMapsSkip, got)
+}
+
 func initTask(task *entity.Task) error {
 	values := map[string]string{
 		"src_folder": "/src_folder",
@@ -521,12 +545,12 @@ func initTask(task *entity.Task) error {
 	// ending up in the command.
 	tmpl, err := template.New("command").Option("missingkey=error").Parse(task.Command)
 	if err != nil {
-		return fmt.Errorf("task %s unable to parse command: %v", task.Name, err)
+		return fmt.Errorf("task %s unable to parse command: %w", task.Name, err)
 	}
 
 	var cmdLine bytes.Buffer
 	if err := tmpl.Execute(&cmdLine, values); err != nil {
-		return fmt.Errorf("task %s unable to execute template for command: %v", task.Name, err)
+		return fmt.Errorf("task %s unable to execute template for command: %w", task.Name, err)
 	}
 
 	return nil
@@ -700,6 +724,7 @@ func run(args []string) error {
 		// assets only. They share the conversion engines and the audit log.
 		keys := config.ImmichAPIKeys
 		libraryDone = make(chan error, len(keys))
+		users := library.NewUsers()
 		for i, key := range keys {
 			label := ""
 			if len(keys) > 1 {
@@ -712,7 +737,8 @@ func run(args []string) error {
 				Version:       version,
 				ConfigSHA256:  configSHA256,
 				Concurrency:   config.LibraryConcurrency,
-				IsMotionPhoto: motionphoto.IsMotionJPEG,
+				IsMotionPhoto: motionphoto.IsMotionPhoto,
+				Users:         users,
 			}, immich.NewLibraryClient(config.ImmichURL, key, httpClient), engine, auditLog, logger)
 			events := immich.NewEventClient(config.ImmichURL, key)
 			events.Errorf = svc.Warnf
@@ -721,21 +747,25 @@ func run(args []string) error {
 		logger.Printf("Library mode: converting what is tagged %s in Immich, for %d user(s); originals go to Immich's trash", library.TagConvert, len(keys))
 	}
 
-	// Wait for interrupt, or for library mode to fail.
+	// Wait for interrupt, or for library mode to fail. A failed library
+	// mode stops everything, gracefully, and the program exits with an
+	// error: running on without it would ignore every tag while looking
+	// healthy, and a restart (restart: in Docker) may well bring it back.
 	running := cap(libraryDone)
+	var libraryErr error
 	select {
 	case <-sigChan:
 	case err := <-libraryDone:
 		running--
 		if err != nil {
-			if !runWatcher && !runProxy {
-				cancelLibrary()
-				return fmt.Errorf("library mode: %w", err)
-			}
-			logger.Errorf("Library mode stopped: %v", err)
+			libraryErr = fmt.Errorf("library mode: %w", err)
+			logger.Errorf("Library mode stopped: %v; stopping everything", err)
+		} else {
+			<-sigChan
 		}
-		<-sigChan
 	}
+	// A second interrupt is not caught any more: it ends the program at once.
+	signal.Stop(sigChan)
 	cancelLibrary()
 	grace := config.ShutdownTimeout
 	logger.Printf("Shutting down gracefully (waiting up to %s for running jobs)...", grace)
@@ -761,7 +791,7 @@ func run(args []string) error {
 	}()
 	shutdown(logger, grace, watcherAdapter, pipelineService, proxyServer)
 	<-libraryStopped
-	return nil
+	return libraryErr
 }
 
 // healthCheck is what the Docker image's HEALTHCHECK runs, in a second

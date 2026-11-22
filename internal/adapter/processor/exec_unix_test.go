@@ -79,3 +79,42 @@ func TestCancelKillsProcessGroup(t *testing.T) {
 		t.Fatalf("grandchild %d survived cancellation", pid)
 	}
 }
+
+// A command that leaves a process running in the background (with the output
+// still open) succeeds as soon as it exits, and what it left is stopped
+// before its result is read: it could still be writing there.
+func TestBackgroundLeftoverIsStoppedAfterSuccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	in := filepath.Join(tmpDir, "sample.txt")
+	if err := os.WriteFile(in, []byte("a file long enough to be bigger than the converted one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(tmpDir, "leftover.pid")
+	tasks := []entity.Task{{
+		Name:       "leaves-a-child",
+		Extensions: []string{"txt"},
+		Command:    `sleep 30 & echo $! > ` + pidFile + `; printf small > "$IO_DST_FOLDER/$IO_NAME.txt"`,
+	}}
+	start := time.Now()
+	res, err := NewLocalProcessor(nil, tmpDir).Process(context.Background(), in, tasks)
+	if err != nil {
+		t.Fatalf("a command that exited 0 failed: %v", err)
+	}
+	defer res.Cleanup()
+	if d := time.Since(start); d > 4*time.Second {
+		t.Errorf("took %s: the leftover's open output was waited for", d)
+	}
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	for i := 0; i < 100; i++ {
+		if syscall.Kill(pid, 0) != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	t.Fatalf("the leftover %d is still running", pid)
+}

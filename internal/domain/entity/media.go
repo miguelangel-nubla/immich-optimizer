@@ -13,4 +13,7 @@ type ProcessResult struct {
 	// MotionPhotos is the task's motion photo setting when the input was a
 	// motion photo that was split for it ("drop_video" or "drop_photo").
 	MotionPhotos string
+	// GainMapDropped is true when the input was an HDR photo whose gain map
+	// was removed for the task (gain_maps: drop).
+	GainMapDropped bool
 }

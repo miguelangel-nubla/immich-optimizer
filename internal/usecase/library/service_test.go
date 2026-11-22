@@ -61,11 +61,13 @@ type fakeImmich struct {
 	sinceCalls []time.Time
 
 	// knobs
-	copyDropsTags bool                // copy does not bring tags over, as when no sidecar exists
-	onUpload      func(a *fakeAsset)  // tamper with a freshly uploaded asset
-	beforeTrash   func(f *fakeImmich) // runs right before a Trash call is applied
-	failCall      map[string]error    // method name -> error
-	activity      map[string]int      // albumID/assetID -> count
+	copyDropsTags bool                                // copy does not bring tags over, as when no sidecar exists
+	onUpload      func(a *fakeAsset)                  // tamper with a freshly uploaded asset
+	beforeTrash   func(f *fakeImmich)                 // runs right before a Trash call is applied
+	onCopy        func(f *fakeImmich)                 // runs once CopyAsset is applied (lock held)
+	onAlbums      func(f *fakeImmich, assetID string) // runs on each Albums call (lock held)
+	failCall      map[string]error                    // method name -> error
+	activity      map[string]int                      // albumID/assetID -> count
 	sharedAlbums  map[string]bool
 	neverReady    bool
 	afterList     func() // runs once the full listing is read
@@ -413,6 +415,9 @@ func (f *fakeImmich) CopyAsset(_ context.Context, sourceID, targetID string) err
 	if !f.copyDropsTags {
 		dst.TagIDs = append([]string(nil), src.TagIDs...)
 	}
+	if f.onCopy != nil {
+		f.onCopy(f)
+	}
 	return nil
 }
 
@@ -477,6 +482,9 @@ func (f *fakeImmich) SetEdits(_ context.Context, assetID string, edits []entity.
 func (f *fakeImmich) Albums(_ context.Context, assetID string) ([]entity.LibraryAlbum, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.onAlbums != nil {
+		f.onAlbums(f, assetID)
+	}
 	a, err := f.get(assetID)
 	if err != nil {
 		return nil, err
@@ -781,6 +789,15 @@ func index(list []string, want string) int {
 	return -1
 }
 
+func lastIndex(list []string, want string) int {
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i] == want {
+			return i
+		}
+	}
+	return -1
+}
+
 func photo(n int) []byte { return []byte(strings.Repeat(fmt.Sprintf("photo-%d ", n), 50)) }
 
 func richAsset(h *harness) *fakeAsset {
@@ -843,10 +860,12 @@ func TestReplaceCarriesEverythingOverThenTrashes(t *testing.T) {
 		t.Errorf("output check ran %d times, want 1", h.conv.verified)
 	}
 
-	// Order: upload, copy, then trash, and only then the final marker.
+	// Order: upload, copy, the verified mark, then trash, and only then the
+	// final marker.
 	calls := h.im.calls
 	up, cp, tr := index(calls, "upload:"+n.ID), index(calls, "copy:"+n.ID), index(calls, "trash:"+old.ID)
-	if up < 0 || !(up < cp && cp < tr) || index(calls, "metadata:"+n.ID) < tr {
+	vm := index(calls, "metadata:"+n.ID)
+	if up < 0 || !(up < cp && cp < vm && vm < tr) || lastIndex(calls, "metadata:"+n.ID) < tr {
 		t.Errorf("wrong order of changes: %v", calls)
 	}
 	ev := h.events()
@@ -1094,10 +1113,19 @@ func TestInterruptedBeforeTrashIsCompletedByNextRun(t *testing.T) {
 	}
 }
 
+// withState gives a copy made by pendingCopy another replacement state.
+func withState(n *fakeAsset, state string) {
+	var m entity.Marker
+	_ = json.Unmarshal(n.metadata[entity.MarkerKey], &m)
+	m.State = state
+	n.metadata[entity.MarkerKey], _ = json.Marshal(m)
+}
+
 func TestInterruptedAfterTrashIsFinalized(t *testing.T) {
 	h := newHarness(t)
 	old := richAsset(h)
 	n := pendingCopy(h, old)
+	withState(n, entity.MarkerStateVerified)
 	old.IsTrashed = true
 
 	sum, err := h.run()
@@ -1538,5 +1566,108 @@ func TestSecondCopyOfAnotherUsersConversionIsLeftAlone(t *testing.T) {
 	err = svc.secondCopy(context.Background(), again.LibraryAsset, conv.ID, &tally{})
 	if !errors.Is(err, errNotSecondCopy) || again.IsTrashed {
 		t.Fatalf("err = %v, trashed = %v", err, again.IsTrashed)
+	}
+}
+
+// A copy that was never verified, whose original went to the trash anyway
+// (by the person, or an earlier version's interrupted swap), is the only copy
+// left outside the trash: it is kept, and tagged for a look.
+func TestUnverifiedCopyWithTrashedOriginalIsKeptForReview(t *testing.T) {
+	h := newHarness(t)
+	old := richAsset(h)
+	n := pendingCopy(h, old)
+	old.IsTrashed = true
+
+	sum, err := h.run()
+	if err != nil || sum.Finalized != 1 {
+		t.Fatalf("summary = %+v, err %v", sum, err)
+	}
+	if n.deleted || n.IsTrashed {
+		t.Fatal("the only copy outside the trash was removed")
+	}
+	if m := h.marker(n.ID); m == nil || m.State != "" {
+		t.Errorf("marker = %+v", m)
+	}
+	if !h.im.hasTag(n, TagReview) {
+		t.Errorf("the copy is not tagged %s", TagReview)
+	}
+}
+
+// A verified copy whose original is back (the trash call was lost, or the
+// person restored it) and still matches: the swap is completed.
+func TestVerifiedCopyWithLiveOriginalIsCompleted(t *testing.T) {
+	h := newHarness(t)
+	old := h.im.add("IMG_1.jpg", photo(1))
+	n := pendingCopy(h, old)
+	withState(n, entity.MarkerStateVerified)
+	n.FileCreatedAt, n.FileModifiedAt, n.LocalDateTime = old.FileCreatedAt, old.FileModifiedAt, old.LocalDateTime
+	n.Width, n.Height = old.Width, old.Height
+
+	sum, err := h.run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.deleted || n.IsTrashed {
+		t.Fatalf("the verified copy was removed: %v", h.im.calls)
+	}
+	if !old.IsTrashed || sum.Finalized != 1 {
+		t.Errorf("original trashed %v, summary %+v, calls %v", old.IsTrashed, sum, h.im.calls)
+	}
+	if m := h.marker(n.ID); m == nil || m.State != "" {
+		t.Errorf("marker = %+v", m)
+	}
+}
+
+// A verified copy whose original is back and now differs from it: neither is
+// removed, and the copy is tagged for review.
+func TestVerifiedCopyWithChangedOriginalKeepsBoth(t *testing.T) {
+	h := newHarness(t)
+	old := h.im.add("IMG_1.jpg", photo(1))
+	n := pendingCopy(h, old)
+	withState(n, entity.MarkerStateVerified)
+	old.albums = []string{"album-new"} // added after it was restored
+
+	if _, err := h.run(); err != nil {
+		t.Fatal(err)
+	}
+	if n.deleted || n.IsTrashed || old.IsTrashed || old.deleted {
+		t.Fatalf("copy deleted %v trashed %v, original trashed %v: %v", n.deleted, n.IsTrashed, old.IsTrashed, h.im.calls)
+	}
+	if !h.im.hasTag(n, TagReview) {
+		t.Errorf("the copy is not tagged %s", TagReview)
+	}
+}
+
+// What is added next to the original while it is being replaced (an album,
+// a shared link, a person, a comment) stops the swap: the original stays and
+// the copy is removed, to be converted again later.
+func TestChangesAroundTheOriginalDuringTheSwapStopIt(t *testing.T) {
+	cases := map[string]func(f *fakeImmich, a *fakeAsset){
+		"album":   func(f *fakeImmich, a *fakeAsset) { a.albums = append(a.albums, "album-late") },
+		"link":    func(f *fakeImmich, a *fakeAsset) { a.links = append(a.links, "link-late") },
+		"face":    func(f *fakeImmich, a *fakeAsset) { a.faces = append(a.faces, entity.LibraryFace{PersonID: "bob"}) },
+		"comment": func(f *fakeImmich, a *fakeAsset) { f.sharedAlbums["album-1"] = true; f.activity["album-1/"+a.ID] = 1 },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			old := richAsset(h)
+			// After everything was carried over: while the copy is being
+			// verified (its albums are read then).
+			done := false
+			h.im.onAlbums = func(f *fakeImmich, id string) {
+				if id != old.ID && !done {
+					done = true
+					change(f, old)
+				}
+			}
+			sum, err := h.run()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if old.IsTrashed || sum.Replaced != 0 || sum.RolledBack != 1 {
+				t.Errorf("original trashed %v, summary %+v", old.IsTrashed, sum)
+			}
+		})
 	}
 }

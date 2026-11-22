@@ -47,3 +47,25 @@ func TestCommandEnvironment(t *testing.T) {
 		t.Errorf("the command saw %s", got)
 	}
 }
+
+// The optimizer's Immich key stays out of what a command can read.
+func TestCommandEnvironmentHasNoAPIKey(t *testing.T) {
+	t.Setenv("IO_IMMICH_API_KEY", "secret-key-value")
+	t.Setenv("IO_IMMICH_API_KEY_FILE", "/run/secrets/key")
+	t.Setenv("IO_KEEP_ME", "yes")
+	src := filepath.Join(t.TempDir(), "upload.jpg")
+	if err := os.WriteFile(src, []byte("a photo, long enough to be bigger than the answer............................................................"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	task := entity.Task{Name: "env", Extensions: []string{"jpg"}, MotionPhotos: entity.MotionPhotosKeep,
+		Command: `printf '%s|%s|%s' "${IO_IMMICH_API_KEY-unset}" "${IO_IMMICH_API_KEY_FILE-unset}" "$IO_KEEP_ME" > "$IO_DST_FOLDER/$IO_NAME.txt"`}
+	res, err := NewLocalProcessor(nil, "").Process(context.Background(), src, []entity.Task{task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Cleanup()
+	got, _ := os.ReadFile(res.ProcessedFilePath)
+	if want := "unset|unset|yes"; string(got) != want {
+		t.Errorf("the command saw %q, want %q", got, want)
+	}
+}

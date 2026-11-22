@@ -462,3 +462,37 @@ func TestOnlyRealTagChangesAreAudited(t *testing.T) {
 		t.Errorf("tag removals logged: %v, want only %s", removed, TagConvert+"/small")
 	}
 }
+
+// Immich can apply the tags of the copied sidecar to the new asset after the
+// replacement removed them. The convert tag must not stay on it: the next
+// pass would convert the conversion again.
+func TestLateSidecarConvertTagIsRemovedFromTheCopy(t *testing.T) {
+	h := tagged(t)
+	in := h.im.add("IMG_1.jpg", photo(1))
+	h.im.tag(in, TagConvert)
+	// Right before the original goes to the trash, after the replacement's
+	// own clean-up of the copy's tags.
+	h.im.beforeTrash = func(f *fakeImmich) {
+		for _, id := range f.order {
+			if a := f.assets[id]; id != in.ID && !a.deleted {
+				a.TagIDs = append(a.TagIDs, f.tags[TagConvert])
+			}
+		}
+	}
+	sum, err := h.run()
+	if err != nil || sum.Replaced != 1 {
+		t.Fatalf("%+v, %v", sum, err)
+	}
+	n := h.convertedFrom(in)
+	if n == nil {
+		t.Fatal("no converted copy")
+	}
+	if h.im.hasTag(n, TagConvert) {
+		t.Error("the copy kept the convert tag that came with the sidecar")
+	}
+	h.im.beforeTrash = nil
+	h.im.calls = nil
+	if sum, err = h.run(); err != nil || sum.Replaced != 0 {
+		t.Errorf("second run converted again: %+v, %v", sum, err)
+	}
+}

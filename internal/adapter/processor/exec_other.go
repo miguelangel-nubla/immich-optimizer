@@ -10,3 +10,5 @@ import (
 func configureCmd(cmd *exec.Cmd) {
 	cmd.WaitDelay = 5 * time.Second
 }
+
+func killGroup(*exec.Cmd) {}

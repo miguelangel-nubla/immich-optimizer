@@ -42,6 +42,9 @@ type Marker struct {
 	// MotionPhotos is set when the original was a motion photo that was
 	// split for the task: "drop_video" or "drop_photo".
 	MotionPhotos string
+	// GainMaps is "drop" when the original was an HDR photo whose gain map
+	// was removed for the task.
+	GainMaps string
 	// Source is where the file came from (watcher, proxy, library).
 	Source string
 	// Optimizer is the immich-optimizer version that did the conversion.
@@ -62,7 +65,9 @@ type Marker struct {
 	// Replaces is the id of the asset this one replaced (library mode).
 	Replaces string
 	// State is MarkerStatePending while a library replacement is in
-	// progress, and empty once the asset is final.
+	// progress, MarkerStateVerified once the asset was checked against its
+	// original and that is about to go to the trash, and empty once the
+	// asset is final.
 	State string
 
 	// Kept is set on an original that library mode looked at and left as it
@@ -84,13 +89,14 @@ type MarkerStep struct {
 	Task         string
 	TaskCommand  string
 	MotionPhotos string
+	GainMaps     string
 	ConfigSHA256 string
 }
 
 // Latest returns the latest conversion as a step.
 func (m Marker) Latest() MarkerStep {
 	return MarkerStep{SHA1: m.OutputSHA1, Size: m.OutputSize, Name: m.OutputName, At: m.At, Source: m.Source,
-		Optimizer: m.Optimizer, Task: m.Task, TaskCommand: m.TaskCommand, MotionPhotos: m.MotionPhotos, ConfigSHA256: m.ConfigSHA256}
+		Optimizer: m.Optimizer, Task: m.Task, TaskCommand: m.TaskCommand, MotionPhotos: m.MotionPhotos, GainMaps: m.GainMaps, ConfigSHA256: m.ConfigSHA256}
 }
 
 // Then returns the record of a file converted again from the one m
@@ -152,6 +158,7 @@ type markerTask struct {
 	Name         string `json:"name"`
 	Command      string `json:"command,omitempty"`
 	MotionPhotos string `json:"motion_photos,omitempty"`
+	GainMaps     string `json:"gain_maps,omitempty"`
 }
 
 type markerConfig struct {
@@ -179,12 +186,12 @@ func jsonTime(t time.Time) *time.Time {
 
 func (st MarkerStep) toJSON() markerVersion {
 	v := markerVersion{SHA1: st.SHA1, Size: st.Size, Name: st.Name, At: jsonTime(st.At), Source: st.Source, Optimizer: st.Optimizer}
-	if st.Task != "" || st.TaskCommand != "" || st.MotionPhotos != "" {
+	if st.Task != "" || st.TaskCommand != "" || st.MotionPhotos != "" || st.GainMaps != "" {
 		cmd := st.TaskCommand
 		if len(cmd) > maxMarkerCommand {
 			cmd = cmd[:maxMarkerCommand]
 		}
-		v.Task = &markerTask{Name: st.Task, Command: cmd, MotionPhotos: st.MotionPhotos}
+		v.Task = &markerTask{Name: st.Task, Command: cmd, MotionPhotos: st.MotionPhotos, GainMaps: st.GainMaps}
 	}
 	if st.ConfigSHA256 != "" {
 		v.Config = &markerConfig{SHA256: st.ConfigSHA256}
@@ -198,7 +205,7 @@ func (v markerVersion) step() MarkerStep {
 		st.At = *v.At
 	}
 	if v.Task != nil {
-		st.Task, st.TaskCommand, st.MotionPhotos = v.Task.Name, v.Task.Command, v.Task.MotionPhotos
+		st.Task, st.TaskCommand, st.MotionPhotos, st.GainMaps = v.Task.Name, v.Task.Command, v.Task.MotionPhotos, v.Task.GainMaps
 	}
 	if v.Config != nil {
 		st.ConfigSHA256 = v.Config.SHA256
@@ -242,7 +249,7 @@ func (m *Marker) UnmarshalJSON(data []byte) error {
 		last := in.Versions[n-1].step()
 		m.OutputSHA1, m.OutputSize, m.OutputName, m.At = last.SHA1, last.Size, last.Name, last.At
 		m.Source, m.Optimizer, m.Task, m.TaskCommand = last.Source, last.Optimizer, last.Task, last.TaskCommand
-		m.MotionPhotos, m.ConfigSHA256 = last.MotionPhotos, last.ConfigSHA256
+		m.MotionPhotos, m.GainMaps, m.ConfigSHA256 = last.MotionPhotos, last.GainMaps, last.ConfigSHA256
 	}
 	if l := in.Library; l != nil {
 		m.Replaces, m.State = l.Replaces, l.State
@@ -259,6 +266,17 @@ func (m *Marker) UnmarshalJSON(data []byte) error {
 // MarkerStatePending marks a converted asset whose original has not been
 // moved to the trash yet.
 const MarkerStatePending = "pending"
+
+// MarkerStateVerified marks a converted asset that matched its original when
+// that was about to be moved to the trash. A replacement interrupted after
+// this point is never undone by deleting the copy: it was complete.
+const MarkerStateVerified = "verified"
+
+// Unfinished reports whether the marker is of a library replacement that
+// has not been completed.
+func (m *Marker) Unfinished() bool {
+	return m != nil && (m.State == MarkerStatePending || m.State == MarkerStateVerified)
+}
 
 type metadataItem struct {
 	Key   string          `json:"key"`

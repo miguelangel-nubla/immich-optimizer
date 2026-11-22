@@ -240,3 +240,59 @@ func TestNameFieldIsTheNameToConvertAndToRename(t *testing.T) {
 		}
 	}
 }
+
+// An upload whose request is still coming in may write all three copies yet;
+// one whose size the client did not say cannot be counted at all.
+func TestAdmissionCountsRequestsStillBeingReceived(t *testing.T) {
+	free := int64(1000)
+	a := newAdmission(func() (int64, bool) { return free, true })
+	a.wait = 50 * time.Millisecond
+	ctx := context.Background()
+
+	first := a.acquire(ctx, 200) // nothing of it on disk yet
+	// 1000 - 3*200 = 400 left: 3*100 fits, 3*150 does not.
+	if a.acquire(ctx, 150) != nil {
+		t.Fatal("taken on as if the first request were already on disk")
+	}
+	small := a.acquire(ctx, 100)
+	if small == nil {
+		t.Fatal("an upload that fits was held back")
+	}
+	small.release()
+	first.release()
+
+	// Unknown size: not while another request comes in...
+	receiving := a.acquire(ctx, 10)
+	if a.acquire(ctx, -1) != nil {
+		t.Fatal("an upload of unknown size was taken on while another request came in")
+	}
+	// ...but next to uploads already received (being converted).
+	receiving.resize(10)
+	converting := receiving
+	chunked := a.acquire(ctx, -1)
+	if chunked == nil {
+		t.Fatal("an upload of unknown size was held back by one being converted")
+	}
+	if a.acquire(ctx, 1) != nil {
+		t.Fatal("taken on while an upload of unknown size was being received")
+	}
+	if a.acquire(ctx, -1) != nil {
+		t.Fatal("a second upload of unknown size was taken on")
+	}
+	// Once it is on disk its size is known, and the others are let in.
+	done := make(chan *ticket)
+	a.wait = 5 * time.Second
+	go func() { done <- a.acquire(ctx, 10) }()
+	time.Sleep(50 * time.Millisecond)
+	chunked.resize(100)
+	tk := <-done
+	if tk == nil {
+		t.Fatal("not taken on once the size was known")
+	}
+	tk.release()
+	chunked.release()
+	converting.release()
+	if a.count != 0 || a.bytes != 0 || a.unspooled != 0 || a.unknown != 0 {
+		t.Errorf("left over: %d upload(s), %d bytes, %d unspooled, %d unknown", a.count, a.bytes, a.unspooled, a.unknown)
+	}
+}

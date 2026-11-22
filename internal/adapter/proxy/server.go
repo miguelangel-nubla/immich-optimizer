@@ -134,7 +134,7 @@ func NewServer(cfg Config, conv port.Converter, log *logger.Logger) *Server {
 		streamClient: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		jobs:         newJobManager(cfg.ResultTTL, cfg.MaxKeptJobs),
 		admission:    newAdmission(tempFree),
-		downloadSem:  make(chan struct{}, max(cfg.DownloadConcurrency, 2)),
+		downloadSem:  make(chan struct{}, downloadConcurrency(cfg.DownloadConcurrency)),
 		downloads:    downloadCache{base: baseCtx},
 		baseCtx:      baseCtx,
 		cancelBase:   cancel,
@@ -417,4 +417,13 @@ func (s *Server) isUploadRequest(r *http.Request) bool {
 		strings.HasSuffix(pathLower, "/api/asset/upload") ||
 		strings.HasSuffix(pathLower, "/api/asset/upload/") ||
 		strings.Contains(pathLower, "/assets/upload")
+}
+
+// downloadConcurrency is how many downloads are converted at once: the
+// setting, or 2 when it is not set.
+func downloadConcurrency(n int) int {
+	if n <= 0 {
+		return 2
+	}
+	return n
 }

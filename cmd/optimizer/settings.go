@@ -53,7 +53,7 @@ var settings = []setting{
 	{Name: "log_level", Group: groupGeneral, Default: "info",
 		Help:   "How much to log: `debug`, `info`, `warn` or `error`",
 		target: func(ac *entity.AppConfig) any { return &ac.LogLevel }},
-	{Name: "shutdown_timeout", Group: groupGeneral, Default: 8 * time.Second,
+	{Name: "shutdown_timeout", Group: groupGeneral, Default: 5 * time.Second,
 		Help:   "On shutdown, how long running jobs get to finish before they are cancelled",
 		target: func(ac *entity.AppConfig) any { return &ac.ShutdownTimeout }},
 
@@ -81,7 +81,7 @@ var settings = []setting{
 		target: func(ac *entity.AppConfig) any { return &ac.TasksTimeout }},
 
 	{Name: "undone_dir", Group: groupUndone, Default: "/undone",
-		Help:   "Folder where files that could not be converted are kept (proxy and watcher mode)",
+		Help:   "Folder where files that could not be converted are kept, and where the audit log is by default (every mode)",
 		target: func(ac *entity.AppConfig) any { return &ac.UndoneDir }},
 	{Name: "undone_unmatched", Group: groupUndone, Default: true,
 		Help:   "Also keep files whose type no task handles (they are refused either way)",

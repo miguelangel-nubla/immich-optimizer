@@ -56,7 +56,7 @@ func TestMarkerShape(t *testing.T) {
 	full := Marker{
 		V: 1, SHA1: "aa", Size: 29293, OriginalName: "IMG_1.jpg",
 		Task: "jpeg-xl", TaskCommand: `cjxl "{{.src_folder}}/{{.name}}.{{.extension}}" "{{.dst_folder}}/{{.name}}.jxl"`,
-		ConfigSHA256: "cc", MotionPhotos: "drop_video", Source: "proxy", Optimizer: "v0.3.0",
+		ConfigSHA256: "cc", MotionPhotos: "drop_video", GainMaps: "drop", Source: "proxy", Optimizer: "v0.3.0",
 		At:         time.Date(2026, 11, 21, 10, 0, 0, 500, time.UTC),
 		OutputSize: 21961, OutputName: "IMG_1.jxl", OutputSHA1: "bb",
 		Replaces: "asset-1", State: MarkerStatePending,
@@ -67,7 +67,7 @@ func TestMarkerShape(t *testing.T) {
 	}
 	want := `{"v":1,"versions":[{"sha1":"aa","size":29293,"name":"IMG_1.jpg"},` +
 		`{"sha1":"bb","size":21961,"name":"IMG_1.jxl","at":"2026-11-21T10:00:00Z","source":"proxy","optimizer":"v0.3.0",` +
-		`"task":{"name":"jpeg-xl","command":"cjxl \"{{.src_folder}}/{{.name}}.{{.extension}}\" \"{{.dst_folder}}/{{.name}}.jxl\"","motion_photos":"drop_video"},` +
+		`"task":{"name":"jpeg-xl","command":"cjxl \"{{.src_folder}}/{{.name}}.{{.extension}}\" \"{{.dst_folder}}/{{.name}}.jxl\"","motion_photos":"drop_video","gain_maps":"drop"},` +
 		`"config":{"sha256":"cc"}}],` +
 		`"library":{"replaces":"asset-1","state":"pending"}}`
 	if string(got) != want {

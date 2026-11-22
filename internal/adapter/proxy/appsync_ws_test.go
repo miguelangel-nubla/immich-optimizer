@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -74,7 +75,7 @@ func TestPumpAddsAMessageOnlyAfterWholeTextMessages(t *testing.T) {
 		return nil
 	}}
 	var out bytes.Buffer
-	if err := p.run(&out, bufio.NewReader(&in)); err != io.EOF {
+	if err := p.run(&out, bufio.NewReader(&in)); !errors.Is(err, io.EOF) {
 		t.Fatalf("run: %v", err)
 	}
 	if !bytes.Equal(out.Bytes(), want) {
@@ -145,6 +146,9 @@ func TestWebsocketThroughTheProxy(t *testing.T) {
 			"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: a2V5\r\nSec-WebSocket-Extensions: permessage-deflate\r\nAuthorization: Bearer token\r\n\r\n")
 		br := bufio.NewReader(conn)
 		resp, err := http.ReadResponse(br, nil)
+		if err == nil {
+			_ = resp.Body.Close() // a 101 has no body; the connection stays open
+		}
 		if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
 			t.Fatalf("handshake: %v %v", resp, err)
 		}
@@ -204,4 +208,45 @@ func TestWebsocketThroughTheProxy(t *testing.T) {
 		t.Error("what the client sent did not reach Immich")
 	}
 
+}
+
+// An Immich served under a path prefix gets the websocket at that prefix,
+// like every other request.
+func TestWebsocketUnderAPathPrefix(t *testing.T) {
+	gotPath := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath <- r.URL.Path + "?" + r.URL.RawQuery
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: x\r\n\r\n")
+		_ = rw.Flush()
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL + "/immich")
+	s := NewServer(Config{UpstreamURL: u}, &fakeConverter{}, customlogger.NewWithLevel(nil, "error", ""))
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	defer s.Cancel()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_, _ = io.WriteString(conn, "GET "+socketPath+"?EIO=4&transport=websocket HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"+
+		"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: a2V5\r\nAuthorization: Bearer token\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("handshake: %v %v", resp, err)
+	}
+	if got, want := <-gotPath, "/immich"+socketPath+"?EIO=4&transport=websocket"; got != want {
+		t.Errorf("Immich was asked for %s, want %s", got, want)
+	}
 }

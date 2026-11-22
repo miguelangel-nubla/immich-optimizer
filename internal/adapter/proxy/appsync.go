@@ -159,6 +159,9 @@ type syncInjector struct {
 	trashed map[string]string
 	done    map[string]bool
 	lookups int
+	// sentTrash is, for the hidden entries sent in this stream, the time in
+	// the trash they said ("" for not in the trash).
+	sentTrash map[string]string
 
 	// alive remembers, for this one stream, the assets whose line said they
 	// are not in the trash. state asks Immich about an asset whose line did
@@ -293,6 +296,13 @@ func (in *syncInjector) extra(line []byte) [][]byte {
 				in.trashed = map[string]string{}
 			}
 			in.trashed[d.ID] = *d.DeletedAt
+			// Not bounded like the lookups below: an entry left saying "not
+			// in the trash" would tell the app the photo is safely backed up.
+			// An entry already sent in this stream with this state needs no
+			// second one.
+			if since, sent := in.sentTrash[d.ID]; sent && since == *d.DeletedAt {
+				return nil
+			}
 		} else {
 			delete(in.trashed, d.ID)
 			if k, ok := uuidKey(d.ID); ok {
@@ -343,9 +353,10 @@ func (in *syncInjector) entry(assetID string, m *entity.Marker, ack string) [][]
 	}
 	data, _ := json.Marshal(asset)
 	if in.done == nil {
-		in.done = map[string]bool{}
+		in.done, in.sentTrash = map[string]bool{}, map[string]string{}
 	}
 	in.done[assetID] = true
+	in.sentTrash[assetID], _ = asset["deletedAt"].(string)
 	in.Injected++
 	lines := [][]byte{encodeLine(syncLine{Type: in.assetType, Data: data, Ack: ack})}
 	return append(lines, in.cloudLine(assetID)...)

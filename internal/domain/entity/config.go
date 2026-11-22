@@ -10,6 +10,28 @@ type Task struct {
 	// photo. Empty in the tasks file means "use the top-level default";
 	// after loading it always holds one of the MotionPhotos* values.
 	MotionPhotos string `mapstructure:"motion_photos"`
+	// GainMaps says what the task does with an HDR photo (one with a gain
+	// map). Empty in the tasks file means "use the top-level default"; after
+	// loading it always holds one of the GainMaps* values.
+	GainMaps string `mapstructure:"gain_maps"`
+}
+
+// Values of "gain_maps" in the tasks file: what a task does with an HDR
+// photo, a JPEG with a gain map (Ultra HDR) that HDR screens use to show it
+// brighter.
+const (
+	// GainMapsKeep passes the file as it is. This is the default.
+	GainMapsKeep = "keep"
+	// GainMapsDrop passes only the ordinary (SDR) photo.
+	GainMapsDrop = "drop"
+	// GainMapsSkip does not use the task for HDR photos: the next matching
+	// task gets them.
+	GainMapsSkip = "skip"
+)
+
+// ValidGainMaps reports whether v is one of the GainMaps* values.
+func ValidGainMaps(v string) bool {
+	return v == GainMapsKeep || v == GainMapsDrop || v == GainMapsSkip
 }
 
 // Values of "motion_photos" in the tasks file: what a task command receives
@@ -36,6 +58,9 @@ type Config struct {
 	// MotionPhotos is the default for tasks that do not set their own
 	// "motion_photos". Empty means MotionPhotosKeep.
 	MotionPhotos string `mapstructure:"motion_photos"`
+	// GainMaps is the default for tasks that do not set their own
+	// "gain_maps". Empty means GainMapsKeep.
+	GainMaps string `mapstructure:"gain_maps"`
 }
 
 type AppConfig struct {

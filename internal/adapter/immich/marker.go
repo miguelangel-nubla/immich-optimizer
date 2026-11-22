@@ -99,7 +99,7 @@ func EnsureMarker(ctx context.Context, hc *http.Client, baseURL string, auth htt
 		return err
 	}
 	payload, err := json.Marshal(map[string]any{
-		"items": []map[string]any{{"key": entity.MarkerKey, "value": json.RawMessage(value)}},
+		"items": []map[string]any{{"key": entity.MarkerKey, "value": value}},
 	})
 	if err != nil {
 		return err

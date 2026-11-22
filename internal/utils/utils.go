@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -37,4 +38,23 @@ func TrimSuffixCaseInsensitive(str, suffix string) string {
 		return str[:len(str)-len(suffix)]
 	}
 	return str
+}
+
+// secretEnv lists the variables of the optimizer's own environment that the
+// programs it runs are never given. They parse untrusted media, and the
+// Immich API key (in library mode, one with every permission) is of no use
+// to them.
+var secretEnv = []string{"IO_IMMICH_API_KEY", "IO_IMMICH_API_KEY_FILE"}
+
+// EnvWithoutSecrets is environ (os.Environ) without the optimizer's secrets,
+// for a program the optimizer runs.
+func EnvWithoutSecrets(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if !slices.Contains(secretEnv, name) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }

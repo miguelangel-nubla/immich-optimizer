@@ -41,7 +41,7 @@ The same goes for a watch folder. Docker Desktop (macOS, Windows) shares host fo
 
 When the container is stopped (`docker stop`, `docker compose down`, a restart), the optimizer takes no new work and lets the conversions that are running finish, for as long as [`IO_SHUTDOWN_TIMEOUT`](configuration.md#general) says. What is still running after that is ended. Nothing is lost by it: in proxy mode the client is told to try again (`503`), in watcher mode the file stays in the watch folder for the next start, and library mode undoes the photo it was working on.
 
-The default of 8 seconds fits Docker's default 10 second stop timeout. If you convert videos, raise both, for example `stop_grace_period: 15m` with `IO_SHUTDOWN_TIMEOUT=14m40s`.
+The default of 5 seconds fits Docker's default 10 second stop timeout: after it, cancelling what still runs and answering proxy clients takes up to 5 seconds more. Keep that margin when you raise it. If you convert videos, raise both, for example `stop_grace_period: 15m` with `IO_SHUTDOWN_TIMEOUT=14m40s`.
 
 ## Custom image
 

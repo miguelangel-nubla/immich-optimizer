@@ -51,7 +51,12 @@ func (tp *localProcessor) Process(ctx context.Context, filePath string, tasks []
 		fp.processedFile.Close()
 		fp.processedFile = nil
 	}
-	res.Cleanup = fp.cleanWorkDir
+	// A result kept from an earlier task (see process) has its own folder.
+	if own := res.Cleanup; own != nil {
+		res.Cleanup = func() { own(); fp.cleanWorkDir() }
+	} else {
+		res.Cleanup = fp.cleanWorkDir
+	}
 	return res, nil
 }
 
@@ -75,6 +80,12 @@ type fileProcessor struct {
 	// motionSplit is that setting when the input really was split for the
 	// current task, "" otherwise.
 	motionSplit string
+	// gainMapDropped is true when the current task got the photo without its
+	// gain map.
+	gainMapDropped bool
+	// hasGainMap caches whether the original is an HDR photo (nil: not
+	// looked at yet).
+	hasGainMap *bool
 	// taskName is the task that succeeded, taskCommand its command template.
 	taskName    string
 	taskCommand string
@@ -106,10 +117,19 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 
 	var attempts []entity.TaskAttempt
 	var result *entity.ProcessResult
-	matched := false
+	// kept is the result of a task that did not make the file smaller, kept
+	// while the tasks after it try: if none does better, it is the answer
+	// (the original is then delivered), not a failure.
+	var kept *entity.ProcessResult
+	matched, skipped := false, 0
 
-	for _, task := range tasks {
-		if !slices.Contains(task.Extensions, utils.NormalizeExtension(fp.originalExtension)) {
+	for i, task := range tasks {
+		if !fp.takes(task) {
+			if fp.matches(task) {
+				matched = true
+				skipped++
+				fp.logf("task %s is not used for %s: it is an HDR photo (gain_maps: skip)", task.Name, fp.originalFilename)
+			}
 			continue
 		}
 		matched = true
@@ -125,7 +145,7 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 			continue
 		}
 
-		convErr := fp.run(ctx, cmdTmpl, task.MotionPhotos, &attempt)
+		convErr := fp.run(ctx, cmdTmpl, task, &attempt)
 		if convErr == nil {
 			// A command that reports success without leaving exactly one
 			// file with content has failed like any other: the next task
@@ -147,11 +167,36 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 			continue
 		}
 		attempts = append(attempts, attempt)
+		// A command whose result is not smaller: a later task may do better.
+		// Until one does, the first such result stands. A task without a
+		// command (upload as it is) is always the answer.
+		if strings.TrimSpace(task.Command) != "" && result.ProcessedSize >= result.OriginalSize && (kept != nil || fp.anyTakes(tasks[i+1:])) {
+			if kept == nil {
+				if kept, err = fp.keepAside(result); err != nil {
+					return nil, err
+				}
+			}
+			result = nil
+			fp.cleanWorkDir()
+			if fp.anyTakes(tasks[i+1:]) {
+				fp.logf("task %s did not make %s smaller: trying the next task", task.Name, fp.originalFilename)
+				continue
+			}
+		}
 		break
 	}
 
 	if !matched {
 		return nil, &entity.ProcessError{Err: fmt.Errorf("%w: %s", entity.ErrNoTask, fp.originalExtension)}
+	}
+	if result == nil && kept != nil {
+		return kept, nil
+	}
+	if kept != nil {
+		kept.Cleanup()
+	}
+	if result == nil && len(attempts) == 0 {
+		return nil, &entity.ProcessError{Err: fmt.Errorf("every task for %s is set not to take HDR photos (gain_maps: skip, %d task(s))", fp.originalExtension, skipped)}
 	}
 	if result == nil {
 		last := attempts[len(attempts)-1]
@@ -162,6 +207,49 @@ func (fp *fileProcessor) process(ctx context.Context, filePath string, tasks []e
 	}
 
 	return result, nil
+}
+
+// matches reports whether the task is for the file's type.
+func (fp *fileProcessor) matches(task entity.Task) bool {
+	return slices.Contains(task.Extensions, utils.NormalizeExtension(fp.originalExtension))
+}
+
+// takes reports whether the task is used for the file: it is for its type,
+// and does not skip it for being an HDR photo.
+func (fp *fileProcessor) takes(task entity.Task) bool {
+	if !fp.matches(task) {
+		return false
+	}
+	if task.GainMaps != entity.GainMapsSkip {
+		return true
+	}
+	if fp.hasGainMap == nil {
+		has := motionphoto.HasGainMap(fp.originalFile.Name())
+		fp.hasGainMap = &has
+	}
+	return !*fp.hasGainMap
+}
+
+func (fp *fileProcessor) anyTakes(tasks []entity.Task) bool {
+	return slices.ContainsFunc(tasks, fp.takes)
+}
+
+// keepAside moves a result out of the work folder, which the next task
+// starts afresh, into a folder of its own.
+func (fp *fileProcessor) keepAside(res *entity.ProcessResult) (*entity.ProcessResult, error) {
+	dir, err := os.MkdirTemp("", "processing-kept-*")
+	if err != nil {
+		return nil, fmt.Errorf("unable to create temp folder: %w", err)
+	}
+	path := filepath.Join(dir, filepath.Base(res.ProcessedFilePath))
+	if err := os.Rename(res.ProcessedFilePath, path); err != nil {
+		os.RemoveAll(dir)
+		return nil, fmt.Errorf("unable to keep the result of task %s: %w", res.Task, err)
+	}
+	kept := *res
+	kept.ProcessedFilePath = path
+	kept.Cleanup = func() { os.RemoveAll(dir) }
+	return &kept, nil
 }
 
 func firstLine(s string) string {
@@ -199,12 +287,13 @@ func (fp *fileProcessor) cleanWorkDir() {
 	fp.tempWorkDirDst = ""
 }
 
-func (fp *fileProcessor) run(ctx context.Context, commandTemplate *template.Template, motionPhotos string, attempt *entity.TaskAttempt) error {
+func (fp *fileProcessor) run(ctx context.Context, commandTemplate *template.Template, task entity.Task, attempt *entity.TaskAttempt) error {
 	if err := fp.setupWorkDirectories(); err != nil {
 		return err
 	}
+	motionPhotos := task.MotionPhotos
 
-	tempFile, err := fp.motionPhotoSource(motionPhotos)
+	tempFile, err := fp.motionPhotoSource(ctx, motionPhotos)
 	if err != nil {
 		return err
 	}
@@ -218,6 +307,16 @@ func (fp *fileProcessor) run(ctx context.Context, commandTemplate *template.Temp
 	fp.motionSplit = ""
 	if split {
 		fp.motionSplit = motionPhotos
+	}
+	fp.gainMapDropped = false
+	if task.GainMaps == entity.GainMapsDrop {
+		stripped, err := fp.gainMapSource(ctx, tempFile)
+		if err != nil {
+			return err
+		}
+		if stripped != nil {
+			tempFile, fp.gainMapDropped = stripped, true
+		}
 	}
 
 	command, err := fp.buildCommand(commandTemplate, tempFile)
@@ -276,21 +375,24 @@ func (fp *fileProcessor) copySourceFile() (*os.File, error) {
 	return tempFile, nil
 }
 
-// motionPhotoSource prepares the task input for a JPEG motion photo according
-// to the task's setting: only the photo (drop_video) or only the video
+// motionPhotoExtensions are the photo types motion photos come in.
+var motionPhotoExtensions = map[string]bool{".jpg": true, ".jpeg": true, ".heic": true, ".heif": true, ".hif": true, ".avif": true}
+
+// motionPhotoSource prepares the task input for a motion photo according to
+// the task's setting: only the photo (drop_video) or only the video
 // (drop_photo). It returns nil when the regular copy must be used: the
-// setting is "keep", the file is not a JPEG, or it is not a motion photo.
-func (fp *fileProcessor) motionPhotoSource(setting string) (*os.File, error) {
+// setting is "keep", or the file is not a motion photo.
+func (fp *fileProcessor) motionPhotoSource(ctx context.Context, setting string) (*os.File, error) {
 	if setting != entity.MotionPhotosDropVideo && setting != entity.MotionPhotosDropPhoto {
 		return nil, nil
 	}
-	if fp.originalExtension != ".jpg" && fp.originalExtension != ".jpeg" {
+	if !motionPhotoExtensions[fp.originalExtension] {
 		return nil, nil
 	}
 
-	ext, split, what := fp.originalExtension, motionphoto.StripJPEG, "photo"
+	ext, split, what := fp.originalExtension, motionphoto.Strip, "photo"
 	if setting == entity.MotionPhotosDropPhoto {
-		ext, split, what = ".mp4", motionphoto.ExtractVideoJPEG, "video"
+		ext, split, what = ".mp4", motionphoto.ExtractVideo, "video"
 	}
 	// Reserve a unique name, then let the splitter create the file itself.
 	tempFile, err := os.CreateTemp(fp.tempWorkDirSrc, "file-*"+ext)
@@ -302,7 +404,7 @@ func (fp *fileProcessor) motionPhotoSource(setting string) (*os.File, error) {
 		return nil, fmt.Errorf("unable to prepare temp file: %w", err)
 	}
 
-	info, err := split(fp.originalFile.Name(), tempFile.Name())
+	info, err := split(ctx, fp.originalFile.Name(), tempFile.Name())
 	if errors.Is(err, motionphoto.ErrNotMotionPhoto) {
 		return nil, nil
 	}
@@ -315,6 +417,37 @@ func (fp *fileProcessor) motionPhotoSource(setting string) (*os.File, error) {
 		setting, what,
 		utils.HumanReadableSize(info.StillBytes), utils.HumanReadableSize(info.VideoBytes))
 	return tempFile, nil
+}
+
+// gainMapSource returns the task input without its HDR gain map, or nil when
+// the input has none (or is not a JPEG). A motion photo that still has its
+// video (motion_photos: keep) keeps its gain map too: what follows the photo
+// would go with it.
+func (fp *fileProcessor) gainMapSource(ctx context.Context, input *os.File) (*os.File, error) {
+	ext := strings.ToLower(filepath.Ext(input.Name()))
+	if (ext != ".jpg" && ext != ".jpeg") || !motionphoto.HasGainMap(input.Name()) {
+		return nil, nil
+	}
+	if motionphoto.IsMotionPhoto(input.Name()) {
+		fp.logf("HDR photo kept with its gain map: it still has its motion video (motion_photos: keep)")
+		return nil, nil
+	}
+	out, err := os.CreateTemp(fp.tempWorkDirSrc, "file-*"+ext)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create temp file: %w", err)
+	}
+	_ = out.Close()
+	if err := os.Remove(out.Name()); err != nil {
+		return nil, fmt.Errorf("unable to prepare temp file: %w", err)
+	}
+	info, err := motionphoto.StripGainMap(ctx, input.Name(), out.Name())
+	if err != nil {
+		return nil, fmt.Errorf("unable to remove the gain map: %w", err)
+	}
+	// The task sees only the photo it gets.
+	_ = os.Remove(input.Name())
+	fp.logf("HDR photo (gain_maps: drop): passing only the ordinary photo to the task (%s)", utils.HumanReadableSize(info.StillBytes))
+	return out, nil
 }
 
 func (fp *fileProcessor) copyPassthroughResult(tempFile *os.File) error {
@@ -391,6 +524,10 @@ func (fp *fileProcessor) commandEnv(ctx context.Context, tempFile *os.File, task
 	return env
 }
 
+// outputDrainTimeout is how long the rest of a finished command's output is
+// waited for.
+const outputDrainTimeout = 2 * time.Second
+
 const (
 	// outputBufferSize bounds the memory kept for a task's combined output.
 	outputBufferSize = 64 << 10
@@ -402,16 +539,41 @@ func (fp *fileProcessor) executeCommand(ctx context.Context, command string, att
 	fp.logf("running: %s", command)
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	cmd.Env = append(os.Environ(), fp.env...)
+	cmd.Env = append(utils.EnvWithoutSecrets(os.Environ()), fp.env...)
 	if fp.configDir != "" {
 		cmd.Dir = fp.configDir
 	}
 	configureCmd(cmd)
 	out := newTailBuffer(outputBufferSize)
-	cmd.Stdout = out
-	cmd.Stderr = out
-
-	err := cmd.Run()
+	// The output goes through a pipe of our own, not one exec manages: Wait
+	// then returns when the command itself exits, even if something it
+	// started in the background still holds the pipe open.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("creating the output pipe: %w", err)
+	}
+	cmd.Stdout, cmd.Stderr = pw, pw
+	copied := make(chan struct{})
+	go func() {
+		defer close(copied)
+		_, _ = io.Copy(out, pr)
+	}()
+	if err = cmd.Start(); err == nil {
+		_ = pw.Close()
+		err = cmd.Wait()
+		// Whatever the command left running in the background is stopped
+		// before its output is looked at: it could still be writing there.
+		killGroup(cmd)
+	} else {
+		_ = pw.Close()
+	}
+	select {
+	case <-copied:
+	case <-time.After(outputDrainTimeout):
+		// A process that left the group still holds the pipe.
+	}
+	_ = pr.Close()
+	<-copied
 	attempt.OutputTail = out.Tail(OutputTailSize)
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -420,7 +582,7 @@ func (fp *fileProcessor) executeCommand(ctx context.Context, command string, att
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			if cause := context.Cause(ctx); cause != nil {
-				return fmt.Errorf("command killed (%v): %w", cause, err)
+				return fmt.Errorf("command killed (%w): %w", cause, err)
 			}
 		}
 		return fmt.Errorf("%w while running command", err)
@@ -469,5 +631,6 @@ func (fp *fileProcessor) processResults() (*entity.ProcessResult, error) {
 		Task:              fp.taskName,
 		TaskCommand:       fp.taskCommand,
 		MotionPhotos:      fp.motionSplit,
+		GainMapDropped:    fp.gainMapDropped,
 	}, nil
 }

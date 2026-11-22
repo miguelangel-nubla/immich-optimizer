@@ -257,7 +257,7 @@ func (*refusedErr) Error() string { return "connection refused" }
 func TestServeWithAnotherUsersConversionInTheLog(t *testing.T) {
 	h := tagged(t)
 	data := photo(1)
-	sum := sha([]byte(data))
+	sum := sha(data)
 	writeLog(t, h.logPath, `{"source":"library","user":"someone-else","event":"replaced","asset":"x","new_asset":"their-copy","original_sha1":"`+sum+`"}`+"\n"+
 		`{"source":"proxy","event":"uploaded","asset":"not-mine-either","outcome":"optimized","original_sha1":"`+sum+`"}`+"\n")
 	a := h.im.add("IMG_1.jpg", data)
@@ -403,5 +403,29 @@ func TestServeFindsSecondCopiesUploadedWhileItWasAway(t *testing.T) {
 	defer h.im.mu.Unlock()
 	if conv.IsTrashed {
 		t.Error("the converted asset was trashed")
+	}
+}
+
+// An interruption between an upload and its log entry leaves a copy the log
+// only knows by the converted file's checksum. The next start finds it among
+// the recent uploads and settles it: here the original is still in place, so
+// the half-made copy is removed.
+func TestServeFindsACopyWhoseUploadWasNotLogged(t *testing.T) {
+	h := tagged(t)
+	old := h.im.add("IMG_1.jpg", photo(1))
+	n := pendingCopy(h, old)
+	other := h.im.add("mine.jpg", photo(2)) // the person's own, untouched
+	at := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+	writeLog(t, h.logPath, `{"event":"full_read"}`+"\n"+
+		`{"time":"`+at+`","source":"library","event":"converted","asset":"`+old.ID+`","converted_sha1":"`+n.Checksum+`"}`+"\n")
+	h.serve()
+	h.waitFor("the unlogged copy to be removed", func() bool { return n.deleted })
+	h.im.mu.Lock()
+	defer h.im.mu.Unlock()
+	if old.IsTrashed || old.deleted || other.deleted || other.IsTrashed {
+		t.Errorf("original trashed %v, other changed %v", old.IsTrashed, other.deleted || other.IsTrashed)
+	}
+	if h.im.lists != 0 {
+		t.Errorf("the library was listed %d times", h.im.lists)
 	}
 }

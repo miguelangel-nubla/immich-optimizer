@@ -58,6 +58,10 @@ type Log struct {
 	path string
 	// failed is the error of the last write, nil when it succeeded.
 	failed error
+	// torn is true when the file may end in part of a line (a write that
+	// failed, or a crash in an earlier run): the next entry starts on a new
+	// line, so that it is not lost with the broken one.
+	torn bool
 }
 
 // Open opens (creating if needed) the log file for appending.
@@ -70,7 +74,25 @@ func Open(path string) (*Log, error) {
 		return nil, fmt.Errorf("opening audit log: %w", err)
 	}
 	now := time.Now().UTC()
-	return &Log{f: f, run: now.Format("20060102T150405Z"), now: time.Now, path: path}, nil
+	return &Log{f: f, run: now.Format("20060102T150405Z"), now: time.Now, path: path, torn: !endsInNewline(path)}, nil
+}
+
+// endsInNewline reports whether the file is empty or ends a line.
+func endsInNewline(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return true
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || st.Size() == 0 {
+		return true
+	}
+	last := make([]byte, 1)
+	if _, err := f.ReadAt(last, st.Size()-1); err != nil {
+		return true
+	}
+	return last[0] == '\n'
 }
 
 func (j *Log) Path() string { return j.path }
@@ -112,9 +134,15 @@ func (j *Log) write(e Entry) error {
 	if err != nil {
 		return err
 	}
-	if _, err := j.f.Write(append(b, '\n')); err != nil {
+	line := append(b, '\n')
+	if j.torn {
+		line = append([]byte{'\n'}, line...)
+	}
+	if _, err := j.f.Write(line); err != nil {
+		j.torn = true
 		return fmt.Errorf("writing audit log: %w", err)
 	}
+	j.torn = false
 	if err := j.f.Sync(); err != nil {
 		return fmt.Errorf("syncing audit log: %w", err)
 	}

@@ -135,3 +135,18 @@ func TestExtractVideoJPEG(t *testing.T) {
 		t.Error("an output file was written for an ordinary JPEG")
 	}
 }
+
+// A file that cannot be read is not declared an ordinary photo: library mode
+// would then convert what may be a motion photo as a whole and hide its video.
+func TestIsMotionJPEGWhenUnreadable(t *testing.T) {
+	if !IsMotionJPEG(t.TempDir()) { // a folder opens, but reading it fails
+		t.Error("an unreadable file counted as an ordinary photo")
+	}
+	short := filepath.Join(t.TempDir(), "short.jpg")
+	if err := os.WriteFile(short, []byte{0xFF, 0xD8, 0xFF}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if IsMotionJPEG(short) {
+		t.Error("a file that just ends counted as a motion photo")
+	}
+}

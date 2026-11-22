@@ -3,6 +3,7 @@
 package undone
 
 import (
+	"errors"
 	"os"
 	"syscall"
 )
@@ -16,7 +17,7 @@ func lockFile(path string) (func(), error) {
 	}
 	for {
 		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX) // #nosec G115 -- fd fits in int
-		if err != syscall.EINTR {
+		if !errors.Is(err, syscall.EINTR) {
 			break
 		}
 	}

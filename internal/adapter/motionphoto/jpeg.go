@@ -1,12 +1,15 @@
-// Package motionphoto implements the "keep the photo, drop the video" policy
-// for Android motion photos: a JPEG with an MP4 appended after the image data
-// and XMP that announces it (Google "MotionPhoto" with a Container directory,
-// or the older "MicroVideo" form).
+// Package motionphoto splits motion photos, a photo with a short video in the
+// same file, into the photo and the video:
 //
-// StripJPEG writes a copy of the still without the trailing video and with
-// the motion flags switched off, so Immich does not look for a video that is
-// no longer there. ExtractVideoJPEG writes only the video. The input is never
-// modified.
+//   - JPEG: an MP4 appended after the image data, announced by XMP (Google
+//     "MotionPhoto" with a Container directory, or the older "MicroVideo"
+//     form). Done here entirely.
+//   - HEIF (HEIC, AVIF): the video in a top-level "mpvd" box. Found and
+//     copied out here; removed with ExifTool (see heif.go).
+//
+// Strip writes a copy of the photo without the video and with the motion
+// flags switched off, so Immich does not look for a video that is no longer
+// there. ExtractVideo writes only the video. The input is never modified.
 package motionphoto
 
 import (
@@ -23,7 +26,8 @@ import (
 
 // Info describes the two parts of a motion photo.
 type Info struct {
-	// VideoBytes is the size of the trailing video.
+	// VideoBytes is the size of the video. What may follow it in the file
+	// (a Samsung trailer) is neither photo nor video.
 	VideoBytes int64
 	// StillBytes is the size of the still.
 	StillBytes int64
@@ -57,6 +61,7 @@ var (
 type layout struct {
 	size    int64
 	cut     int64 // where the video starts
+	end     int64 // where it ends: a trailer may follow (Samsung's)
 	xmpOff  int64
 	xmp     []byte
 	flags   [][]int
@@ -83,11 +88,17 @@ func analyze(f *os.File) (*layout, error) {
 	if len(flags) == 0 {
 		return nil, ErrNotMotionPhoto
 	}
-	videoLen := videoLength(xmp)
+	// The video starts Length bytes before the end of the file. What it
+	// declares as padding after it, or a Samsung trailer, is not video.
+	videoLen, padding := videoLength(xmp)
 	if videoLen <= 0 || videoLen >= size {
 		return nil, ErrNotMotionPhoto
 	}
 	cut := size - videoLen
+	trailer := max(padding, samsungTrailer(f, size))
+	if trailer < 0 || trailer > videoLen-8 {
+		trailer = 0
+	}
 	// The video comes after the photo, never inside its metadata.
 	if cut < xmpOff+int64(len(xmp)) {
 		return nil, ErrNotMotionPhoto
@@ -98,7 +109,29 @@ func analyze(f *os.File) (*layout, error) {
 	if _, err := f.ReadAt(box, cut); err != nil || string(box[4:8]) != "ftyp" {
 		return nil, ErrNotMotionPhoto
 	}
-	return &layout{size: size, cut: cut, xmpOff: xmpOff, xmp: xmp, flags: flags, modTime: st.ModTime()}, nil
+	return &layout{size: size, cut: cut, end: size - trailer, xmpOff: xmpOff, xmp: xmp, flags: flags, modTime: st.ModTime()}, nil
+}
+
+// samsungTrailer returns the length of the trailer Samsung phones append to
+// a motion photo (an index of what the file holds, "SEFH" ... "SEFT"), or 0.
+// It ends with its own length (little-endian) and "SEFT".
+func samsungTrailer(f *os.File, size int64) int64 {
+	if size < 16 {
+		return 0
+	}
+	tail := make([]byte, 8)
+	if _, err := f.ReadAt(tail, size-8); err != nil || string(tail[4:]) != "SEFT" {
+		return 0
+	}
+	n := int64(binary.LittleEndian.Uint32(tail[:4])) + 8
+	if n < 16 || n > size {
+		return 0
+	}
+	head := make([]byte, 4)
+	if _, err := f.ReadAt(head, size-n); err != nil || string(head) != "SEFH" {
+		return 0
+	}
+	return n
 }
 
 // create opens dst for writing and returns a finish function that closes it,
@@ -122,14 +155,17 @@ func create(dst string, modTime time.Time) (*os.File, func(ok bool) error, error
 
 // IsMotionJPEG reports whether the file is a JPEG motion photo this package
 // can split.
+//
+// A file that cannot be read counts as one: whoever asks then leaves it as
+// it is rather than risk hiding a video.
 func IsMotionJPEG(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
-		return false
+		return true
 	}
 	defer f.Close()
 	_, err = analyze(f)
-	return err == nil
+	return !errors.Is(err, ErrNotMotionPhoto)
 }
 
 // StripJPEG copies the still image of the motion photo at src to dst, without
@@ -179,7 +215,7 @@ func StripJPEG(src, dst string) (*Info, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Info{VideoBytes: l.size - l.cut, StillBytes: l.cut}, nil
+	return &Info{VideoBytes: l.end - l.cut, StillBytes: l.cut}, nil
 }
 
 // ExtractVideoJPEG copies the embedded MP4 of the motion photo at src to dst.
@@ -199,19 +235,23 @@ func ExtractVideoJPEG(src, dst string) (*Info, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, err = io.Copy(out, io.NewSectionReader(f, l.cut, l.size-l.cut))
+	_, err = io.Copy(out, io.NewSectionReader(f, l.cut, l.end-l.cut))
 	if ferr := finish(err == nil); err == nil {
 		err = ferr
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &Info{VideoBytes: l.size - l.cut, StillBytes: l.cut}, nil
+	return &Info{VideoBytes: l.end - l.cut, StillBytes: l.cut}, nil
 }
 
-// videoLength returns the number of trailing bytes that belong to the video,
-// or 0 when the XMP does not say.
-func videoLength(xmp []byte) int64 {
+// videoLength returns how many bytes before the end of the file the video
+// starts, and the padding declared after it; 0 when the XMP does not say.
+//
+// The video item's Length counts from its start to the end of the file.
+// Samsung phones count their trailer in it too, and give its size as the
+// item's Padding (One UI 6), or not at all (One UI 5).
+func videoLength(xmp []byte) (length, padding int64) {
 	for _, item := range itemRe.FindAll(xmp, -1) {
 		if !semanticRe.Match(item) {
 			continue
@@ -220,9 +260,9 @@ func videoLength(xmp []byte) int64 {
 		if n <= 0 {
 			continue
 		}
-		return n + firstInt(paddingRe, item)
+		return n, firstInt(paddingRe, item)
 	}
-	return firstInt(microOffsetRe, xmp)
+	return firstInt(microOffsetRe, xmp), 0
 }
 
 func firstInt(re *regexp.Regexp, b []byte) int64 {
@@ -243,7 +283,8 @@ func firstInt(re *regexp.Regexp, b []byte) int64 {
 
 // findXMP walks the JPEG segments before the image data and returns the file
 // offset and payload of the XMP packet (without the namespace header). It
-// returns nil when the file is not a JPEG or has no XMP.
+// returns nil when the file is not a JPEG or has no XMP, and an error only
+// when the file could not be read.
 func findXMP(f *os.File) (int64, []byte, error) {
 	r := io.NewSectionReader(f, 0, maxHeaderScan)
 	br := bufio.NewReader(r)
@@ -251,14 +292,14 @@ func findXMP(f *os.File) (int64, []byte, error) {
 
 	soi := make([]byte, 2)
 	if _, err := io.ReadFull(br, soi); err != nil || soi[0] != 0xFF || soi[1] != 0xD8 {
-		return 0, nil, nil
+		return 0, nil, readErr(err)
 	}
 	pos = 2
 
 	hdr := make([]byte, 4)
 	for {
 		if _, err := io.ReadFull(br, hdr); err != nil {
-			return 0, nil, nil
+			return 0, nil, readErr(err)
 		}
 		if hdr[0] != 0xFF {
 			return 0, nil, nil
@@ -279,14 +320,23 @@ func findXMP(f *os.File) (int64, []byte, error) {
 		if marker == 0xE1 && payloadLen > int64(len(xmpHeader)) {
 			payload := make([]byte, payloadLen)
 			if _, err := io.ReadFull(br, payload); err != nil {
-				return 0, nil, nil
+				return 0, nil, readErr(err)
 			}
 			if bytes.HasPrefix(payload, []byte(xmpHeader)) {
 				return payloadOff + int64(len(xmpHeader)), payload[len(xmpHeader):], nil
 			}
 		} else if _, err := br.Discard(int(payloadLen)); err != nil {
-			return 0, nil, nil
+			return 0, nil, readErr(err)
 		}
 		pos = payloadOff + payloadLen
 	}
+}
+
+// readErr is the error of a read that stopped early: none when the file
+// just ended (it is then not a file this package splits), else the error.
+func readErr(err error) error {
+	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil
+	}
+	return err
 }

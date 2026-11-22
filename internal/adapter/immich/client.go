@@ -164,7 +164,7 @@ func (c *client) doUpload(ctx context.Context, u entity.Upload, stat os.FileInfo
 	}()
 
 	url := fmt.Sprintf("%s/api/assets", c.BaseURL)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, pr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, pr)
 	if err != nil {
 		pr.Close()
 		return res, fmt.Errorf("unable to create request: %w", err)

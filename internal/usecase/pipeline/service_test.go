@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -408,6 +409,9 @@ func TestPipelineKeepsAFileThatChangedMeanwhile(t *testing.T) {
 	if fs.count() != 0 {
 		t.Fatalf("a file that changed while it was processed was removed")
 	}
+	if up.calls != 0 {
+		t.Fatalf("what was converted from the old content was uploaded (%d uploads)", up.calls)
+	}
 	if len(conv.inputs) != 1 {
 		t.Fatalf("converted %d times without a new event", len(conv.inputs))
 	}
@@ -438,10 +442,59 @@ func TestPipelineHandlesAReplacedFileAgain(t *testing.T) {
 	svc, events = newSvc(conv, up, fs, dir, 1)
 	runEvents(t, svc, events, f)
 
-	if len(conv.inputs) != 2 || up.calls != 2 {
-		t.Fatalf("converted %d times, uploaded %d times, want 2 and 2", len(conv.inputs), up.calls)
+	// Only the new content is uploaded.
+	if len(conv.inputs) != 2 || up.calls != 1 {
+		t.Fatalf("converted %d times, uploaded %d times, want 2 and 1", len(conv.inputs), up.calls)
 	}
 	if fs.count() != 1 {
 		t.Fatalf("removed %d times, want once, after the second pass", fs.count())
+	}
+}
+
+// A large backlog (a startup scan of thousands of files) does not start one
+// handler per file at once: the rest waits in the watcher.
+func TestPipelineBoundsWaitingHandlers(t *testing.T) {
+	dir := t.TempDir()
+	release := make(chan struct{})
+	conv := &fakeConverter{}
+	base := &fakeConverter{}
+	conv.convert = func(ctx context.Context, in entity.ConvertInput) (*entity.ConvertResult, error) {
+		<-release
+		return base.Convert(ctx, in)
+	}
+	up, fs := &mockUploader{}, &mockFileSystem{}
+	svc, events := newSvc(conv, up, fs, dir, 1)
+	svc.Start()
+	limit := cap(svc.handlers)
+	paths := make([]string, limit*3)
+	for i := range paths {
+		paths[i] = touch(t, dir, fmt.Sprintf("f%d.jpg", i))
+	}
+	sent := make(chan int, 1)
+	go func() {
+		n := 0
+		for i := 0; i < limit*3; i++ {
+			select {
+			case events <- entity.FileEvent{Path: paths[i]}:
+				n++
+			case <-time.After(300 * time.Millisecond):
+				sent <- n
+				return
+			}
+		}
+		sent <- n
+	}()
+	n := <-sent
+	if n >= limit*3 {
+		t.Fatalf("all %d events were taken at once (limit %d)", n, limit)
+	}
+	if got := len(svc.handlers); got != limit {
+		t.Errorf("%d handlers, want %d", got, limit)
+	}
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := svc.Drain(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

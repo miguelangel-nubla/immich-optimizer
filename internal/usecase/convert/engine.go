@@ -43,8 +43,8 @@ type Config struct {
 	// Audit, when set, records every input the engine refused or failed to
 	// convert (library mode records its own, richer entries).
 	Audit *audit.Log
-	// Checker refuses a result that is tiny next to its original, in every
-	// mode, and validates converted files for library mode.
+	// Checker refuses, in every mode, a result that is not a valid photo or
+	// video or is tiny next to its original.
 	Checker port.OutputChecker
 }
 
@@ -171,13 +171,25 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 	}
 
 	inExt := filepath.Ext(in.Filename)
+	checked := false
 	if res.ProcessedSize < res.OriginalSize && e.cfg.Checker != nil {
-		// A valid, much smaller file is exactly what a wrong conversion
-		// looks like too: the thumbnail of a photo instead of the photo.
-		if err := e.cfg.Checker.CheckSize(ctx, in.Path, res.ProcessedFilePath); err != nil {
+		// Whatever replaces the original, in every mode, must be a photo or
+		// video that can be read: a task can exit cleanly and still leave a
+		// truncated or broken file (a full disk). And a valid, much smaller
+		// file is exactly what a wrong conversion looks like too: the
+		// thumbnail of a photo instead of the photo.
+		err := e.cfg.Checker.Check(ctx, in.Path, res.ProcessedFilePath)
+		if err == nil {
+			err = e.cfg.Checker.CheckSize(ctx, in.Path, res.ProcessedFilePath)
+		}
+		if err != nil {
 			release()
+			if ctx.Err() != nil {
+				return nil, canceled(ctx)
+			}
 			return nil, e.fail(in, entity.Failure{Stage: entity.StageConvert, Err: err, At: e.now()}, true)
 		}
+		checked = true
 	}
 	if res.ProcessedSize < res.OriginalSize {
 		outExt := filepath.Ext(res.ProcessedFilename)
@@ -194,6 +206,7 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 			OriginalSize: res.OriginalSize,
 			OutputSize:   res.ProcessedSize,
 			Release:      release,
+			Checked:      checked,
 		}
 		sum, err := originalSHA1(in)
 		if err != nil {
@@ -214,6 +227,7 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 			TaskCommand:  res.TaskCommand,
 			ConfigSHA256: e.cfg.ConfigSHA256,
 			MotionPhotos: res.MotionPhotos,
+			GainMaps:     gainMaps(res),
 			Source:       string(in.Source),
 			Optimizer:    e.cfg.Version,
 			At:           e.now(),
@@ -224,6 +238,9 @@ func (e *Engine) Convert(ctx context.Context, in entity.ConvertInput) (*entity.C
 		note := ""
 		if res.MotionPhotos != "" {
 			note = ", motion photo: " + res.MotionPhotos
+		}
+		if res.GainMapDropped {
+			note += ", HDR gain map dropped"
 		}
 		e.infof("Optimized %s (%s%s): %s -> %s", in.Filename, in.Source, note,
 			utils.HumanReadableSize(r.OriginalSize), utils.HumanReadableSize(r.OutputSize))
@@ -289,6 +306,9 @@ func (e *Engine) Converts(filename string) (bool, string) {
 func (e *Engine) CheckOutput(ctx context.Context, in entity.ConvertInput, res *entity.ConvertResult) error {
 	if res == nil || res.Outcome != entity.OutcomeOptimized {
 		return errors.New("nothing was converted")
+	}
+	if res.Checked {
+		return nil
 	}
 	if e.cfg.Checker == nil {
 		return errors.New("no output checker configured")
@@ -403,4 +423,12 @@ func canceled(ctx context.Context) error {
 		cause = ctx.Err()
 	}
 	return fmt.Errorf("%w: %w", entity.ErrCanceled, cause)
+}
+
+// gainMaps is what the marker records about an HDR photo's gain map.
+func gainMaps(res *entity.ProcessResult) string {
+	if res.GainMapDropped {
+		return entity.GainMapsDrop
+	}
+	return ""
 }

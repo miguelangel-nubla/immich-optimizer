@@ -37,6 +37,7 @@ var retryDelay = 30 * time.Second
 // nothing is the whole library read (see Run).
 func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
 	defer func() { s.idx, s.uploadsChecked = nil, time.Time{} }()
+	defer s.cfg.Users.release(s)
 
 	// Start: retried until Immich answers.
 	var me string
@@ -156,6 +157,9 @@ func (s *Service) start(ctx context.Context, me *string) error {
 		return fmt.Errorf("identifying the API key's user: %w", err)
 	}
 	id := u.ID
+	if !s.cfg.Users.claim(id, s) {
+		return fmt.Errorf("another API key of user %s <%s> is already in use; one key per user", id, u.Email)
+	}
 	if s.me != id {
 		if s.cfg.Label != "" {
 			s.log = s.rootLog.WithPrefix("[user " + id + "] ")
@@ -261,6 +265,28 @@ func (s *Service) pendingPass(ctx context.Context, me string) error {
 		s.log.Warnf("Library: could not read the audit log: %v", err)
 	}
 	ids := s.idx.pendingIDs()
+	// A copy uploaded right before an interruption, whose upload the log
+	// does not show: found by its checksum among the recent uploads.
+	if sums, since := s.idx.uploadingSince(); len(sums) > 0 {
+		recent, err := s.base.AssetsCreatedSince(ctx, since.Add(-uploadCheckMargin))
+		if err != nil {
+			return fmt.Errorf("listing recent uploads: %w", err)
+		}
+		for _, a := range recent {
+			if a.OwnerID != me || !sums[strings.ToLower(a.Checksum)] {
+				continue
+			}
+			// Only an unfinished replacement: the same bytes can also be
+			// an asset of the person's own.
+			items, err := s.base.GetMetadata(ctx, a.ID)
+			if err != nil {
+				return fmt.Errorf("reading the metadata of %s: %w", a.ID, err)
+			}
+			if markerOf(items).Unfinished() {
+				ids = append(ids, a.ID)
+			}
+		}
+	}
 	if len(ids) == 0 {
 		return nil
 	}

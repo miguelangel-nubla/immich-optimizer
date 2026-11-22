@@ -19,7 +19,7 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 |---|---|---|---|
 | `IO_MODE` | `-mode` | none: it has to be set | What to run: `proxy`, `watcher`, `library`, or several separated by commas |
 | `IO_LOG_LEVEL` | `-log_level` | `info` | How much to log: `debug`, `info`, `warn` or `error` |
-| `IO_SHUTDOWN_TIMEOUT` | `-shutdown_timeout` | `8s` | On shutdown, how long running jobs get to finish before they are cancelled. A [duration](#durations) |
+| `IO_SHUTDOWN_TIMEOUT` | `-shutdown_timeout` | `5s` | On shutdown, how long running jobs get to finish before they are cancelled. A [duration](#durations) |
 
 ### Immich
 
@@ -42,7 +42,7 @@ What to convert, and how, is not a setting: it is in the [tasks file](tasks.md).
 
 | Environment variable | Flag | Default | Description |
 |---|---|---|---|
-| `IO_UNDONE_DIR` | `-undone_dir` | `/undone` | Folder where files that could not be converted are kept (proxy and watcher mode) |
+| `IO_UNDONE_DIR` | `-undone_dir` | `/undone` | Folder where files that could not be converted are kept, and where the audit log is by default (every mode) |
 | `IO_UNDONE_UNMATCHED` | `-undone_unmatched` | `true` | Also keep files whose type no task handles (they are refused either way) |
 | `IO_AUDIT_LOG_FILE` | `-audit_log_file` | `audit.log` in the undone folder | Persistent record of every asset operation |
 

@@ -267,6 +267,34 @@ func TestSeveralAPIKeys(t *testing.T) {
 	}
 }
 
+// Watcher mode uploads for one user: several keys are an error there, unless
+// library mode runs too (the watcher then uses the first).
+func TestSeveralAPIKeysInWatcherMode(t *testing.T) {
+	clearConfigEnv(t)
+	root := t.TempDir()
+	args := func(mode string) []string {
+		return []string{"-mode", mode, "-undone_dir", filepath.Join(root, "undone"), "-watcher_dir", filepath.Join(root, "watch"),
+			"-immich_url", "http://immich.example", "-tasks_file", writeTestTasksFile(t),
+			"-immich_api_key", "key-of-alice-0001,key-of-bob-00002"}
+	}
+	if _, err := parseConfig(args("watcher")); err == nil || !strings.Contains(err.Error(), "one key") {
+		t.Errorf("watcher mode with two keys: %v", err)
+	}
+	if cfg, err := parseConfig(args("watcher,library")); err != nil || cfg.ImmichAPIKey != "key-of-alice-0001" {
+		t.Errorf("watcher and library mode with two keys: %v", err)
+	}
+}
+
+func TestLibraryReadyTimeoutMustBePositive(t *testing.T) {
+	clearConfigEnv(t)
+	_, err := parseConfig([]string{"-mode", "library", "-undone_dir", filepath.Join(t.TempDir(), "undone"),
+		"-immich_url", "http://immich.example", "-tasks_file", writeTestTasksFile(t),
+		"-immich_api_key", "key-of-alice-0001", "-library_ready_timeout", "0s"})
+	if err == nil || !strings.Contains(err.Error(), "library_ready_timeout") {
+		t.Errorf("library_ready_timeout 0: %v", err)
+	}
+}
+
 func TestParseConfigAPIKeyFileMissing(t *testing.T) {
 	clearConfigEnv(t)
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
@@ -401,7 +429,7 @@ func TestDefaultBindAddr2283(t *testing.T) {
 	if cfg.BindAddr != ":2283" {
 		t.Fatalf("default bind addr = %q, want :2283", cfg.BindAddr)
 	}
-	if !cfg.UndoneUnmatched || cfg.TasksTimeout != 0 || cfg.ShutdownTimeout != 8*time.Second {
+	if !cfg.UndoneUnmatched || cfg.TasksTimeout != 0 || cfg.ShutdownTimeout != 5*time.Second {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -523,6 +551,41 @@ func TestTasksFileInWatchDirCwdIsSkipped(t *testing.T) {
 	_, err = parseConfig(args)
 	if err != nil && strings.Contains(err.Error(), "must not be inside the watch directory") {
 		t.Fatalf("auto-detected tasks.yaml in the watch dir must be skipped: %v", err)
+	}
+}
+
+func TestLoadTasksGainMapsPolicy(t *testing.T) {
+	task := "  - name: t\n    command: \"\"\n    extensions: [jpg]\n"
+	cases := []struct {
+		yaml                 string
+		wantGlobal, wantTask string
+		wantErr              bool
+	}{
+		{"tasks:\n" + task, entity.GainMapsKeep, entity.GainMapsKeep, false},
+		{"gain_maps: drop\ntasks:\n" + task, entity.GainMapsDrop, entity.GainMapsDrop, false},
+		{"gain_maps: drop\ntasks:\n" + task + "    gain_maps: skip\n", entity.GainMapsDrop, entity.GainMapsSkip, false},
+		{"gain_maps: maybe\ntasks:\n" + task, "", "", true},
+		{"tasks:\n" + task + "    gain_maps: maybe\n", "", "", true},
+	}
+	for _, c := range cases {
+		p := filepath.Join(t.TempDir(), "tasks.yaml")
+		if err := os.WriteFile(p, []byte(c.yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loadTasks(p)
+		if c.wantErr {
+			if err == nil || !strings.Contains(err.Error(), "gain_maps") {
+				t.Errorf("%q: err = %v", c.yaml, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%q: %v", c.yaml, err)
+			continue
+		}
+		if cfg.GainMaps != c.wantGlobal || cfg.Tasks[0].GainMaps != c.wantTask {
+			t.Errorf("%q: global=%q task=%q, want %q / %q", c.yaml, cfg.GainMaps, cfg.Tasks[0].GainMaps, c.wantGlobal, c.wantTask)
+		}
 	}
 }
 
@@ -725,6 +788,8 @@ func TestDocsLinksAndSettingNames(t *testing.T) {
 	known := map[string]bool{"IO_UPDATE_DOCS": true, "IO_DEV_DIR": true,
 		// Read by the test scripts.
 		"IO_IOS_FULL_SPEED": true, "IO_IOS_DEVICES": true, "IO_TEST_CPUS": true, "IO_TEST_MEMORY": true,
+		// Read by a test.
+		"IO_MOTIONPHOTO_SAMPLES": true,
 		// Given to task commands, not settings.
 		"IO_MOTION_PHOTOS": true, "IO_SRC_FOLDER": true, "IO_DST_FOLDER": true, "IO_NAME": true, "IO_EXTENSION": true,
 		"IO_ORIGINAL_NAME": true, "IO_SOURCE": true, "IO_TASK": true}

@@ -36,13 +36,21 @@ tasks:
   - gif
   - exr
 
+# cjxl does not read HEIC: vips converts the photo, and the EXIF is copied
+# over. A motion photo arrives here already without its video (see
+# motion_photos above). vips carries the XMP over, so the motion flags are
+# removed in case the photo came with its video ("keep"): the output must not
+# claim a video it does not have.
 - name: heic2jxl
   command: |
-    ./heic2jxl.sh \
-      "{{.src_folder}}" \
-      "{{.name}}" \
-      "{{.extension}}" \
-      "{{.dst_folder}}"
+    vips copy \
+      "{{.src_folder}}/{{.name}}.{{.extension}}" \
+      "{{.dst_folder}}/{{.name}}.jxl[Q=75]" \
+    && exiftool -m -overwrite_original \
+      -tagsfromfile "{{.src_folder}}/{{.name}}.{{.extension}}" -exif \
+      -XMP-GCamera:MotionPhoto= -XMP-GCamera:MotionPhotoVersion= \
+      -XMP-GCamera:MotionPhotoPresentationTimestampUs= \
+      "{{.dst_folder}}/{{.name}}.jxl"
   extensions:
   - heic
   - heif

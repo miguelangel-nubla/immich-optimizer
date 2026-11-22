@@ -28,7 +28,11 @@ type Service struct {
 	logger   *logger.Logger
 	watchDir string
 
-	semaphore  chan struct{}
+	semaphore chan struct{}
+	// handlers bounds the events being handled or waiting for a place in
+	// semaphore. Beyond it the events wait in the watcher: a scan of a large
+	// backlog does not start one handler per file at once.
+	handlers   chan struct{}
 	processing sync.Map
 	stopChan   chan struct{}
 	stopOnce   sync.Once
@@ -60,6 +64,7 @@ func NewService(
 		watchDir:  watchDir,
 		audit:     auditLog,
 		semaphore: make(chan struct{}, maxConcurrent),
+		handlers:  make(chan struct{}, maxConcurrent*4+64),
 		stopChan:  make(chan struct{}),
 		ctx:       ctx,
 		cancel:    cancel,
@@ -115,9 +120,15 @@ func (s *Service) consumeEvents() {
 			if !ok {
 				return
 			}
+			select {
+			case s.handlers <- struct{}{}:
+			case <-s.stopChan:
+				return
+			}
 			s.wg.Add(1)
 			go func(e entity.FileEvent) {
 				defer s.wg.Done()
+				defer func() { <-s.handlers }()
 				s.handleEvent(s.ctx, e)
 			}(event)
 		}
@@ -235,6 +246,14 @@ func (s *Service) processFile(ctx context.Context, path string) (changed bool) {
 	}
 	defer res.Release()
 
+	// A file written to while it was converted: what was converted (and the
+	// checksum in its marker) is not what the file holds now. Nothing is
+	// uploaded; the file is handled again.
+	if !unchanged(path, info) {
+		s.logger.Warnf("Not uploading %s: it was written to while it was being converted; it is handled again", path)
+		return true
+	}
+
 	upload := entity.Upload{
 		Path:     res.DeliverPath,
 		Filename: res.DeliverName,
@@ -292,16 +311,26 @@ func (s *Service) relDir(path string) string {
 	return rel
 }
 
+// unchanged reports whether path is still the file described by handled: the
+// same file, size and modification time. A file that cannot be read now
+// counts as unchanged; whoever acts on it next finds out.
+func unchanged(path string, handled os.FileInfo) bool {
+	now, err := os.Stat(path)
+	if err != nil {
+		return true
+	}
+	return os.SameFile(handled, now) && now.Size() == handled.Size() && now.ModTime().Equal(handled.ModTime())
+}
+
 // removeSource removes a handled file from the watch directory, unless it is
 // no longer the file that was handled: one that was written to or replaced
 // meanwhile has content that was never converted or uploaded, so it is kept
 // and true is returned.
 func (s *Service) removeSource(path string, handled os.FileInfo, why string) (changed bool) {
-	now, err := os.Stat(path)
-	if errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return false
 	}
-	if err == nil && (!os.SameFile(handled, now) || now.Size() != handled.Size() || !now.ModTime().Equal(handled.ModTime())) {
+	if !unchanged(path, handled) {
 		s.logger.Warnf("Keeping %s in the watch directory: it was written to while it was being processed", path)
 		return true
 	}

@@ -21,3 +21,11 @@ func configureCmd(cmd *exec.Cmd) {
 	}
 	cmd.WaitDelay = 5 * time.Second
 }
+
+// killGroup stops what is left of a finished command's process group: the
+// processes it started in the background.
+func killGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+}

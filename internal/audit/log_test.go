@@ -113,3 +113,35 @@ func TestCheckReportsAndRecovers(t *testing.T) {
 		t.Errorf("no recovery marker in the log: %s", data)
 	}
 }
+
+// A log that ends in part of a line (a crash mid-write) does not swallow the
+// next entry: it starts on a line of its own.
+func TestLogAfterATornLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	if err := os.WriteFile(path, []byte(`{"event":"uploaded","asset":"a1"}`+"\n"+`{"event":"upl`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	l, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Write(Entry{Source: "library", Event: "replaced", Asset: "a2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Write(Entry{Source: "library", Event: "replaced", Asset: "a3"}); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	b, _ := os.ReadFile(path)
+	var assets []string
+	sc := bufio.NewScanner(bytes.NewReader(b))
+	for sc.Scan() {
+		var e Entry
+		if json.Unmarshal(sc.Bytes(), &e) == nil {
+			assets = append(assets, e.Asset)
+		}
+	}
+	if len(assets) != 3 || assets[0] != "a1" || assets[1] != "a2" || assets[2] != "a3" {
+		t.Errorf("readable entries %v, want [a1 a2 a3]\n%s", assets, b)
+	}
+}

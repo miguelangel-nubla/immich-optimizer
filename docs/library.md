@@ -30,7 +30,8 @@ It keeps running and waits. **Nothing happens until you tag something** in Immic
 - **One key per user**, all in one container: separate them with commas in `IO_IMMICH_API_KEY`, or put one per line in the file named by `IO_IMMICH_API_KEY_FILE` (blank lines and lines starting with `#` are ignored, so you can note whose each key is).
 - Library mode then works for each user separately: each one's tags act on that user's photos only. In the log, each user's lines start with `[user <id>]`, the user's id in Immich, which stays the same when a key is replaced. At start each one logs whose it is: `Library: working for Alice <alice@example.com> (user <id>)`. Until Immich has said whose a key is (while Immich cannot be reached, for example), its lines say `[key 2 of 3]`.
 - All users share the conversions running at the same time ([`IO_TASKS_CONCURRENCY`](configuration.md#tasks)) and one [audit log](audit-log.md), in which each library entry names its user.
-- Watcher mode uploads with the first key.
+- **Each key must be of a different user.** Two keys of the same user would work on the same photos at the same time; the second one waits, with an error in the log, while the first is in use.
+- Watcher mode uploads with the first key. Watcher mode on its own takes only one key.
 
 **To try it**, tag three or four photos and look at the result in Immich. Each converted photo is a new asset, and its original is in the trash, where you can compare the two or restore the original.
 
@@ -48,10 +49,12 @@ Immich has no "replace this file", so the optimizer does it in a fixed order tha
 2. Convert it with your tasks, then check that the result **looks like a valid photo or video**: the file is not empty, it decodes completely, and it is not a single flat colour (unless the original was). For a video: it has a picture track, a length, and a frame from the middle decodes.
 3. Upload the converted file as a new asset.
 4. Carry everything over: albums, shared links, memories, stack position, favorite, archive state, description, rating, date and location edits, tags, people (named faces) and the mobile app's own metadata.
-5. Compare the new asset with the original, field by field.
-6. **Only if everything matches**, move the original to Immich's **trash**.
+5. Compare the new asset with the original, field by field, and check that nothing was added to the original meanwhile: an album, a shared link, a person, or comments and likes in a shared album.
+6. **Only if everything matches**, mark the new asset as verified and move the original to Immich's **trash**.
 
-If anything fails or differs before step 6, the new asset is deleted again and the original is left exactly as it was. Because the original goes to the trash, you can restore it from Immich for as long as your trash keeps it (30 days by default). The space is freed when the trash is emptied.
+If anything fails or differs before step 6, the new asset is deleted again and the original is left exactly as it was; a change made to the original meanwhile only means it is converted at a later pass.
+
+**If it is interrupted** (a restart, a lost connection), the next start settles it from the new asset's [record](marker.md): a copy that was not verified yet is deleted again while its original is still in place, and the original is converted afresh. A verified copy is never deleted: if its original is in the trash, the swap is complete; if the original is back (you restored it, or the move to the trash did not reach Immich), the swap is completed when the two still match, and otherwise both are kept and the copy is tagged `immich-optimizer/review`. A copy that was not verified, whose original is in the trash anyway, is kept and tagged `review` as well. Because the original goes to the trash, you can restore it from Immich for as long as your trash keeps it (30 days by default). The space is freed when the trash is emptied.
 
 ## What is carried over, and what is not
 
@@ -131,7 +134,7 @@ You choose in Immich, with tags. Library mode creates them the first time it run
 | `immich-optimizer/convert/<profile>` | you | the same, with that [profile](#profiles) instead of your tasks file |
 | `immich-optimizer/keep` | you | protects the asset: while it has this tag, it is not converted, whatever else it is tagged. Remove the tag to end it. Nothing is written to the asset |
 | `immich-optimizer/failed` | the optimizer | the conversion failed: the reason is in the [audit log](audit-log.md) and the optimizer's own log. The asset keeps its `convert` tag and is not tried again while it has `failed`: **remove `failed` to try again** |
-| `immich-optimizer/review` | the optimizer | a [second copy](#second-copies-of-converted-originals) was left alone because it has something of its own: merge the two by hand |
+| `immich-optimizer/review` | the optimizer | look at this asset: a [second copy](#second-copies-of-converted-originals) left alone because it has something of its own (merge the two by hand), or a replacement that was interrupted and could not be completed as planned (see [What happens to each asset](#what-happens-to-each-asset)). The log says which |
 
 **Tagging by hand.** In Immich, select the photos and videos, then choose **Tag** in the selection menu. "Select all" works in an album, in search results and on a whole day or month of the timeline, so:
 
@@ -206,7 +209,8 @@ Nothing is lost, but such a photo saves no space: its original is in the trash m
 
 ## Live photos, motion photos and edits
 
-- **Live photos (Apple) and motion photos (Android)** are a photo paired with a short video. In Immich the video is an asset of its own, hidden behind the photo. Library mode converts the photo and pairs the copy with that same video. The video itself is not converted.
+- **Live photos (Apple) and motion photos (Android, JPEG or HEIC)** are a photo paired with a short video. In Immich the video is an asset of its own, hidden behind the photo. Library mode converts the photo and pairs the copy with that same video. The video itself is not converted.
+- **Samsung files with only Samsung's own motion-photo index** (none seen yet) are not detected; see [Samsung motion photos](tasks.md#samsung-motion-photos).
 - **Edits made in Immich** are stored as positions on the original picture. They are copied to the new asset when it has the same pixel size. If your task resizes or crops, an edited asset fails the comparison and is left as it is; unedited assets are converted normally.
 
 ## Things to know before you start

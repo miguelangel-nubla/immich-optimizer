@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/mediacheck"
+	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/motionphoto"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/adapter/processor"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/domain/entity"
 )
@@ -244,19 +245,37 @@ func TestIntegrationProfile1MotionPhotoHEIC(t *testing.T) {
 			t.Errorf("DateTimeOriginal = %q, want %q", got, sampleDate)
 		}
 	})
-	t.Run("keep", func(t *testing.T) {
-		res := runProfile(t, "profile1", "motion.heic", entity.MotionPhotosKeep)
-		if !sameBytes(t, res.ProcessedFilePath, src) {
-			t.Error("keep must pass the HEIC motion photo through unchanged")
+	// The optimizer splits the file before the task: the photo it converts
+	// has no video left, and no metadata that announces one.
+	t.Run("the task gets the photo without its video", func(t *testing.T) {
+		res := runProfile(t, "profile1", "motion.heic", "")
+		if res.MotionPhotos != entity.MotionPhotosDropVideo {
+			t.Errorf("the file was not split (motion photos %q)", res.MotionPhotos)
+		}
+		data, _ := os.ReadFile(res.ProcessedFilePath)
+		if bytes.Contains(data, []byte("mpvd")) || bytes.Contains(data, []byte("ftypqt")) {
+			t.Error("the embedded video is still inside the output")
 		}
 	})
-	t.Run("drop_photo", func(t *testing.T) {
-		res := runProfile(t, "profile1", "motion.heic", entity.MotionPhotosDropPhoto)
-		if ext(res) != ".mp4" {
-			t.Fatalf("output is %s, want .mp4", ext(res))
+	// "keep" hands the converting task the whole file, like for a JPEG: the
+	// video does not survive the conversion, and the output does not claim it.
+	t.Run("keep", func(t *testing.T) {
+		res := runProfile(t, "profile1", "motion.heic", entity.MotionPhotosKeep)
+		if ext(res) != ".jxl" {
+			t.Fatalf("output is %s, want .jxl", ext(res))
 		}
-		if !sameBytes(t, res.ProcessedFilePath, filepath.Join(mediaDir(), "live.mov")) {
-			t.Error("drop_photo must output exactly the embedded video")
+		if got := tag(t, res.ProcessedFilePath, "MotionPhoto"); got != "" && got != "0" {
+			t.Errorf("output claims to be a motion photo (MotionPhoto=%s)", got)
+		}
+	})
+	// The exact video, for a task that wants only it.
+	t.Run("drop_photo", func(t *testing.T) {
+		video := filepath.Join(t.TempDir(), "video.mp4")
+		if _, err := motionphoto.ExtractVideo(context.Background(), src, video); err != nil {
+			t.Fatal(err)
+		}
+		if !sameBytes(t, video, filepath.Join(mediaDir(), "live.mov")) {
+			t.Error("drop_photo must give exactly the embedded video")
 		}
 	})
 }
