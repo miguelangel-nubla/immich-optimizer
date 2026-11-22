@@ -140,6 +140,41 @@ Checked with the samples Immich tests with: a Pixel 8a Ultra HDR JPEG, HDR AVIF 
 
 It is useful for older or high-bitrate video. Expect no gain on recent phone video until the preset is changed.
 
+## Video: HandBrake or ffmpeg
+
+The image has both. Either can be used in a task; what matters is how you prefer to describe the conversion.
+
+| | HandBrake | ffmpeg |
+|---|---|---|
+| Settings | one preset file, which you can design in HandBrake's own app and export | all on the command line |
+| A maximum size, keeping the aspect ratio | a preset setting | a `scale` expression |
+| Cropping black bars | automatic | needs a script that samples frames first |
+| Deinterlacing, choice of audio track | preset settings | filters and `-map` options |
+| Graphics card | not in the image's build | NVIDIA and VAAPI (AMD, Intel) |
+| Used by | [`profile1`](../config/profile1/tasks.yaml) | the examples in the [custom image template](https://github.com/miguelangel-nubla/immich-optimizer-custom) |
+
+**Pick HandBrake** for a preset you can try out in its app, or for cropping black bars. **Pick ffmpeg** for a short command, or to encode on a graphics card. Whether to use a graphics card at all is covered in the [template](https://github.com/miguelangel-nubla/immich-optimizer-custom#graphics-card-or-cpu): usually the CPU saves more space.
+
+### Keeping the date and location
+
+**Neither tool keeps a video's metadata by itself.** Checked with HandBrake 1.9.2 and ffmpeg 7.1, as in the image, on an MP4 with a phone's date, location, make and model: both wrote a file with none of them. Immich then files the video under the day it was converted, and leaves it off the map.
+
+- **Write MP4, not MKV.** ExifTool cannot write MKV, and ExifTool is what Immich reads metadata with.
+- **Copy the metadata from the original with ExifTool** after the encoder, as `profile1` does. This works after either tool:
+
+  ```yaml
+  - name: videos
+    command: |
+      HandBrakeCLI --preset-import-file handbrake.json -Z my-preset \
+        -i "{{.src_folder}}/{{.name}}.{{.extension}}" \
+        -o "{{.dst_folder}}/{{.name}}.mp4" \
+      && exiftool -overwrite_original \
+        -tagsfromfile "{{.src_folder}}/{{.name}}.{{.extension}}" \
+        -all:all -m -FileModifyDate "{{.dst_folder}}/{{.name}}.mp4"
+  ```
+
+- **With ffmpeg**, `-map_metadata 0 -movflags use_metadata_tags` also keeps them in an MP4. Plain `-map_metadata 0` is not enough: it keeps the date in UTC only, and loses the location and the phone's date with its time zone.
+
 ## Motion photos
 
 A motion photo is a photo with a short video embedded in the same file (Android/Pixel JPEGs, Samsung and other Android HEICs). The `motion_photos` key of your `tasks.yaml` controls **what each task command receives** for such a file:
