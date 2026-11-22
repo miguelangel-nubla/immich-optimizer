@@ -255,11 +255,15 @@ const (
 )
 
 // downloadCache holds the prepared downloads. It is temporary files and
-// nothing else: emptied at shutdown, and of no consequence when lost.
+// nothing else: emptied at shutdown (an entry still being sent, once it is
+// sent), and of no consequence when lost.
 type downloadCache struct {
 	mu      sync.Mutex
 	entries map[string]*preparedDownload
 	base    context.Context
+	// closed is set at shutdown: from then on an entry goes as soon as
+	// nobody uses it.
+	closed bool
 }
 
 // acquire returns the prepared download for key, starting its preparation
@@ -319,6 +323,12 @@ func (c *downloadCache) release(e *preparedDownload) {
 	if e.waiters > 0 {
 		return
 	}
+	if c.closed {
+		// Shutting down: no request follows, and no timer would run.
+		e.cancel()
+		c.drop(e)
+		return
+	}
 	select {
 	case <-e.done:
 		if !e.usable() {
@@ -375,10 +385,12 @@ func (c *downloadCache) sweep(now time.Time) {
 	}
 }
 
-// clear removes everything that is not in use, at shutdown.
+// clear removes everything that is not in use, at shutdown; what is still
+// being sent goes when its last request ends.
 func (c *downloadCache) clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.closed = true
 	for _, e := range c.entries {
 		if e.waiters == 0 {
 			c.drop(e)

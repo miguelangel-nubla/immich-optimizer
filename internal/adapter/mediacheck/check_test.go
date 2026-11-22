@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -48,5 +49,23 @@ func TestCheckRejectsMissingAndEmptyFiles(t *testing.T) {
 	}
 	if err := c.Check(context.Background(), "x.jpg", empty); err == nil {
 		t.Error("empty output accepted")
+	}
+}
+
+// The decoders read untrusted files: the API key is not in their
+// environment, the rest is.
+func TestRunKeepsSecretsFromTheDecoders(t *testing.T) {
+	t.Setenv("IO_IMMICH_API_KEY", "secret-key")
+	t.Setenv("IO_IMMICH_API_KEY_FILE", "/run/secret-file")
+	t.Setenv("IO_SOMETHING_ELSE", "kept")
+	out, err := run(context.Background(), "env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "secret-key") || strings.Contains(out, "/run/secret-file") {
+		t.Errorf("a decoder got the API key:\n%s", out)
+	}
+	if !strings.Contains(out, "IO_SOMETHING_ELSE=kept") {
+		t.Error("the rest of the environment was lost")
 	}
 }

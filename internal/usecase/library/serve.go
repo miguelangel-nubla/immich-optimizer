@@ -49,6 +49,11 @@ func (s *Service) Serve(ctx context.Context, events port.LibraryEvents) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		// A setting that cannot work does not start working by waiting.
+		var conf *errConfig
+		if errors.As(err, &conf) {
+			return err
+		}
 		if s.log != nil {
 			s.log.Errorf("Library: %v; trying again in %s", err, retryDelay)
 		}
@@ -149,6 +154,13 @@ func (s *Service) Warnf(format string, args ...any) {
 	}
 }
 
+// errConfig is a start that fails because of the settings: Serve gives up
+// instead of trying again.
+type errConfig struct{ err error }
+
+func (e *errConfig) Error() string { return e.err.Error() }
+func (e *errConfig) Unwrap() error { return e.err }
+
 // start identifies the user, settles what earlier runs left and acts on
 // what is tagged.
 func (s *Service) start(ctx context.Context, me *string) error {
@@ -158,7 +170,7 @@ func (s *Service) start(ctx context.Context, me *string) error {
 	}
 	id := u.ID
 	if !s.cfg.Users.claim(id, s) {
-		return fmt.Errorf("another API key of user %s <%s> is already in use; one key per user", id, u.Email)
+		return &errConfig{fmt.Errorf("two API keys belong to user %s <%s>: give library mode one key per user", id, u.Email)}
 	}
 	if s.me != id {
 		if s.cfg.Label != "" {

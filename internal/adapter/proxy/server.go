@@ -233,6 +233,8 @@ func (s *Server) FinishShutdown(ctx context.Context) error {
 	if cerr := s.Close(); err == nil {
 		err = cerr
 	}
+	// Also when Cancel was not called: no download is kept past shutdown.
+	s.downloads.clear()
 	return err
 }
 

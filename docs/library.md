@@ -30,7 +30,7 @@ It keeps running and waits. **Nothing happens until you tag something** in Immic
 - **One key per user**, all in one container: separate them with commas in `IO_IMMICH_API_KEY`, or put one per line in the file named by `IO_IMMICH_API_KEY_FILE` (blank lines and lines starting with `#` are ignored, so you can note whose each key is).
 - Library mode then works for each user separately: each one's tags act on that user's photos only. In the log, each user's lines start with `[user <id>]`, the user's id in Immich, which stays the same when a key is replaced. At start each one logs whose it is: `Library: working for Alice <alice@example.com> (user <id>)`. Until Immich has said whose a key is (while Immich cannot be reached, for example), its lines say `[key 2 of 3]`.
 - All users share the conversions running at the same time ([`IO_TASKS_CONCURRENCY`](configuration.md#tasks)) and one [audit log](audit-log.md), in which each library entry names its user.
-- **Each key must be of a different user.** Two keys of the same user would work on the same photos at the same time; the second one waits, with an error in the log, while the first is in use.
+- **Each key must be of a different user.** Two keys of the same user would work on the same photos at the same time; so the optimizer stops at startup with an error naming the user.
 - Watcher mode uploads with the first key. Watcher mode on its own takes only one key.
 
 **To try it**, tag three or four photos and look at the result in Immich. Each converted photo is a new asset, and its original is in the trash, where you can compare the two or restore the original.

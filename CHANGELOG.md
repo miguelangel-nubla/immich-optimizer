@@ -43,6 +43,7 @@ Changes since v0.4.0-dev.7. For what changed from 0.3.0-beta.5 to dev.7, see the
   - Looking up a new upload's marker for the app's live connection could hold Immich's messages, its pings among them, for up to 30 seconds and make the app's connection drop; it now gives up after 5.
   - An asset going to the trash during sync was looked up again although its hidden entry had already been sent in the same stream.
   - `IO_TASKS_CONCURRENCY=1` is now also respected for converted downloads (it was raised to 2).
+  - A converted download still being sent at shutdown left its temporary files behind.
 - **Library mode**
   - A second copy was trashed against another user's conversion that this user could see through partner sharing or a shared album.
   - When Immich applied the move to the trash but its answer was lost, the verified copy was deleted, leaving the photo only in the trash.
@@ -50,7 +51,7 @@ Changes since v0.4.0-dev.7. For what changed from 0.3.0-beta.5 to dev.7, see the
   - After a failed write of the audit log, library mode stopped for good; it now goes on once the log can be written again.
   - An audit log entry written after a failed or interrupted write (a full disk, a crash) was joined to the broken line and lost; it now starts on a line of its own.
   - Second copies are found also when the default tasks file has no task for their type.
-  - Two different API keys of the same user worked on the same assets at the same time, which could leave a photo only in the trash. The second key now waits, with an error in the log, while the first one is in use.
+  - Two different API keys of the same user worked on the same assets at the same time, which could leave a photo only in the trash. The program now stops at startup with an error naming the user.
   - Albums, shared links, people and comments added to the original while it was being replaced (a conversion can take long) were lost with it: the original is now checked once more for them before it goes to the trash, and if anything was added it stays and is converted at a later pass.
   - An interrupted replacement could lose work: when the original had been restored from the trash, the verified copy was deleted with everything added to it since; when the person had trashed the original of a copy that was never verified, that copy was kept as if it were complete. The copy is now marked `verified` before the original goes to the trash, a verified copy is never deleted, and every case that cannot be completed as planned keeps both and tags the copy `immich-optimizer/review`.
   - Immich can apply the tags of the copied sidecar to the new asset late; a `convert` tag arriving that way made the copy be converted again. It is now removed from the copy as well.

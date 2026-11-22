@@ -188,3 +188,39 @@ func TestDownloadsPassedThroughWhenAskedTo(t *testing.T) {
 		t.Fatalf("got %q (%s), %d conversions", rec.Body.String(), rec.Header().Get("Content-Type"), proc.calls.Load())
 	}
 }
+
+// A download still being sent at shutdown keeps its files until it is sent,
+// and then they go at once: no timer runs after the program exits.
+func TestDownloadCacheClearRemovesInUseEntryOnRelease(t *testing.T) {
+	var c downloadCache
+	prepare := func(_ context.Context, e *preparedDownload) {
+		dir, err := os.MkdirTemp(t.TempDir(), "io-download-*")
+		if err != nil {
+			t.Error(err)
+		}
+		e.dir, e.path = dir, filepath.Join(dir, "a.jpg")
+		_ = os.WriteFile(e.path, []byte("data"), 0o600)
+	}
+	sending := c.acquire("a", prepare)
+	<-sending.done
+	idle := c.acquire("b", prepare)
+	<-idle.done
+	c.release(idle) // kept for a minute, as usual
+
+	c.clear()
+	if _, err := os.Stat(idle.dir); !os.IsNotExist(err) {
+		t.Error("an unused download was kept at shutdown")
+	}
+	if _, err := os.Stat(sending.path); err != nil {
+		t.Fatalf("the download being sent lost its file: %v", err)
+	}
+	c.release(sending)
+	if _, err := os.Stat(sending.dir); !os.IsNotExist(err) {
+		t.Error("the download sent during shutdown left its files")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.entries) != 0 {
+		t.Errorf("%d entries left", len(c.entries))
+	}
+}

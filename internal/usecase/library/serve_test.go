@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"github.com/miguelangel-nubla/immich-optimizer/internal/logger"
 	"log"
 	"strings"
@@ -427,5 +428,59 @@ func TestServeFindsACopyWhoseUploadWasNotLogged(t *testing.T) {
 	}
 	if h.im.lists != 0 {
 		t.Errorf("the library was listed %d times", h.im.lists)
+	}
+}
+
+// Two keys of one user is a setting that cannot work: the second Serve
+// gives up with an error instead of trying again forever, so the program
+// stops and says why.
+func TestServeRefusesASecondKeyOfTheSameUser(t *testing.T) {
+	h := tagged(t)
+	h.cfg.Users = NewUsers()
+	writeLog(t, h.logPath, `{"event":"full_read"}`+"\n")
+	h.serve() // the first key's worker
+	h.waitFor("the first worker to start", func() bool { return h.eventCount("uploads_checked") == 1 })
+
+	j, err := audit.Open(h.logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err = New(h.cfg, h.im, h.conv, j, nil).Serve(ctx, &fakeEvents{})
+	var conf *errConfig
+	if !errors.As(err, &conf) || !strings.Contains(err.Error(), me) {
+		t.Fatalf("second key of the same user: %v, want a settings error naming the user", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("Serve kept trying instead of giving up")
+	}
+}
+
+// A conversion whose upload failed leaves no "uploaded" entry. The safety
+// pass looks for its copy among the recent uploads once; it does not search
+// from that conversion onwards on every later pass for the rest of the run.
+func TestPendingPassStopsLookingForAFailedUpload(t *testing.T) {
+	h := tagged(t)
+	at := time.Now().Add(-2 * uploadSettle).UTC().Format(time.RFC3339Nano)
+	writeLog(t, h.logPath, `{"event":"full_read"}`+"\n"+
+		`{"time":"`+at+`","source":"library","event":"converted","asset":"a1","converted_sha1":"00ff"}`+"\n")
+	j, err := audit.Open(h.logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	s := New(h.cfg, h.im, h.conv, j, nil)
+	s.idx = newLogIndex(h.logPath, me)
+	for range 3 {
+		if err := s.pendingPass(context.Background(), me); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.im.mu.Lock()
+	defer h.im.mu.Unlock()
+	if len(h.im.sinceCalls) != 1 {
+		t.Errorf("recent uploads searched %d times over 3 passes, want once: %v", len(h.im.sinceCalls), h.im.sinceCalls)
 	}
 }
