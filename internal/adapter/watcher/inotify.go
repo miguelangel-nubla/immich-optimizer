@@ -411,11 +411,21 @@ func (fw *inotifyWatcher) handleInotifyEvent(event *unix.InotifyEvent, name, wat
 	if event.Mask&unix.IN_CREATE != 0 {
 		if info, err := os.Stat(filePath); err == nil && !info.IsDir() && !utils.IsTempFile(filePath) {
 			if statT, ok := info.Sys().(*syscall.Stat_t); ok {
-				if v, loaded := fw.closedInodes.LoadAndDelete(statT.Ino); loaded &&
-					v.(closedInode).size == info.Size() && v.(closedInode).mtime.Equal(info.ModTime()) {
+				v, noted := fw.closedInodes.LoadAndDelete(statT.Ino)
+				ci, _ := v.(closedInode)
+				sameSize := noted && ci.size == info.Size()
+				if sameSize && ci.mtime.Equal(info.ModTime()) {
 					fw.emitEvent(filePath)
 				} else {
 					linked := statT.Nlink > 1
+					// Same inode and size as a temporary file just closed,
+					// but another mtime: a client that sets the capture
+					// time back before linking (SFTP with preserved times).
+					// The note may also be stale for a reused inode, so
+					// the file is only taken once it has settled.
+					if sameSize {
+						linked = true
+					}
 					if v, ok := fw.goneTempCloses.Load(watchedDir); ok && time.Since(v.(time.Time)) < fw.settle {
 						linked = true
 					}

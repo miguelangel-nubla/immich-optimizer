@@ -396,6 +396,39 @@ func TestInotifyHardLinkWhoseTemporaryNameIsGoneFirst(t *testing.T) {
 	}
 }
 
+// An SFTP client that keeps the capture time (seen with an Android sync app
+// and its .tacitpart files) closes the temporary file, sets its mtime back
+// to when the photo was taken, then publishes it with link and unlink. The
+// close is handled while the temporary name still exists, but the link's
+// creation is handled after the unlink, so the inode has one link and an
+// mtime that no longer matches what was noted at the close. It is still the
+// same complete file and must be taken.
+func TestInotifyHardLinkAfterTheMtimeWasSetBack(t *testing.T) {
+	fw, _ := startWatcher(t)
+	elsewhere := t.TempDir() // not watched: the events are handed over below
+	tmp := filepath.Join(elsewhere, "IMG_3.jpg_0b7e_.tacitpart")
+	final := filepath.Join(elsewhere, "IMG_3.jpg")
+	if err := os.WriteFile(tmp, []byte("photo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fw.handleInotifyEvent(&unix.InotifyEvent{Mask: unix.IN_CLOSE_WRITE}, filepath.Base(tmp), elsewhere)
+	taken := time.Now().Add(-3 * time.Minute)
+	if err := os.Chtimes(tmp, taken, taken); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(tmp, final); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(tmp); err != nil {
+		t.Fatal(err)
+	}
+	fw.handleInotifyEvent(&unix.InotifyEvent{Mask: unix.IN_CREATE}, filepath.Base(final), elsewhere)
+	got := collect(fw, 4*fw.settle)
+	if !got[final] {
+		t.Errorf("the linked file was not taken: %v", got)
+	}
+}
+
 // A file that is still open is not taken because its writer paused: it may
 // be an upload over a network share that stalled. Its close announces it.
 func TestInotifyOpenFileIsNotTakenWhileTheWriterPauses(t *testing.T) {

@@ -2,6 +2,10 @@
 
 What changes for someone who runs the optimizer: behaviour, settings, files. The release notes on GitHub list every commit as well.
 
+## Unreleased
+
+- **Watch folders take files again from SFTP clients that keep the capture time.** Since 0.4.0, a file uploaded under a temporary name whose modification time was set back before it was published with a hard link (an Android sync app's `.tacitpart` files, for example) was never taken: it was only picked up by the folder scan when the optimizer restarted. It is now taken once it has not been written to for ten seconds.
+
 ## 0.4.1 (2026-11-22)
 
 A bug fix for uploads from the web app, and new documentation on video tasks. Nothing to change when upgrading from 0.4.0.
